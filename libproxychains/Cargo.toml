@@ -1,0 +1,23 @@
+[package]
+name = "libproxychains"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "LD_PRELOAD library for proxychains"
+
+[lib]
+name = "proxychains"
+crate-type = ["cdylib", "staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+proxychains = { path = "../proxychains" }
+libc.workspace = true
+nix.workspace = true
+ctor.workspace = true
+once_cell.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

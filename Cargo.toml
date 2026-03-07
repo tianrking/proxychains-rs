@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "proxychains",
+    "proxychains-bin",
+    "libproxychains",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+authors = ["Proxychains Rust Team"]
+license = "GPL-2.0"
+repository = "https://github.com/rofl0r/proxychains-ng"
+
+[workspace.dependencies]
+libc = "0.2"
+nix = { version = "0.28", features = ["net", "socket", "poll", "signal", "process", "fs"] }
+ctor = "0.2"
+once_cell = "1.19"
+parking_lot = "0.12"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+base64 = "0.22"
+clap = { version = "4.5", features = ["derive", "env"] }
+thiserror = "1.0"
+anyhow = "1.0"
+socket2 = { version = "0.5", features = ["all"] }
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"

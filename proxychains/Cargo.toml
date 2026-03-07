@@ -1,0 +1,28 @@
+[package]
+name = "proxychains"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core library for proxychains - proxy chaining implementation"
+
+[lib]
+name = "proxychains"
+path = "src/lib.rs"
+
+[dependencies]
+libc.workspace = true
+nix.workspace = true
+once_cell.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+base64.workspace = true
+thiserror.workspace = true
+socket2.workspace = true
+rand.workspace = true
+sha2.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

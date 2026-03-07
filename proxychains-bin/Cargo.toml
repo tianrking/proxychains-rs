@@ -1,0 +1,21 @@
+[package]
+name = "proxychains-bin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI binary for proxychains"
+
+[[bin]]
+name = "proxychains4"
+path = "src/main.rs"
+
+[dependencies]
+proxychains = { path = "../proxychains" }
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+nix.workspace = true
+libc.workspace = true
