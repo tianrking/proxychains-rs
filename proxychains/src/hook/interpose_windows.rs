@@ -15,10 +15,19 @@ use crate::error::{Error, Result};
 
 use super::hooks_windows::{
     hook_connect_impl, hook_freeaddrinfo_impl, hook_getaddrinfo_impl, hook_gethostbyname_impl,
-    hook_getnameinfo_impl,
+    hook_getnameinfo_impl, hook_wsa_connect_impl,
 };
 
 type ConnectFn = unsafe extern "system" fn(usize, *const c_void, i32) -> i32;
+type WsaConnectFn = unsafe extern "system" fn(
+    usize,
+    *const c_void,
+    i32,
+    *const c_void,
+    *const c_void,
+    *const c_void,
+    *const c_void,
+) -> i32;
 type GetAddrInfoFn =
     unsafe extern "system" fn(*const i8, *const i8, *const c_void, *mut *mut c_void) -> i32;
 type FreeAddrInfoFn = unsafe extern "system" fn(*mut c_void);
@@ -27,6 +36,7 @@ type GetNameInfoFn =
     unsafe extern "system" fn(*const c_void, i32, *mut i8, u32, *mut i8, u32, i32) -> i32;
 
 static ORIGINAL_CONNECT: OnceLock<ConnectFn> = OnceLock::new();
+static ORIGINAL_WSA_CONNECT: OnceLock<WsaConnectFn> = OnceLock::new();
 static ORIGINAL_GETADDRINFO: OnceLock<GetAddrInfoFn> = OnceLock::new();
 static ORIGINAL_FREEADDRINFO: OnceLock<FreeAddrInfoFn> = OnceLock::new();
 static ORIGINAL_GETHOSTBYNAME: OnceLock<GetHostByNameFn> = OnceLock::new();
@@ -56,6 +66,8 @@ impl OriginalFunctions {
         unsafe {
             let connect_fn: ConnectFn =
                 install_api_hook("connect", hook_connect_impl as *const () as *mut c_void)?;
+            let wsa_connect_fn: WsaConnectFn =
+                install_api_hook("WSAConnect", hook_wsa_connect_impl as *const () as *mut c_void)?;
             let getaddrinfo_fn: GetAddrInfoFn = install_api_hook(
                 "getaddrinfo",
                 hook_getaddrinfo_impl as *const () as *mut c_void,
@@ -74,6 +86,7 @@ impl OriginalFunctions {
             )?;
 
             let _ = ORIGINAL_CONNECT.set(connect_fn);
+            let _ = ORIGINAL_WSA_CONNECT.set(wsa_connect_fn);
             let _ = ORIGINAL_GETADDRINFO.set(getaddrinfo_fn);
             let _ = ORIGINAL_FREEADDRINFO.set(freeaddrinfo_fn);
             let _ = ORIGINAL_GETHOSTBYNAME.set(gethostbyname_fn);
@@ -109,6 +122,32 @@ pub fn init_original_functions() -> Result<()> {
 pub unsafe fn original_connect(sock: usize, addr: *const c_void, len: i32) -> i32 {
     if let Some(f) = ORIGINAL_CONNECT.get() {
         f(sock, addr, len)
+    } else {
+        WSASetLastError(WSAECONNREFUSED.0);
+        -1
+    }
+}
+
+/// Call the original WSAConnect function.
+pub unsafe fn original_wsa_connect(
+    sock: usize,
+    name: *const c_void,
+    namelen: i32,
+    caller_data: *const c_void,
+    callee_data: *const c_void,
+    sqos: *const c_void,
+    gqos: *const c_void,
+) -> i32 {
+    if let Some(f) = ORIGINAL_WSA_CONNECT.get() {
+        f(
+            sock,
+            name,
+            namelen,
+            caller_data,
+            callee_data,
+            sqos,
+            gqos,
+        )
     } else {
         WSASetLastError(WSAECONNREFUSED.0);
         -1

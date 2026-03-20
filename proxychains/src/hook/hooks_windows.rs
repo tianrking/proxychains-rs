@@ -403,6 +403,20 @@ pub unsafe extern "system" fn hook_connect_impl(
     SOCKET_ERROR
 }
 
+/// Windows WSAConnect hook implementation.
+#[cfg(windows)]
+pub unsafe extern "system" fn hook_wsa_connect_impl(
+    sock: usize,
+    name: *const c_void,
+    namelen: i32,
+    _caller_data: *const c_void,
+    _callee_data: *const c_void,
+    _sqos: *const c_void,
+    _gqos: *const c_void,
+) -> i32 {
+    hook_connect_impl(sock, name, namelen)
+}
+
 /// Windows getaddrinfo hook implementation.
 #[cfg(windows)]
 pub unsafe extern "system" fn hook_getaddrinfo_impl(

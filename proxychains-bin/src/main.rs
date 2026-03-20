@@ -286,6 +286,21 @@ fn build_probe_report(results: Vec<ProbeNode>, timeout: Duration, group: String)
     let total = results.len();
     let ok = results.iter().filter(|r| r.ok).count();
     let fail = total.saturating_sub(ok);
+    let success_rate = if total == 0 {
+        0.0
+    } else {
+        (ok as f64) * 100.0 / (total as f64)
+    };
+    let best_latency_ms = results
+        .iter()
+        .filter(|r| r.ok)
+        .map(|r| r.latency_ms)
+        .min();
+    let worst_latency_ms = results
+        .iter()
+        .filter(|r| r.ok)
+        .map(|r| r.latency_ms)
+        .max();
     let mut stats = ProbeFailureStats::default();
     for r in &results {
         if r.ok {
@@ -310,7 +325,14 @@ fn build_probe_report(results: Vec<ProbeNode>, timeout: Duration, group: String)
         generated_at_iso8601: format_unix_ts_iso8601(generated_at),
         timeout_ms: timeout.as_millis(),
         selected_group: group,
-        summary: ProbeSummary { total, ok, fail },
+        summary: ProbeSummary {
+            total,
+            ok,
+            fail,
+            success_rate,
+            best_latency_ms,
+            worst_latency_ms,
+        },
         failure_stats: stats,
         nodes: results,
     }
@@ -346,9 +368,15 @@ fn print_probe_report(report: &ProbeReport) {
         }
     }
     println!(
-        "Probe summary: total={}, ok={}, fail={}",
-        report.summary.total, report.summary.ok, report.summary.fail
+        "Probe summary: total={}, ok={}, fail={}, success_rate={:.2}%",
+        report.summary.total, report.summary.ok, report.summary.fail, report.summary.success_rate
     );
+    if let Some(best) = report.summary.best_latency_ms {
+        println!("Latency: best={} ms", best);
+    }
+    if let Some(worst) = report.summary.worst_latency_ms {
+        println!("Latency: worst={} ms", worst);
+    }
     println!(
         "Failure stats: timeout={}, refused={}, reset={}, net_unreach={}, addr_unavail={}, not_connected={}, other={}",
         report.failure_stats.timeout,
@@ -378,6 +406,9 @@ struct ProbeSummary {
     total: usize,
     ok: usize,
     fail: usize,
+    success_rate: f64,
+    best_latency_ms: Option<u128>,
+    worst_latency_ms: Option<u128>,
 }
 
 #[derive(Debug, Serialize, Default)]
