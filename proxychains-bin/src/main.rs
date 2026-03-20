@@ -1,9 +1,12 @@
 //! Proxychains4 CLI binary
 //!
 //! This is the main entry point for running commands through proxy chains.
+//!
+//! Platform support:
+//! - Unix (Linux/macOS): Uses LD_PRELOAD/DYLD_INSERT_LIBRARIES
+//! - Windows: Uses DLL injection
 
 use std::env;
-use std::ffi::CString;
 use std::path::PathBuf;
 use std::process;
 
@@ -85,7 +88,7 @@ fn main() {
         info!("Proxies: {}", config.proxy_count());
     }
 
-    // Execute the command with LD_PRELOAD
+    // Execute the command with platform-specific injection
     match execute_command(&args, &config) {
         Ok(status) => {
             process::exit(status);
@@ -110,8 +113,28 @@ fn load_config(args: &Args) -> Result<Config, String> {
     parser.parse().map_err(|e| e.to_string())
 }
 
-/// Execute the command with LD_PRELOAD set
+/// Set proxychains-specific environment variables
+fn set_proxychains_env(config: &Config, args: &Args) {
+    if args.quiet {
+        env::set_var("PROXYCHAINS_QUIET_MODE", "1");
+    }
+
+    if config.proxy_dns {
+        env::set_var("PROXYCHAINS_DNS", "1");
+    }
+
+    // Note: The actual config file path is handled by the library
+    // when it reads PROXYCHAINS_CONF_FILE
+}
+
+// ============================================================================
+// Unix Implementation (LD_PRELOAD/DYLD_INSERT_LIBRARIES)
+// ============================================================================
+
+#[cfg(unix)]
 fn execute_command(args: &Args, config: &Config) -> Result<i32, String> {
+    use std::ffi::CString;
+
     if args.command.is_empty() {
         return Err("No command specified".to_string());
     }
@@ -158,7 +181,8 @@ fn execute_command(args: &Args, config: &Config) -> Result<i32, String> {
     Ok(0)
 }
 
-/// Find the proxychains library path
+/// Find the proxychains library path (Unix)
+#[cfg(unix)]
 fn find_library_path() -> Result<String, String> {
     // Try common locations
     let search_paths = vec![
@@ -195,14 +219,8 @@ fn find_library_path() -> Result<String, String> {
     Err("Could not find libproxychains library".to_string())
 }
 
-/// Get the directory containing the current binary
-fn get_binary_dir() -> Option<PathBuf> {
-    env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(|p| p.to_path_buf()))
-}
-
-/// Set LD_PRELOAD environment variable
+/// Set LD_PRELOAD environment variable (Unix)
+#[cfg(unix)]
 fn set_preload_env(library_path: &str) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
@@ -217,26 +235,71 @@ fn set_preload_env(library_path: &str) -> Result<(), String> {
         debug!("Set DYLD_INSERT_LIBRARIES={}", library_path);
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        return Err("Unsupported operating system".to_string());
-    }
-
     Ok(())
 }
 
-/// Set proxychains-specific environment variables
-fn set_proxychains_env(config: &Config, args: &Args) {
-    if args.quiet {
-        env::set_var("PROXYCHAINS_QUIET_MODE", "1");
+// ============================================================================
+// Windows Implementation (DLL Injection)
+// ============================================================================
+
+#[cfg(windows)]
+fn execute_command(args: &Args, config: &Config) -> Result<i32, String> {
+    use proxychains_injector::{ProxychainsInjector, ProcessInfo, find_library_path};
+
+    if args.command.is_empty() {
+        return Err("No command specified".to_string());
     }
 
-    if config.proxy_dns {
-        env::set_var("PROXYCHAINS_DNS", "1");
-    }
+    // Find the DLL path
+    let dll_path = find_library_path().map_err(|e| e.to_string())?;
 
-    // Note: The actual config file path is handled by the library
-    // when it reads PROXYCHAINS_CONF_FILE
+    debug!("DLL path: {:?}", dll_path);
+
+    // Set proxychains environment variables
+    set_proxychains_env(config, args);
+
+    // Create the injector
+    let injector = ProxychainsInjector::new(&dll_path)
+        .map_err(|e| format!("Failed to create injector: {}", e))?;
+
+    // Create process info
+    let process_info = ProcessInfo {
+        pid: None,
+        name: None,
+        command: args.command[0].clone(),
+        args: args.command[1..].to_vec(),
+    };
+
+    debug!("Spawning and injecting: {:?}", process_info);
+
+    // Spawn the process and inject DLL
+    let mut child = injector
+        .spawn_and_inject(&process_info)
+        .map_err(|e| format!("Failed to spawn and inject: {}", e))?;
+
+    // Wait for the process to complete
+    let status = child
+        .wait()
+        .map_err(|e| format!("Failed to wait for process: {}", e))?;
+
+    let exit_code = status
+        .code()
+        .unwrap_or(1);
+
+    info!("Process exited with code: {}", exit_code);
+
+    Ok(exit_code)
+}
+
+// ============================================================================
+// Common Functions
+// ============================================================================
+
+/// Get the directory containing the current binary
+fn get_binary_dir() -> Option<PathBuf> {
+    env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|p| p.to_path_buf()))
 }
 
 #[cfg(test)]

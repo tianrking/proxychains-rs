@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: cargo build --release --workspace
+
+      - name: Package Linux artifacts
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/proxychains4 dist/
+          cp target/release/libproxychains.so dist/
+          cp proxychains.conf dist/
+          cp README.md dist/
+          tar -czf "proxychains-rs-${GITHUB_REF_NAME}-linux-x86_64.tar.gz" -C dist .
+
+      - name: Build Linux deb package
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          PKG_ROOT="pkgroot"
+          rm -rf "${PKG_ROOT}"
+          mkdir -p "${PKG_ROOT}/DEBIAN" "${PKG_ROOT}/usr/bin" "${PKG_ROOT}/usr/lib" "${PKG_ROOT}/etc"
+          cp target/release/proxychains4 "${PKG_ROOT}/usr/bin/proxychains4"
+          cp target/release/libproxychains.so "${PKG_ROOT}/usr/lib/libproxychains.so"
+          cp proxychains.conf "${PKG_ROOT}/etc/proxychains.conf"
+          printf "Package: proxychains-rs\nVersion: %s\nSection: net\nPriority: optional\nArchitecture: amd64\nMaintainer: Proxychains Rust Team\nDescription: Cross-platform proxychains implementation in Rust\n" "${VERSION}" > "${PKG_ROOT}/DEBIAN/control"
+          dpkg-deb --build "${PKG_ROOT}" "proxychains-rs-${GITHUB_REF_NAME}-linux-amd64.deb"
+
+      - name: Package macOS artifacts
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/proxychains4 dist/
+          cp target/release/libproxychains.dylib dist/
+          cp proxychains.conf dist/
+          cp README.md dist/
+          tar -czf "proxychains-rs-${GITHUB_REF_NAME}-macos-x86_64.tar.gz" -C dist .
+
+      - name: Package Windows artifacts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item target\release\proxychains4.exe dist\
+          Copy-Item target\release\proxychains.dll dist\
+          Copy-Item proxychains.conf dist\
+          Copy-Item README.md dist\
+          Compress-Archive -Path dist\* -DestinationPath "proxychains-rs-$env:GITHUB_REF_NAME-windows-x86_64.zip" -Force
+
+      - name: Upload packaged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}
+          path: |
+            proxychains-rs-*.tar.gz
+            proxychains-rs-*.zip
+            proxychains-rs-*.deb
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/**/*.tar.gz
+            release-assets/**/*.zip
+            release-assets/**/*.deb

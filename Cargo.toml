@@ -4,6 +4,7 @@ members = [
     "proxychains",
     "proxychains-bin",
     "libproxychains",
+    "proxychains-injector",
 ]
 
 [workspace.package]

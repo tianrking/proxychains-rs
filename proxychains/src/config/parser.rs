@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use crate::config::types::*;
 use crate::error::{Error, Result};
+use crate::platform;
 
 /// Environment variable names
 pub const ENV_CONF_FILE: &str = "PROXYCHAINS_CONF_FILE";
@@ -54,6 +55,7 @@ impl ConfigParser {
         // Check standard locations
         let search_paths = vec![
             PathBuf::from("./proxychains.conf"),
+            platform::config_path(),
             dirs::home_dir()
                 .map(|h| h.join(".proxychains/proxychains.conf"))
                 .unwrap_or_default(),
@@ -176,6 +178,12 @@ impl ConfigParser {
             "tcp_connect_time_out" => {
                 if let Ok(timeout) = value.parse::<u64>() {
                     config.tcp_connect_timeout = Duration::from_millis(timeout);
+                }
+            }
+            "max_chain_retries" => {
+                if let Ok(retries) = value.parse::<usize>() {
+                    // Keep a sensible floor to avoid accidental zero/retry-less configs.
+                    config.max_chain_retries = retries.max(1);
                 }
             }
             "localnet" => {

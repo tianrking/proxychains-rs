@@ -175,7 +175,14 @@ impl ChainManager {
         target: &TargetAddress,
         target_port: u16,
     ) -> Result<std::net::TcpStream> {
+        let max_attempts = self.config.max_chain_retries.max(1);
+        let mut attempts = 0usize;
         'again: loop {
+            attempts += 1;
+            if attempts > max_attempts {
+                error!("Dynamic chain exceeded max retries ({})", max_attempts);
+                return Err(Error::ChainDown);
+            }
             debug!("Starting dynamic chain connection (attempt)");
 
             // Calculate available proxies
@@ -270,6 +277,8 @@ impl ChainManager {
     ) -> Result<std::net::TcpStream> {
         let max_chain = self.config.chain_len.unwrap_or(proxies.len());
         let alive_count = count_alive(proxies);
+        let max_attempts = self.config.max_chain_retries.max(1);
+        let mut attempts = 0usize;
 
         if alive_count == 0 {
             return Err(Error::ChainEmpty);
@@ -284,6 +293,11 @@ impl ChainManager {
         }
 
         'again: loop {
+            attempts += 1;
+            if attempts > max_attempts {
+                error!("Random chain exceeded max retries ({})", max_attempts);
+                return Err(Error::ChainDown);
+            }
             // Randomly select proxies
             let selected_indices = self.select_random_proxies(proxies, max_chain);
             if selected_indices.is_empty() {

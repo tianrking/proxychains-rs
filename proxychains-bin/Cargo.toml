@@ -13,9 +13,18 @@ path = "src/main.rs"
 
 [dependencies]
 proxychains = { path = "../proxychains" }
+proxychains-injector = { path = "../proxychains-injector" }
 clap.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+
+[target.'cfg(unix)'.dependencies]
 nix.workspace = true
 libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.54", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }

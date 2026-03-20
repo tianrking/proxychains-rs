@@ -146,41 +146,18 @@ impl Default for DnsCache {
     }
 }
 
-/// Parse /etc/hosts file
+/// Parse hosts file (platform-independent)
+/// Deprecated: Use crate::dns::hosts::parse_hosts_file instead
+#[deprecated(note = "Use crate::dns::parse_hosts_file instead")]
 pub fn parse_etc_hosts() -> HashMap<String, Ipv4Addr> {
-    let mut hosts = HashMap::new();
-
-    if let Ok(content) = std::fs::read_to_string("/etc/hosts") {
-        for line in content.lines() {
-            let line = line.trim();
-            // Skip comments and empty lines
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            // Parse line: IP hostname [aliases...]
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                if let Ok(ip) = parts[0].parse::<Ipv4Addr>() {
-                    for hostname in &parts[1..] {
-                        // Skip if hostname starts with #
-                        if hostname.starts_with('#') {
-                            break;
-                        }
-                        hosts.insert(hostname.to_lowercase(), ip);
-                    }
-                }
-            }
-        }
-    }
-
-    hosts
+    crate::dns::parse_hosts_file()
 }
 
-/// Check if hostname is in /etc/hosts
+/// Check if hostname is in hosts file (platform-independent)
+/// Deprecated: Use crate::dns::hosts::lookup_in_hosts instead
+#[deprecated(note = "Use crate::dns::lookup_in_hosts instead")]
 pub fn in_etc_hosts(hostname: &str) -> Option<Ipv4Addr> {
-    let hosts = parse_etc_hosts();
-    hosts.get(&hostname.to_lowercase()).copied()
+    crate::dns::lookup_in_hosts(hostname)
 }
 
 #[cfg(test)]

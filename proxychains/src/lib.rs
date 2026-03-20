@@ -36,6 +36,7 @@ pub mod dns;
 pub mod error;
 pub mod hook;
 pub mod net;
+pub mod platform;
 pub mod proxy;
 
 // Re-exports for convenience

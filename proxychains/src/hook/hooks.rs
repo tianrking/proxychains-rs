@@ -18,8 +18,8 @@ use crate::error::Result;
 use crate::net::{get_ip_from_sockaddr, get_port_from_sockaddr};
 
 use super::interpose::{
-    init_original_functions, original_connect, original_getaddrinfo, original_gethostbyname,
-    original_getnameinfo,
+    init_original_functions, original_connect, original_freeaddrinfo, original_getaddrinfo,
+    original_gethostbyname, original_getnameinfo,
 };
 
 /// Global state for the hook library
@@ -216,7 +216,13 @@ pub unsafe fn hook_getaddrinfo(
     }
 
     // Generate fake IP
-    let _fake_ip = state.dns_resolver.resolve(&hostname).unwrap();
+    let _fake_ip = match state.dns_resolver.resolve(&hostname) {
+        Ok(ip) => ip,
+        Err(e) => {
+            error!("Failed to resolve {} in hook_getaddrinfo: {}", hostname, e);
+            return original_getaddrinfo(node, service, hints, res);
+        }
+    };
 
     debug!("Assigned fake IP {} for {}", _fake_ip, hostname);
 
@@ -257,7 +263,13 @@ pub unsafe fn hook_gethostbyname(name: *const c_char) -> *mut libc::hostent {
     }
 
     // Generate fake IP
-    let _fake_ip = state.dns_resolver.resolve(&hostname).unwrap();
+    let _fake_ip = match state.dns_resolver.resolve(&hostname) {
+        Ok(ip) => ip,
+        Err(e) => {
+            error!("Failed to resolve {} in hook_gethostbyname: {}", hostname, e);
+            return original_gethostbyname(name);
+        }
+    };
 
     debug!("Assigned fake IP {} for {}", _fake_ip, hostname);
 
@@ -273,23 +285,9 @@ pub unsafe fn hook_gethostbyname(name: *const c_char) -> *mut libc::hostent {
 /// This function makes unsafe FFI calls
 pub unsafe fn hook_freeaddrinfo(res: *mut libc::addrinfo) {
     trace!("hook_freeaddrinfo called");
-
-    if res.is_null() {
-        return;
-    }
-
-    // Free our allocated memory
-    let ai = Box::from_raw(res);
-
-    // Free ai_addr
-    if !ai.ai_addr.is_null() {
-        let _ = Box::from_raw(ai.ai_addr as *mut libc::sockaddr_in);
-    }
-
-    // Free ai_canonname
-    if !ai.ai_canonname.is_null() {
-        let _ = std::ffi::CString::from_raw(ai.ai_canonname);
-    }
+    // Our getaddrinfo hook currently falls back to the system allocator, so
+    // free through libc to avoid mismatched allocator/free behavior.
+    original_freeaddrinfo(res);
 }
 
 /// Hook for getnameinfo() system call

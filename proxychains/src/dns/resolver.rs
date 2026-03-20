@@ -1,9 +1,11 @@
 //! DNS resolver for proxychains
 
+#[cfg(unix)]
 use std::ffi::CString;
 use std::net::Ipv4Addr;
 
-use crate::dns::cache::{in_etc_hosts, DnsCache};
+use crate::dns::cache::DnsCache;
+use crate::dns::hosts::lookup_in_hosts as hosts_lookup;
 use crate::error::{Error, Result};
 
 /// Global DNS cache instance
@@ -32,12 +34,12 @@ impl DnsResolver {
 
     /// Resolve a hostname
     ///
-    /// If proxy_dns is enabled and hostname is not in /etc/hosts,
+    /// If proxy_dns is enabled and hostname is not in hosts file,
     /// returns a fake IP that will be resolved through the proxy.
     /// Otherwise, uses the system resolver.
     pub fn resolve(&self, hostname: &str) -> Result<Ipv4Addr> {
-        // First check /etc/hosts
-        if let Some(ip) = in_etc_hosts(hostname) {
+        // First check hosts file
+        if let Some(ip) = hosts_lookup(hostname) {
             return Ok(ip);
         }
 
@@ -65,7 +67,8 @@ impl DnsResolver {
         self.cache.is_fake_ip(ip)
     }
 
-    /// System resolver using getaddrinfo
+    /// System resolver using getaddrinfo (Unix only)
+    #[cfg(unix)]
     fn system_resolve(&self, hostname: &str) -> Result<Ipv4Addr> {
         let c_hostname = CString::new(hostname)?;
 
@@ -110,6 +113,25 @@ impl DnsResolver {
         Ok(addr)
     }
 
+    /// System resolver using Windows API (Windows only)
+    #[cfg(windows)]
+    fn system_resolve(&self, hostname: &str) -> Result<Ipv4Addr> {
+        use std::net::ToSocketAddrs;
+
+        // Use standard library resolver
+        let addr: std::net::SocketAddrV4 = format!("{}:0", hostname)
+            .to_socket_addrs()
+            .map_err(|e| Error::Dns(format!("Failed to resolve {}: {}", hostname, e)))?
+            .filter_map(|a| match a {
+                std::net::SocketAddr::V4(v4) => Some(v4),
+                _ => None,
+            })
+            .next()
+            .ok_or_else(|| Error::Dns(format!("No IPv4 address for {}", hostname)))?;
+
+        Ok(*addr.ip())
+    }
+
     /// Get reference to global DNS cache
     pub fn cache(&self) -> &'static DnsCache {
         self.cache
@@ -137,7 +159,7 @@ pub fn resolve_to_fake_ip(hostname: &str, _subnet: u8) -> Ipv4Addr {
 
 /// Parse hosts file and lookup hostname
 pub fn lookup_in_hosts(hostname: &str) -> Option<Ipv4Addr> {
-    in_etc_hosts(hostname)
+    hosts_lookup(hostname)
 }
 
 #[cfg(test)]

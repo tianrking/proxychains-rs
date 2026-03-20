@@ -183,6 +183,8 @@ pub struct Config {
     pub tcp_read_timeout: Duration,
     /// TCP connect timeout
     pub tcp_connect_timeout: Duration,
+    /// Maximum retry attempts when establishing a chain
+    pub max_chain_retries: usize,
     /// Local networks to bypass
     pub localnets: Vec<LocalNet>,
     /// DNAT rules
@@ -201,6 +203,7 @@ impl Default for Config {
             remote_dns_subnet: 224,
             tcp_read_timeout: Duration::from_millis(15000),
             tcp_connect_timeout: Duration::from_millis(8000),
+            max_chain_retries: 8,
             localnets: Vec::new(),
             dnats: Vec::new(),
             proxies: Vec::new(),
