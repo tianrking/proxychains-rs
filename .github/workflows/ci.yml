@@ -104,9 +104,8 @@ jobs:
               "socks5 127.0.0.1 19080" \
               "http 127.0.0.1 18080" > ci.e2e.conf
 
-            cargo run -p proxychains-bin -- -f ./ci.e2e.conf --probe
-            cargo run -p proxychains-bin -- -f ./ci.e2e.conf --probe --probe-json > probe-report.json
-            grep -q "\"summary\"" probe-report.json
+            cargo run -p proxychains-bin -- -f ./ci.e2e.conf --probe --probe-json > probe-report.json || true
+            python3 -c "import json; r=json.load(open('probe-report.json','r',encoding='utf-8')); assert 'summary' in r; assert int(r['summary']['fail']) == 0"
 
             DNS_V4="$(cargo run -q -p proxychains-bin -- -q -f ./ci.e2e.conf python3 -c "import socket;print(socket.getaddrinfo(\"dns-proxychains-e2e.invalid\",443,0,socket.SOCK_STREAM)[0][4][0])" | tr -d "\r\n")"
             echo "dns v4 fake ip: ${DNS_V4}"
