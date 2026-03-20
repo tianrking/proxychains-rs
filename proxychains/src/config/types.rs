@@ -238,8 +238,14 @@ impl Config {
     pub fn should_bypass_ip(&self, ip: &IpAddr) -> bool {
         match ip {
             IpAddr::V4(v4) => self.should_bypass(v4),
-            // For now, IPv6 bypass only loopback.
-            IpAddr::V6(v6) => v6.is_loopback(),
+            // Mirror localhost/local semantics for IPv6 to avoid unintended proxying
+            // of link-local/unspecified traffic.
+            IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_unique_local()
+                    || v6.is_unicast_link_local()
+            }
         }
     }
 
@@ -272,5 +278,27 @@ impl Config {
     /// Check if configuration has any proxies
     pub fn has_proxies(&self) -> bool {
         !self.proxies.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv6Addr;
+
+    #[test]
+    fn test_ipv6_bypass_local_scopes() {
+        let cfg = Config::default();
+        assert!(cfg.should_bypass_ip(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(cfg.should_bypass_ip(&IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
+        assert!(cfg.should_bypass_ip(&IpAddr::V6(Ipv6Addr::new(
+            0xfe80, 0, 0, 0, 1, 2, 3, 4
+        ))));
+        assert!(cfg.should_bypass_ip(&IpAddr::V6(Ipv6Addr::new(
+            0xfc00, 0, 0, 0, 1, 2, 3, 4
+        ))));
+        assert!(!cfg.should_bypass_ip(&IpAddr::V6(Ipv6Addr::new(
+            0x2606, 0x4700, 0, 0, 0, 0, 0, 0x1111
+        ))));
     }
 }

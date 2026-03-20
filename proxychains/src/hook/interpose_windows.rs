@@ -14,8 +14,8 @@ use windows::Win32::Networking::WinSock::{WSAECONNREFUSED, WSAHOST_NOT_FOUND, WS
 use crate::error::{Error, Result};
 
 use super::hooks_windows::{
-    hook_connect_impl, hook_freeaddrinfo_impl, hook_getaddrinfo_impl, hook_gethostbyname_impl,
-    hook_getnameinfo_impl, hook_wsa_connect_impl,
+    hook_connect_impl, hook_freeaddrinfo_impl, hook_getaddrinfo_impl, hook_getaddrinfow_impl,
+    hook_gethostbyname_impl, hook_getnameinfo_impl, hook_wsa_connect_impl, hook_wsa_ioctl_impl,
 };
 
 type ConnectFn = unsafe extern "system" fn(usize, *const c_void, i32) -> i32;
@@ -30,17 +30,32 @@ type WsaConnectFn = unsafe extern "system" fn(
 ) -> i32;
 type GetAddrInfoFn =
     unsafe extern "system" fn(*const i8, *const i8, *const c_void, *mut *mut c_void) -> i32;
+type GetAddrInfoWFn =
+    unsafe extern "system" fn(*const u16, *const u16, *const c_void, *mut *mut c_void) -> i32;
 type FreeAddrInfoFn = unsafe extern "system" fn(*mut c_void);
 type GetHostByNameFn = unsafe extern "system" fn(*const i8) -> *mut c_void;
 type GetNameInfoFn =
     unsafe extern "system" fn(*const c_void, i32, *mut i8, u32, *mut i8, u32, i32) -> i32;
+type WsaIoctlFn = unsafe extern "system" fn(
+    usize,
+    u32,
+    *mut c_void,
+    u32,
+    *mut c_void,
+    u32,
+    *mut u32,
+    *mut c_void,
+    *mut c_void,
+) -> i32;
 
 static ORIGINAL_CONNECT: OnceLock<ConnectFn> = OnceLock::new();
 static ORIGINAL_WSA_CONNECT: OnceLock<WsaConnectFn> = OnceLock::new();
 static ORIGINAL_GETADDRINFO: OnceLock<GetAddrInfoFn> = OnceLock::new();
+static ORIGINAL_GETADDRINFOW: OnceLock<GetAddrInfoWFn> = OnceLock::new();
 static ORIGINAL_FREEADDRINFO: OnceLock<FreeAddrInfoFn> = OnceLock::new();
 static ORIGINAL_GETHOSTBYNAME: OnceLock<GetHostByNameFn> = OnceLock::new();
 static ORIGINAL_GETNAMEINFO: OnceLock<GetNameInfoFn> = OnceLock::new();
+static ORIGINAL_WSA_IOCTL: OnceLock<WsaIoctlFn> = OnceLock::new();
 
 static HOOKS_READY: AtomicBool = AtomicBool::new(false);
 
@@ -68,9 +83,15 @@ impl OriginalFunctions {
                 install_api_hook("connect", hook_connect_impl as *const () as *mut c_void)?;
             let wsa_connect_fn: WsaConnectFn =
                 install_api_hook("WSAConnect", hook_wsa_connect_impl as *const () as *mut c_void)?;
+            let wsa_ioctl_fn: WsaIoctlFn =
+                install_api_hook("WSAIoctl", hook_wsa_ioctl_impl as *const () as *mut c_void)?;
             let getaddrinfo_fn: GetAddrInfoFn = install_api_hook(
                 "getaddrinfo",
                 hook_getaddrinfo_impl as *const () as *mut c_void,
+            )?;
+            let getaddrinfow_fn: GetAddrInfoWFn = install_api_hook(
+                "GetAddrInfoW",
+                hook_getaddrinfow_impl as *const () as *mut c_void,
             )?;
             let freeaddrinfo_fn: FreeAddrInfoFn = install_api_hook(
                 "freeaddrinfo",
@@ -87,7 +108,9 @@ impl OriginalFunctions {
 
             let _ = ORIGINAL_CONNECT.set(connect_fn);
             let _ = ORIGINAL_WSA_CONNECT.set(wsa_connect_fn);
+            let _ = ORIGINAL_WSA_IOCTL.set(wsa_ioctl_fn);
             let _ = ORIGINAL_GETADDRINFO.set(getaddrinfo_fn);
+            let _ = ORIGINAL_GETADDRINFOW.set(getaddrinfow_fn);
             let _ = ORIGINAL_FREEADDRINFO.set(freeaddrinfo_fn);
             let _ = ORIGINAL_GETHOSTBYNAME.set(gethostbyname_fn);
             let _ = ORIGINAL_GETNAMEINFO.set(getnameinfo_fn);
@@ -154,6 +177,36 @@ pub unsafe fn original_wsa_connect(
     }
 }
 
+/// Call the original WSAIoctl function.
+pub unsafe fn original_wsa_ioctl(
+    sock: usize,
+    io_control_code: u32,
+    in_buffer: *mut c_void,
+    in_buffer_len: u32,
+    out_buffer: *mut c_void,
+    out_buffer_len: u32,
+    bytes_returned: *mut u32,
+    overlapped: *mut c_void,
+    completion_routine: *mut c_void,
+) -> i32 {
+    if let Some(f) = ORIGINAL_WSA_IOCTL.get() {
+        f(
+            sock,
+            io_control_code,
+            in_buffer,
+            in_buffer_len,
+            out_buffer,
+            out_buffer_len,
+            bytes_returned,
+            overlapped,
+            completion_routine,
+        )
+    } else {
+        WSASetLastError(WSAECONNREFUSED.0);
+        -1
+    }
+}
+
 /// Call the original getaddrinfo function.
 pub unsafe fn original_getaddrinfo(
     node: *const i8,
@@ -162,6 +215,21 @@ pub unsafe fn original_getaddrinfo(
     res: *mut *mut c_void,
 ) -> i32 {
     if let Some(f) = ORIGINAL_GETADDRINFO.get() {
+        f(node, service, hints, res)
+    } else {
+        WSASetLastError(WSAHOST_NOT_FOUND.0);
+        WSAHOST_NOT_FOUND.0
+    }
+}
+
+/// Call the original GetAddrInfoW function.
+pub unsafe fn original_getaddrinfow(
+    node: *const u16,
+    service: *const u16,
+    hints: *const c_void,
+    res: *mut *mut c_void,
+) -> i32 {
+    if let Some(f) = ORIGINAL_GETADDRINFOW.get() {
         f(node, service, hints, res)
     } else {
         WSASetLastError(WSAHOST_NOT_FOUND.0);

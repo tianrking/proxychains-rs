@@ -47,6 +47,13 @@ pub fn get_ip_from_sockaddr(addr: *const core::ffi::c_void) -> Option<Ipv4Addr> 
                 *ip_ptr.add(3),
             ];
             Some(Ipv4Addr::from(ip_bytes))
+        } else if sa_family == 23 {
+            // Handle IPv4-mapped IPv6 (::ffff:a.b.c.d) so reverse fake-DNS lookup works.
+            let ip_ptr = (addr as *const u8).add(8);
+            let mut octets = [0u8; 16];
+            std::ptr::copy_nonoverlapping(ip_ptr, octets.as_mut_ptr(), 16);
+            let v6 = Ipv6Addr::from(octets);
+            v6.to_ipv4_mapped()
         } else {
             None
         }
@@ -173,5 +180,17 @@ mod tests {
                 0x2001, 0x0db8, 0, 0, 0, 0, 0, 1
             )))
         );
+    }
+
+    #[test]
+    fn test_get_ip_from_sockaddr_ipv6_mapped() {
+        let mut raw = [0u8; 28];
+        raw[0] = 23; // AF_INET6
+        raw[1] = 0;
+        raw[8..24].copy_from_slice(&[
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4,
+        ]);
+        let addr_ptr = raw.as_ptr() as *const core::ffi::c_void;
+        assert_eq!(get_ip_from_sockaddr(addr_ptr), Some(Ipv4Addr::new(1, 2, 3, 4)));
     }
 }

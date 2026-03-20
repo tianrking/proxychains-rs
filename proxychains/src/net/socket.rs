@@ -152,6 +152,10 @@ pub fn get_ip_from_sockaddr(addr: *const libc::sockaddr) -> Option<Ipv4Addr> {
             let addr_in = addr as *const libc::sockaddr_in;
             let ip_bytes = (*addr_in).sin_addr.s_addr.to_ne_bytes();
             Some(Ipv4Addr::from(ip_bytes))
+        } else if sa_family == libc::AF_INET6 as libc::sa_family_t {
+            let addr_in6 = addr as *const libc::sockaddr_in6;
+            let v6 = Ipv6Addr::from((*addr_in6).sin6_addr.s6_addr);
+            v6.to_ipv4_mapped()
         } else {
             None
         }
@@ -200,5 +204,23 @@ mod tests {
     fn test_is_localhost() {
         assert!(is_localhost(&Ipv4Addr::new(127, 0, 0, 1)));
         assert!(!is_localhost(&Ipv4Addr::new(192, 168, 1, 1)));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn test_get_ip_from_sockaddr_ipv6_mapped() {
+        let sockaddr = libc::sockaddr_in6 {
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+            sin6_len: std::mem::size_of::<libc::sockaddr_in6>() as u8,
+            sin6_family: libc::AF_INET6 as libc::sa_family_t,
+            sin6_port: 0,
+            sin6_flowinfo: 0,
+            sin6_addr: libc::in6_addr {
+                s6_addr: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 5, 6, 7, 8],
+            },
+            sin6_scope_id: 0,
+        };
+        let ptr = &sockaddr as *const libc::sockaddr_in6 as *const libc::sockaddr;
+        assert_eq!(get_ip_from_sockaddr(ptr), Some(Ipv4Addr::new(5, 6, 7, 8)));
     }
 }

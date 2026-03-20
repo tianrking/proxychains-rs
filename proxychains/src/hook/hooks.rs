@@ -407,7 +407,7 @@ pub unsafe fn hook_getaddrinfo(
     // Get the hostname
     let hostname = match CStr::from_ptr(node).to_str() {
         Ok(s) => s.to_string(),
-        Err(_) => return original_getaddrinfo(node, service, hints, res),
+        Err(_) => return libc::EAI_NONAME,
     };
 
     debug!("getaddrinfo hook for: {}", hostname);
@@ -475,7 +475,7 @@ pub unsafe fn hook_gethostbyname(name: *const c_char) -> *mut libc::hostent {
     // Get the hostname
     let hostname = match CStr::from_ptr(name).to_str() {
         Ok(s) => s.to_string(),
-        Err(_) => return original_gethostbyname(name),
+        Err(_) => return std::ptr::null_mut(),
     };
 
     debug!("gethostbyname hook for: {}", hostname);
@@ -504,7 +504,7 @@ pub unsafe fn hook_gethostbyname(name: *const c_char) -> *mut libc::hostent {
 
     let name_cstr = match CString::new(hostname) {
         Ok(v) => v,
-        Err(_) => return original_gethostbyname(name),
+        Err(_) => return std::ptr::null_mut(),
     };
 
     GETHOSTBYNAME_STORE.with(|slot| {

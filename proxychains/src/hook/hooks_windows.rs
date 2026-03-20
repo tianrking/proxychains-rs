@@ -16,10 +16,12 @@ use parking_lot::Mutex;
 use rand::seq::SliceRandom;
 use tracing::{debug, error, info, warn};
 use windows::Win32::Networking::WinSock::{
-    ADDRINFOA, AF_INET, AF_INET6, IN_ADDR, IN_ADDR_0, IPPROTO_TCP, SOCKADDR, SOCKADDR_IN,
-    SOCK_STREAM, SOCKET_ERROR, WSAEALREADY, WSAECONNREFUSED, WSAEFAULT, WSAEINPROGRESS, WSAEINVAL,
-    WSAEWOULDBLOCK, WSAGetLastError, WSAHOST_NOT_FOUND, WSASetLastError,
+    ADDRINFOA, ADDRINFOW, AF_INET, AF_INET6, IN_ADDR, IN_ADDR_0, IPPROTO_TCP, SOCKADDR,
+    SOCKADDR_IN, SOCK_STREAM, SOCKET_ERROR, WSAEALREADY, WSAECONNREFUSED, WSAEFAULT,
+    WSAEINPROGRESS, WSAEINVAL, WSAEOPNOTSUPP, WSAEWOULDBLOCK, WSAGetLastError, WSAHOST_NOT_FOUND,
+    WSASetLastError,
 };
+use windows::core::GUID;
 
 use crate::config::{ChainType, Config, ProxyData, ProxyState};
 use crate::dns::{is_fake_ip, DnsResolver};
@@ -30,7 +32,7 @@ use crate::ConfigParser;
 
 use super::interpose_windows::{
     init_original_functions, original_connect, original_freeaddrinfo, original_getaddrinfo,
-    original_gethostbyname, original_getnameinfo,
+    original_getaddrinfow, original_gethostbyname, original_getnameinfo, original_wsa_ioctl,
 };
 use super::reload::config_reload_interval;
 
@@ -66,6 +68,7 @@ static CUSTOM_ADDRINFO_ALLOCATIONS: OnceLock<Mutex<HashMap<usize, CustomAddrinfo
 struct CustomAddrinfoAllocation {
     sockaddr_ptr: usize,
     family: i32,
+    is_wide: bool,
 }
 
 fn custom_alloc_map() -> &'static Mutex<HashMap<usize, CustomAddrinfoAllocation>> {
@@ -307,6 +310,35 @@ fn parse_service_port(service: *const i8) -> u16 {
     }
 }
 
+fn parse_service_port_wide(service: *const u16) -> u16 {
+    if service.is_null() {
+        return 0;
+    }
+    unsafe {
+        let mut len = 0usize;
+        while *service.add(len) != 0 {
+            len += 1;
+        }
+        let slice = std::slice::from_raw_parts(service, len);
+        let s = String::from_utf16_lossy(slice);
+        s.parse::<u16>().unwrap_or(0)
+    }
+}
+
+fn parse_wide_string(ptr: *const u16) -> std::result::Result<String, ()> {
+    if ptr.is_null() {
+        return Err(());
+    }
+    unsafe {
+        let mut len = 0usize;
+        while *ptr.add(len) != 0 {
+            len += 1;
+        }
+        let slice = std::slice::from_raw_parts(ptr, len);
+        String::from_utf16(slice).map_err(|_| ())
+    }
+}
+
 /// Windows connect hook implementation.
 #[cfg(windows)]
 pub unsafe extern "system" fn hook_connect_impl(
@@ -423,6 +455,104 @@ pub unsafe extern "system" fn hook_wsa_connect_impl(
     hook_connect_impl(sock, name, namelen)
 }
 
+const SIO_GET_EXTENSION_FUNCTION_POINTER: u32 = 0xC800_0006;
+const WSAID_CONNECTEX: GUID = GUID::from_u128(0x25a207b9_ddf3_4660_8ee9_76e58c74063e);
+
+/// ConnectEx replacement used when applications query extension function pointers via WSAIoctl.
+///
+/// This implementation is intentionally synchronous:
+/// - `lpOverlapped != NULL` is rejected (`WSAEOPNOTSUPP`) to avoid silent bypass.
+/// - `dwSendDataLength > 0` is rejected (`WSAEOPNOTSUPP`) because initial-send semantics are
+///   not yet mirrored.
+#[cfg(windows)]
+pub unsafe extern "system" fn hook_connect_ex_impl(
+    sock: usize,
+    name: *const c_void,
+    namelen: i32,
+    send_buf: *const c_void,
+    send_len: u32,
+    bytes_sent: *mut u32,
+    overlapped: *mut c_void,
+) -> i32 {
+    if !overlapped.is_null() || (!send_buf.is_null() && send_len > 0) {
+        WSASetLastError(WSAEOPNOTSUPP.0);
+        return 0;
+    }
+
+    if !bytes_sent.is_null() {
+        *bytes_sent = 0;
+    }
+
+    let ret = hook_connect_impl(sock, name, namelen);
+    if ret == SOCKET_ERROR {
+        0
+    } else {
+        1
+    }
+}
+
+/// WSAIoctl hook implementation.
+///
+/// Intercepts `SIO_GET_EXTENSION_FUNCTION_POINTER` for `WSAID_CONNECTEX` and returns our own
+/// ConnectEx function pointer so ConnectEx-based clients still go through proxy enforcement.
+#[cfg(windows)]
+pub unsafe extern "system" fn hook_wsa_ioctl_impl(
+    sock: usize,
+    io_control_code: u32,
+    in_buffer: *mut c_void,
+    in_buffer_len: u32,
+    out_buffer: *mut c_void,
+    out_buffer_len: u32,
+    bytes_returned: *mut u32,
+    overlapped: *mut c_void,
+    completion_routine: *mut c_void,
+) -> i32 {
+    if io_control_code != SIO_GET_EXTENSION_FUNCTION_POINTER
+        || in_buffer_len < std::mem::size_of::<GUID>() as u32
+        || out_buffer_len < std::mem::size_of::<*const c_void>() as u32
+        || in_buffer.is_null()
+        || out_buffer.is_null()
+    {
+        return original_wsa_ioctl(
+            sock,
+            io_control_code,
+            in_buffer,
+            in_buffer_len,
+            out_buffer,
+            out_buffer_len,
+            bytes_returned,
+            overlapped,
+            completion_routine,
+        );
+    }
+
+    let requested = *(in_buffer as *const GUID);
+    if requested != WSAID_CONNECTEX {
+        return original_wsa_ioctl(
+            sock,
+            io_control_code,
+            in_buffer,
+            in_buffer_len,
+            out_buffer,
+            out_buffer_len,
+            bytes_returned,
+            overlapped,
+            completion_routine,
+        );
+    }
+
+    let replacement = hook_connect_ex_impl as *const c_void;
+    std::ptr::copy_nonoverlapping(
+        &replacement as *const *const c_void as *const u8,
+        out_buffer as *mut u8,
+        std::mem::size_of::<*const c_void>(),
+    );
+    if !bytes_returned.is_null() {
+        *bytes_returned = std::mem::size_of::<*const c_void>() as u32;
+    }
+    0
+}
+
 /// Windows getaddrinfo hook implementation.
 #[cfg(windows)]
 pub unsafe extern "system" fn hook_getaddrinfo_impl(
@@ -443,7 +573,7 @@ pub unsafe extern "system" fn hook_getaddrinfo_impl(
     let dns_resolver = DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
 
     if pnode.is_null() || ppresult.is_null() {
-        return original_getaddrinfo(pnode, pservice, phints, ppresult);
+        return WSAEINVAL.0;
     }
 
     let requested_family = if phints.is_null() {
@@ -461,7 +591,7 @@ pub unsafe extern "system" fn hook_getaddrinfo_impl(
 
     let hostname = match CStr::from_ptr(pnode).to_str() {
         Ok(s) => s,
-        Err(_) => return original_getaddrinfo(pnode, pservice, phints, ppresult),
+        Err(_) => return WSAEINVAL.0,
     };
 
     if hostname.parse::<IpAddr>().is_ok() {
@@ -518,10 +648,114 @@ pub unsafe extern "system" fn hook_getaddrinfo_impl(
         CustomAddrinfoAllocation {
             sockaddr_ptr: sockaddr_ptr as usize,
             family: requested_family,
+            is_wide: false,
         },
     );
 
     debug!("Assigned fake IP {} for {}", fake_ip, hostname);
+    0
+}
+
+/// Windows GetAddrInfoW hook implementation.
+#[cfg(windows)]
+pub unsafe extern "system" fn hook_getaddrinfow_impl(
+    pnode: *const u16,
+    pservice: *const u16,
+    phints: *const c_void,
+    ppresult: *mut *mut c_void,
+) -> i32 {
+    let state = match get_hook_state() {
+        Some(s) => s,
+        None => return original_getaddrinfow(pnode, pservice, phints, ppresult),
+    };
+    maybe_reload_config(state);
+    let config = state.config.lock().clone();
+    if !config.proxy_dns {
+        return original_getaddrinfow(pnode, pservice, phints, ppresult);
+    }
+    let dns_resolver = DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
+
+    if pnode.is_null() || ppresult.is_null() {
+        return WSAEINVAL.0;
+    }
+
+    let requested_family = if phints.is_null() {
+        AF_INET.0 as i32
+    } else {
+        let hints = &*(phints as *const ADDRINFOW);
+        if hints.ai_family == 0 || hints.ai_family == AF_INET.0 as i32 {
+            AF_INET.0 as i32
+        } else if hints.ai_family == AF_INET6.0 as i32 {
+            AF_INET6.0 as i32
+        } else {
+            return WSAHOST_NOT_FOUND.0;
+        }
+    };
+
+    let hostname = match parse_wide_string(pnode) {
+        Ok(s) => s,
+        Err(_) => return WSAEINVAL.0,
+    };
+
+    if hostname.parse::<IpAddr>().is_ok() {
+        return original_getaddrinfow(pnode, pservice, phints, ppresult);
+    }
+
+    if crate::dns::lookup_in_hosts(&hostname).is_some() {
+        return original_getaddrinfow(pnode, pservice, phints, ppresult);
+    }
+
+    let fake_ip = match dns_resolver.resolve(&hostname) {
+        Ok(ip) => ip,
+        Err(e) => {
+            error!("Failed to resolve {} in hook_getaddrinfow_impl: {}", hostname, e);
+            return WSAHOST_NOT_FOUND.0;
+        }
+    };
+
+    let service_port = parse_service_port_wide(pservice);
+    let (sockaddr_ptr, addrlen) = if requested_family == AF_INET6.0 as i32 {
+        let sockaddr_raw = Box::new(make_sockaddr_in6_mapped_bytes(fake_ip, service_port));
+        (
+            Box::into_raw(sockaddr_raw) as *mut SOCKADDR,
+            mem::size_of::<[u8; 28]>(),
+        )
+    } else {
+        let sockaddr_box = Box::new(make_sockaddr_in(fake_ip, service_port));
+        (
+            Box::into_raw(sockaddr_box) as *mut SOCKADDR,
+            mem::size_of::<SOCKADDR_IN>(),
+        )
+    };
+
+    let mut ai = ADDRINFOW::default();
+    ai.ai_family = requested_family;
+    ai.ai_socktype = if phints.is_null() {
+        SOCK_STREAM.0
+    } else {
+        (*(phints as *const ADDRINFOW)).ai_socktype
+    };
+    ai.ai_protocol = if phints.is_null() {
+        IPPROTO_TCP.0
+    } else {
+        (*(phints as *const ADDRINFOW)).ai_protocol
+    };
+    ai.ai_addrlen = addrlen;
+    ai.ai_addr = sockaddr_ptr;
+    ai.ai_next = std::ptr::null_mut();
+
+    let ai_ptr = Box::into_raw(Box::new(ai));
+    *ppresult = ai_ptr as *mut c_void;
+    custom_alloc_map().lock().insert(
+        ai_ptr as usize,
+        CustomAddrinfoAllocation {
+            sockaddr_ptr: sockaddr_ptr as usize,
+            family: requested_family,
+            is_wide: true,
+        },
+    );
+
+    debug!("Assigned fake IP {} for {} (GetAddrInfoW)", fake_ip, hostname);
     0
 }
 
@@ -538,7 +772,11 @@ pub unsafe extern "system" fn hook_freeaddrinfo_impl(pres: *mut c_void) {
         } else {
             let _ = Box::from_raw(alloc.sockaddr_ptr as *mut SOCKADDR_IN);
         }
-        let _ = Box::from_raw(pres as *mut ADDRINFOA);
+        if alloc.is_wide {
+            let _ = Box::from_raw(pres as *mut ADDRINFOW);
+        } else {
+            let _ = Box::from_raw(pres as *mut ADDRINFOA);
+        }
         return;
     }
 
