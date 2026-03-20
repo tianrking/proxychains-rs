@@ -96,15 +96,110 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
+      - name: Checkout (for changelog generation)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: release-assets
 
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          find release-assets -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.deb' \) -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS.txt
+
+      - name: Generate release notes and changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          PREV_TAG="$(git tag --sort=-creatordate | grep -v "^${TAG}$" | head -n1 || true)"
+          if [ -n "${PREV_TAG}" ]; then
+            RANGE="${PREV_TAG}..${TAG}"
+          else
+            RANGE="${TAG}"
+          fi
+
+          mapfile -t COMMITS < <(git log --no-merges --pretty=format:'%s' ${RANGE})
+
+          section() {
+            local name="$1"
+            shift
+            echo "### ${name}" >> CHANGELOG_AUTO.md
+            local found=0
+            for c in "${COMMITS[@]}"; do
+              for prefix in "$@"; do
+                if [[ "${c}" == ${prefix}* ]]; then
+                  echo "- ${c}" >> CHANGELOG_AUTO.md
+                  found=1
+                  break
+                fi
+              done
+            done
+            if [ "${found}" -eq 0 ]; then
+              echo "- (none)" >> CHANGELOG_AUTO.md
+            fi
+            echo "" >> CHANGELOG_AUTO.md
+          }
+
+          {
+            echo "## Changelog (${TAG})"
+            echo ""
+          } > CHANGELOG_AUTO.md
+          section "Features" "feat:" "feature:"
+          section "Fixes" "fix:"
+          section "Docs" "docs:"
+          section "CI/Build" "ci:" "build:" "chore:"
+          echo "### Other" >> CHANGELOG_AUTO.md
+          OTHER_FOUND=0
+          for c in "${COMMITS[@]}"; do
+            if [[ "${c}" != feat:* && "${c}" != feature:* && "${c}" != fix:* && "${c}" != docs:* && "${c}" != ci:* && "${c}" != build:* && "${c}" != chore:* ]]; then
+              echo "- ${c}" >> CHANGELOG_AUTO.md
+              OTHER_FOUND=1
+            fi
+          done
+          if [ "${OTHER_FOUND}" -eq 0 ]; then
+            echo "- (none)" >> CHANGELOG_AUTO.md
+          fi
+          echo "" >> CHANGELOG_AUTO.md
+
+          cat > RELEASE_NOTES.md <<EOF
+          ## proxychains-rs ${TAG}
+
+          ### Minimal Usage
+
+          \`\`\`bash
+          # Linux/macOS
+          ./proxychains4 -f ./proxychains.conf --probe
+          ./proxychains4 -f ./proxychains.conf curl https://ifconfig.me
+
+          # Windows
+          .\\proxychains4.exe -f .\\proxychains.conf --probe
+          .\\proxychains4.exe -f .\\proxychains.conf curl https://ifconfig.me
+          \`\`\`
+
+          ### Assets
+          - Windows zip (\`proxychains4.exe\`, \`proxychains.dll\`)
+          - Linux tar.gz
+          - Linux deb
+          - macOS tar.gz
+          - SHA256 checksums: \`SHA256SUMS.txt\`
+
+          EOF
+          cat CHANGELOG_AUTO.md >> RELEASE_NOTES.md
+
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
+          body_path: RELEASE_NOTES.md
           files: |
             release-assets/**/*.tar.gz
             release-assets/**/*.zip
             release-assets/**/*.deb
+            SHA256SUMS.txt

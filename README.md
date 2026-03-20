@@ -41,6 +41,7 @@ Recommendation:
   - `--list-groups`
   - `--check`
   - `--probe` (quick per-node reachability/latency check)
+  - `--probe-json` (machine-readable probe output)
 - DNS:
   - `proxy_dns`
   - compatibility aliases: `proxy_dns_old`, `proxy_dns_daemon`
@@ -91,6 +92,7 @@ proxychains4 -f ./proxychains.conf --list-groups
 proxychains4 -f ./proxychains.conf --group jp --check
 proxychains4 -f ./proxychains.conf --group jp --probe
 proxychains4 -f ./proxychains.conf --probe --probe-timeout-ms 1200
+proxychains4 -f ./proxychains.conf --probe --probe-json
 ```
 
 ## Example Config

@@ -43,3 +43,70 @@ jobs:
 
       - name: Build release binaries
         run: cargo build --release --workspace
+
+  linux-e2e-distros:
+    name: linux-e2e (${{ matrix.distro }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: ubuntu-24.04
+            family: deb
+            image: ubuntu:24.04
+          - distro: debian-12
+            family: deb
+            image: debian:12
+          - distro: fedora-41
+            family: rpm
+            image: fedora:41
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run e2e in distro container
+        shell: bash
+        env:
+          DISTRO_IMAGE: ${{ matrix.image }}
+          DISTRO_FAMILY: ${{ matrix.family }}
+        run: |
+          set -euo pipefail
+          docker run --rm -e DISTRO_FAMILY="${DISTRO_FAMILY}" -v "$PWD:/work" -w /work "${DISTRO_IMAGE}" /bin/bash -lc '
+            set -euo pipefail
+            if [ "${DISTRO_FAMILY}" = "deb" ]; then
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                curl ca-certificates git build-essential pkg-config python3 python3-pip
+            else
+              dnf install -y \
+                curl ca-certificates git gcc gcc-c++ make pkgconf-pkg-config python3 python3-pip
+            fi
+
+            curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+            export PATH="$HOME/.cargo/bin:$PATH"
+            rustup --version
+            cargo --version
+
+            pip3 install --no-input proxy.py pproxy
+            nohup python3 -m pproxy -l socks5://127.0.0.1:19080 >/tmp/pproxy-socks5.log 2>&1 &
+            nohup python3 -m proxy --hostname 127.0.0.1 --port 18080 >/tmp/proxy-http.log 2>&1 &
+            sleep 2
+
+            printf "%s\n" \
+              "dynamic_chain" \
+              "proxy_dns" \
+              "tcp_connect_time_out 3000" \
+              "tcp_read_time_out 8000" \
+              "[ProxyList]" \
+              "socks5 127.0.0.1 19080" \
+              "http 127.0.0.1 18080" > ci.e2e.conf
+
+            cargo run -p proxychains-bin -- -f ./ci.e2e.conf --probe
+            cargo run -p proxychains-bin -- -f ./ci.e2e.conf --probe --probe-json > probe-report.json
+            grep -q "\"summary\"" probe-report.json
+
+            PROXYCHAINS_TEST_SOCKS5_ADDR=127.0.0.1:19080 \
+            PROXYCHAINS_TEST_HTTP_ADDR=127.0.0.1:18080 \
+            cargo test -p proxychains --test real_backends -- --nocapture
+          '

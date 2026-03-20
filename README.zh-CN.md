@@ -41,6 +41,7 @@
   - `--list-groups`
   - `--check`
   - `--probe`（快速探测每个节点连通性与时延）
+  - `--probe-json`（机器可读 JSON 输出）
 - DNS：
   - `proxy_dns`
   - 兼容别名：`proxy_dns_old`、`proxy_dns_daemon`
@@ -91,6 +92,7 @@ proxychains4 -f ./proxychains.conf --list-groups
 proxychains4 -f ./proxychains.conf --group jp --check
 proxychains4 -f ./proxychains.conf --group jp --probe
 proxychains4 -f ./proxychains.conf --probe --probe-timeout-ms 1200
+proxychains4 -f ./proxychains.conf --probe --probe-json
 ```
 
 ## 示例配置

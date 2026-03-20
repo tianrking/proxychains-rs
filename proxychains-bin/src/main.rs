@@ -7,12 +7,14 @@
 //! - Windows: Uses DLL injection
 
 use std::env;
+use std::io::ErrorKind;
 use std::net::{SocketAddr, SocketAddrV4, TcpStream};
 use std::path::PathBuf;
 use std::process;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
+use serde::Serialize;
 use tracing::{debug, error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
@@ -56,6 +58,10 @@ struct Args {
     /// Probe timeout in milliseconds (default: config tcp_connect_time_out)
     #[arg(long, value_name = "MS")]
     probe_timeout_ms: Option<u64>,
+
+    /// Print probe result as JSON (machine-readable)
+    #[arg(long)]
+    probe_json: bool,
 
     /// The command to run
     #[arg(
@@ -211,13 +217,8 @@ fn run_probe(config: &Config, args: &Args) -> usize {
         .map(Duration::from_millis)
         .unwrap_or(config.tcp_connect_timeout);
     let mut failed = 0usize;
-
-    println!("Proxy probe:");
-    println!("  timeout_ms={}", timeout.as_millis());
-    println!(
-        "  group={}",
-        args.group.as_deref().unwrap_or("default/all")
-    );
+    let mut results = Vec::with_capacity(config.proxies.len());
+    let selected_group = args.group.as_deref().unwrap_or("default/all").to_string();
 
     for (idx, proxy) in config.proxies.iter().enumerate() {
         let target_v4 = SocketAddrV4::new(proxy.ip, proxy.port);
@@ -227,38 +228,159 @@ fn run_probe(config: &Config, args: &Args) -> usize {
             Ok(stream) => {
                 let elapsed = start.elapsed().as_millis();
                 let _ = stream.shutdown(std::net::Shutdown::Both);
-                println!(
-                    "  [{}] OK   {:<6} {}:{}  {} ms",
-                    idx + 1,
-                    proxy.proxy_type,
-                    proxy.ip,
-                    proxy.port,
-                    elapsed
-                );
+                results.push(ProbeNode {
+                    index: idx + 1,
+                    proxy_type: proxy.proxy_type.to_string(),
+                    address: format!("{}:{}", proxy.ip, proxy.port),
+                    ok: true,
+                    latency_ms: elapsed,
+                    failure_type: None,
+                    error: None,
+                });
             }
             Err(e) => {
                 failed += 1;
                 let elapsed = start.elapsed().as_millis();
-                println!(
-                    "  [{}] FAIL {:<6} {}:{}  {} ms  ({})",
-                    idx + 1,
-                    proxy.proxy_type,
-                    proxy.ip,
-                    proxy.port,
-                    elapsed,
-                    e
-                );
+                let failure_type = classify_probe_error(&e).to_string();
+                results.push(ProbeNode {
+                    index: idx + 1,
+                    proxy_type: proxy.proxy_type.to_string(),
+                    address: format!("{}:{}", proxy.ip, proxy.port),
+                    ok: false,
+                    latency_ms: elapsed,
+                    failure_type: Some(failure_type),
+                    error: Some(e.to_string()),
+                });
             }
         }
     }
 
+    let report = build_probe_report(results, timeout, selected_group);
+    if args.probe_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
+        );
+    } else {
+        print_probe_report(&report);
+    }
+    failed
+}
+
+fn classify_probe_error(err: &std::io::Error) -> &'static str {
+    match err.kind() {
+        ErrorKind::TimedOut => "timeout",
+        ErrorKind::ConnectionRefused => "refused",
+        ErrorKind::ConnectionReset => "reset",
+        ErrorKind::NetworkUnreachable => "network_unreachable",
+        ErrorKind::AddrNotAvailable => "addr_unavailable",
+        ErrorKind::NotConnected => "not_connected",
+        _ => "other",
+    }
+}
+
+fn build_probe_report(results: Vec<ProbeNode>, timeout: Duration, group: String) -> ProbeReport {
+    let total = results.len();
+    let ok = results.iter().filter(|r| r.ok).count();
+    let fail = total.saturating_sub(ok);
+    let mut stats = ProbeFailureStats::default();
+    for r in &results {
+        if r.ok {
+            continue;
+        }
+        match r.failure_type.as_deref() {
+            Some("timeout") => stats.timeout += 1,
+            Some("refused") => stats.refused += 1,
+            Some("reset") => stats.reset += 1,
+            Some("network_unreachable") => stats.network_unreachable += 1,
+            Some("addr_unavailable") => stats.addr_unavailable += 1,
+            Some("not_connected") => stats.not_connected += 1,
+            _ => stats.other += 1,
+        }
+    }
+    ProbeReport {
+        timeout_ms: timeout.as_millis(),
+        selected_group: group,
+        summary: ProbeSummary { total, ok, fail },
+        failure_stats: stats,
+        nodes: results,
+    }
+}
+
+fn print_probe_report(report: &ProbeReport) {
+    println!("Proxy probe:");
+    println!("  timeout_ms={}", report.timeout_ms);
+    println!("  group={}", report.selected_group);
+    for n in &report.nodes {
+        if n.ok {
+            println!(
+                "  [{}] OK   {:<8} {}  {} ms",
+                n.index, n.proxy_type, n.address, n.latency_ms
+            );
+        } else {
+            println!(
+                "  [{}] FAIL {:<8} {}  {} ms  [{}] ({})",
+                n.index,
+                n.proxy_type,
+                n.address,
+                n.latency_ms,
+                n.failure_type.as_deref().unwrap_or("other"),
+                n.error.as_deref().unwrap_or("unknown")
+            );
+        }
+    }
     println!(
         "Probe summary: total={}, ok={}, fail={}",
-        config.proxies.len(),
-        config.proxies.len().saturating_sub(failed),
-        failed
+        report.summary.total, report.summary.ok, report.summary.fail
     );
-    failed
+    println!(
+        "Failure stats: timeout={}, refused={}, reset={}, net_unreach={}, addr_unavail={}, not_connected={}, other={}",
+        report.failure_stats.timeout,
+        report.failure_stats.refused,
+        report.failure_stats.reset,
+        report.failure_stats.network_unreachable,
+        report.failure_stats.addr_unavailable,
+        report.failure_stats.not_connected,
+        report.failure_stats.other
+    );
+}
+
+#[derive(Debug, Serialize)]
+struct ProbeReport {
+    timeout_ms: u128,
+    selected_group: String,
+    summary: ProbeSummary,
+    failure_stats: ProbeFailureStats,
+    nodes: Vec<ProbeNode>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProbeSummary {
+    total: usize,
+    ok: usize,
+    fail: usize,
+}
+
+#[derive(Debug, Serialize, Default)]
+struct ProbeFailureStats {
+    timeout: usize,
+    refused: usize,
+    reset: usize,
+    network_unreachable: usize,
+    addr_unavailable: usize,
+    not_connected: usize,
+    other: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct ProbeNode {
+    index: usize,
+    proxy_type: String,
+    address: String,
+    ok: bool,
+    latency_ms: u128,
+    failure_type: Option<String>,
+    error: Option<String>,
 }
 
 /// Set proxychains-specific environment variables
@@ -504,5 +626,13 @@ mod tests {
         let args = args.unwrap();
         assert!(args.probe);
         assert!(args.command.is_empty());
+    }
+
+    #[test]
+    fn test_args_probe_json() {
+        let args = Args::try_parse_from(["proxychains4", "--probe", "--probe-json"]);
+        assert!(args.is_ok());
+        let args = args.unwrap();
+        assert!(args.probe_json);
     }
 }
