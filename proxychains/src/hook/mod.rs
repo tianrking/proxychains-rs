@@ -18,6 +18,7 @@ mod interpose;
 mod hooks_windows;
 #[cfg(windows)]
 mod interpose_windows;
+mod reload;
 
 // Re-export based on platform
 #[cfg(unix)]

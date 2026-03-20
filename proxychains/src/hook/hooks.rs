@@ -10,7 +10,7 @@ use std::net::IpAddr;
 use std::os::raw::c_char;
 use std::os::unix::io::IntoRawFd;
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use libc::{c_int, socklen_t};
 use parking_lot::Mutex;
@@ -27,6 +27,7 @@ use super::interpose::{
     init_original_functions, original_connect, original_freeaddrinfo, original_getaddrinfo,
     original_gethostbyname, original_getnameinfo,
 };
+use super::reload::config_reload_interval;
 
 /// Global state for the hook library
 pub struct HookState {
@@ -40,7 +41,7 @@ impl HookState {
         Self {
             config,
             initialized: true,
-            next_reload_check: Instant::now() + Duration::from_secs(2),
+            next_reload_check: Instant::now() + config_reload_interval(),
         }
     }
 }
@@ -72,8 +73,6 @@ fn custom_alloc_map() -> &'static Mutex<HashMap<usize, CustomAddrinfoAllocation>
     CUSTOM_ADDRINFO_ALLOCATIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-const CONFIG_RELOAD_INTERVAL: Duration = Duration::from_secs(2);
-
 struct HookSnapshot {
     config: Config,
     dns_resolver: crate::dns::DnsResolver,
@@ -85,7 +84,7 @@ fn maybe_reload_config(state: &mut HookState) {
     if now < state.next_reload_check {
         return;
     }
-    state.next_reload_check = now + CONFIG_RELOAD_INTERVAL;
+    state.next_reload_check = now + config_reload_interval();
 
     match ConfigParser::new().parse() {
         Ok(config) => {

@@ -10,7 +10,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::os::windows::io::FromRawSocket;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use parking_lot::Mutex;
 use rand::seq::SliceRandom;
@@ -32,6 +32,7 @@ use super::interpose_windows::{
     init_original_functions, original_connect, original_freeaddrinfo, original_getaddrinfo,
     original_gethostbyname, original_getnameinfo,
 };
+use super::reload::config_reload_interval;
 
 /// Global state for the hook library (Windows).
 pub struct HookState {
@@ -49,7 +50,7 @@ impl HookState {
             config: Mutex::new(config),
             proxy_states,
             load_balance_counter: AtomicUsize::new(0),
-            next_reload_check: Mutex::new(Instant::now() + Duration::from_secs(2)),
+            next_reload_check: Mutex::new(Instant::now() + config_reload_interval()),
             initialized: true,
         }
     }
@@ -71,8 +72,6 @@ fn custom_alloc_map() -> &'static Mutex<HashMap<usize, CustomAddrinfoAllocation>
     CUSTOM_ADDRINFO_ALLOCATIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-const CONFIG_RELOAD_INTERVAL: Duration = Duration::from_secs(2);
-
 fn maybe_reload_config(state: &HookState) {
     let now = Instant::now();
     {
@@ -80,7 +79,7 @@ fn maybe_reload_config(state: &HookState) {
         if now < *next {
             return;
         }
-        *next = now + CONFIG_RELOAD_INTERVAL;
+        *next = now + config_reload_interval();
     }
 
     match ConfigParser::new().parse() {
