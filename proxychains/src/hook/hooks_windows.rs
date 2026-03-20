@@ -15,10 +15,9 @@ use parking_lot::Mutex;
 use rand::seq::SliceRandom;
 use tracing::{debug, error, info, warn};
 use windows::Win32::Networking::WinSock::{
-    ADDRINFOA, AF_INET, IN_ADDR, IN_ADDR_0, IPPROTO_TCP, SOCKADDR, SOCKADDR_IN, SOCK_STREAM,
-    SOCKET_ERROR, WSAEALREADY, WSAECONNREFUSED, WSAEFAULT, WSAEINPROGRESS, WSAEINVAL,
-    WSAHOST_NOT_FOUND,
-    WSAEWOULDBLOCK, WSAGetLastError, WSASetLastError,
+    ADDRINFOA, AF_INET, AF_INET6, IN_ADDR, IN_ADDR_0, IPPROTO_TCP, SOCKADDR, SOCKADDR_IN,
+    SOCK_STREAM, SOCKET_ERROR, WSAEALREADY, WSAECONNREFUSED, WSAEFAULT, WSAEINPROGRESS, WSAEINVAL,
+    WSAEWOULDBLOCK, WSAGetLastError, WSAHOST_NOT_FOUND, WSASetLastError,
 };
 
 use crate::config::{ChainType, Config, ProxyData, ProxyState};
@@ -58,9 +57,16 @@ impl HookState {
 /// Global hook state.
 static HOOK_STATE: OnceLock<HookState> = OnceLock::new();
 /// Tracks custom addrinfo allocations created by `hook_getaddrinfo_impl`.
-static CUSTOM_ADDRINFO_ALLOCATIONS: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
+static CUSTOM_ADDRINFO_ALLOCATIONS: OnceLock<Mutex<HashMap<usize, CustomAddrinfoAllocation>>> =
+    OnceLock::new();
 
-fn custom_alloc_map() -> &'static Mutex<HashMap<usize, usize>> {
+#[derive(Clone, Copy)]
+struct CustomAddrinfoAllocation {
+    sockaddr_ptr: usize,
+    family: i32,
+}
+
+fn custom_alloc_map() -> &'static Mutex<HashMap<usize, CustomAddrinfoAllocation>> {
     CUSTOM_ADDRINFO_ALLOCATIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -99,6 +105,18 @@ fn make_sockaddr_in(ip: Ipv4Addr, port: u16) -> SOCKADDR_IN {
     }
 }
 
+fn make_sockaddr_in6_mapped_bytes(ip: Ipv4Addr, port: u16) -> [u8; 28] {
+    let mut raw = [0u8; 28];
+    raw[0..2].copy_from_slice(&(AF_INET6.0 as u16).to_ne_bytes());
+    raw[2..4].copy_from_slice(&port.to_be_bytes());
+    // flowinfo 4..8 left as 0
+    raw[18] = 0xff;
+    raw[19] = 0xff;
+    raw[20..24].copy_from_slice(&ip.octets());
+    // scope_id 24..28 left as 0
+    raw
+}
+
 unsafe fn connect_socket_to_proxy(sock: usize, proxy: &ProxyData) -> Result<()> {
     let sockaddr = make_sockaddr_in(proxy.ip, proxy.port);
     let ret = original_connect(
@@ -108,14 +126,35 @@ unsafe fn connect_socket_to_proxy(sock: usize, proxy: &ProxyData) -> Result<()> 
     );
     if ret == SOCKET_ERROR {
         let wsa_error = WSAGetLastError().0;
-        if wsa_error == WSAEWOULDBLOCK.0 || wsa_error == WSAEINPROGRESS.0 || wsa_error == WSAEALREADY.0 {
+        if wsa_error == WSAEWOULDBLOCK.0
+            || wsa_error == WSAEINPROGRESS.0
+            || wsa_error == WSAEALREADY.0
+        {
             // Non-blocking sockets can report in-progress; let handshake IO complete it.
             return Ok(());
         }
-        return Err(Error::ProxyConnection(format!(
-            "Failed to connect to proxy {}:{} (WSA {})",
-            proxy.ip, proxy.port, wsa_error
-        )));
+
+        // IPv6 sockets cannot use IPv4 sockaddr directly. Retry using an IPv4-mapped
+        // IPv6 destination (::ffff:a.b.c.d).
+        let mapped = make_sockaddr_in6_mapped_bytes(proxy.ip, proxy.port);
+        let mapped_ret = original_connect(
+            sock,
+            mapped.as_ptr() as *const c_void,
+            mapped.len() as i32,
+        );
+        if mapped_ret == SOCKET_ERROR {
+            let mapped_err = WSAGetLastError().0;
+            if mapped_err == WSAEWOULDBLOCK.0
+                || mapped_err == WSAEINPROGRESS.0
+                || mapped_err == WSAEALREADY.0
+            {
+                return Ok(());
+            }
+            return Err(Error::ProxyConnection(format!(
+                "Failed to connect to proxy {}:{} (WSA {}, retry WSA {})",
+                proxy.ip, proxy.port, wsa_error, mapped_err
+            )));
+        }
     }
     Ok(())
 }
@@ -348,12 +387,18 @@ pub unsafe extern "system" fn hook_getaddrinfo_impl(
         return original_getaddrinfo(pnode, pservice, phints, ppresult);
     }
 
-    if !phints.is_null() {
+    let requested_family = if phints.is_null() {
+        AF_INET.0 as i32
+    } else {
         let hints = &*(phints as *const ADDRINFOA);
-        if hints.ai_family != 0 && hints.ai_family != AF_INET.0 as i32 {
+        if hints.ai_family == 0 || hints.ai_family == AF_INET.0 as i32 {
+            AF_INET.0 as i32
+        } else if hints.ai_family == AF_INET6.0 as i32 {
+            AF_INET6.0 as i32
+        } else {
             return WSAHOST_NOT_FOUND.0;
         }
-    }
+    };
 
     let hostname = match CStr::from_ptr(pnode).to_str() {
         Ok(s) => s,
@@ -377,11 +422,22 @@ pub unsafe extern "system" fn hook_getaddrinfo_impl(
     };
 
     let service_port = parse_service_port(pservice);
-    let sockaddr_box = Box::new(make_sockaddr_in(fake_ip, service_port));
-    let sockaddr_ptr = Box::into_raw(sockaddr_box);
+    let (sockaddr_ptr, addrlen) = if requested_family == AF_INET6.0 as i32 {
+        let sockaddr_raw = Box::new(make_sockaddr_in6_mapped_bytes(fake_ip, service_port));
+        (
+            Box::into_raw(sockaddr_raw) as *mut SOCKADDR,
+            mem::size_of::<[u8; 28]>(),
+        )
+    } else {
+        let sockaddr_box = Box::new(make_sockaddr_in(fake_ip, service_port));
+        (
+            Box::into_raw(sockaddr_box) as *mut SOCKADDR,
+            mem::size_of::<SOCKADDR_IN>(),
+        )
+    };
 
     let mut ai = ADDRINFOA::default();
-    ai.ai_family = AF_INET.0 as i32;
+    ai.ai_family = requested_family;
     ai.ai_socktype = if phints.is_null() {
         SOCK_STREAM.0
     } else {
@@ -392,15 +448,19 @@ pub unsafe extern "system" fn hook_getaddrinfo_impl(
     } else {
         (*(phints as *const ADDRINFOA)).ai_protocol
     };
-    ai.ai_addrlen = mem::size_of::<SOCKADDR_IN>();
-    ai.ai_addr = sockaddr_ptr as *mut SOCKADDR;
+    ai.ai_addrlen = addrlen;
+    ai.ai_addr = sockaddr_ptr;
     ai.ai_next = std::ptr::null_mut();
 
     let ai_ptr = Box::into_raw(Box::new(ai));
     *ppresult = ai_ptr as *mut c_void;
-    custom_alloc_map()
-        .lock()
-        .insert(ai_ptr as usize, sockaddr_ptr as usize);
+    custom_alloc_map().lock().insert(
+        ai_ptr as usize,
+        CustomAddrinfoAllocation {
+            sockaddr_ptr: sockaddr_ptr as usize,
+            family: requested_family,
+        },
+    );
 
     debug!("Assigned fake IP {} for {}", fake_ip, hostname);
     0
@@ -413,8 +473,12 @@ pub unsafe extern "system" fn hook_freeaddrinfo_impl(pres: *mut c_void) {
         return;
     }
 
-    if let Some(sockaddr_ptr) = custom_alloc_map().lock().remove(&(pres as usize)) {
-        let _ = Box::from_raw(sockaddr_ptr as *mut SOCKADDR_IN);
+    if let Some(alloc) = custom_alloc_map().lock().remove(&(pres as usize)) {
+        if alloc.family == AF_INET6.0 as i32 {
+            let _ = Box::from_raw(alloc.sockaddr_ptr as *mut [u8; 28]);
+        } else {
+            let _ = Box::from_raw(alloc.sockaddr_ptr as *mut SOCKADDR_IN);
+        }
         let _ = Box::from_raw(pres as *mut ADDRINFOA);
         return;
     }
