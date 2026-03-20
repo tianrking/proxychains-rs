@@ -17,22 +17,41 @@ pub const ENV_QUIET_MODE: &str = "PROXYCHAINS_QUIET_MODE";
 pub const ENV_SOCKS5_HOST: &str = "PROXYCHAINS_SOCKS5_HOST";
 pub const ENV_SOCKS5_PORT: &str = "PROXYCHAINS_SOCKS5_PORT";
 pub const ENV_DNS: &str = "PROXYCHAINS_DNS";
+pub const ENV_PROXY_GROUP: &str = "PROXYCHAINS_PROXY_GROUP";
 
 /// Configuration parser
 pub struct ConfigParser {
     config_path: Option<PathBuf>,
+    proxy_group: Option<String>,
 }
 
 impl ConfigParser {
     /// Create a new configuration parser
     pub fn new() -> Self {
-        Self { config_path: None }
+        Self {
+            config_path: None,
+            proxy_group: None,
+        }
     }
 
     /// Set the configuration file path
     pub fn with_path(mut self, path: PathBuf) -> Self {
         self.config_path = Some(path);
         self
+    }
+
+    /// Set proxy group name. Matches sections like [ProxyList:<group>].
+    pub fn with_group(mut self, group: impl Into<String>) -> Self {
+        self.proxy_group = Some(group.into());
+        self
+    }
+
+    fn selected_group(&self) -> Option<String> {
+        self.proxy_group
+            .clone()
+            .or_else(|| env::var(ENV_PROXY_GROUP).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 
     /// Find the configuration file
@@ -115,6 +134,8 @@ impl ConfigParser {
 
         let mut config = Config::default();
         let mut in_proxy_list = false;
+        let selected_group = self.selected_group().map(|s| s.to_lowercase());
+        let mut matched_selected_group = selected_group.is_none();
 
         for line in reader.lines() {
             let line = line?;
@@ -127,7 +148,31 @@ impl ConfigParser {
 
             // Check for section markers
             if trimmed.starts_with('[') {
-                in_proxy_list = trimmed.to_lowercase().contains("proxylist");
+                let section = trimmed
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .trim();
+                let section_lower = section.to_lowercase();
+
+                if section_lower.starts_with("proxylist") {
+                    let group_name = section
+                        .split_once(':')
+                        .map(|(_, g)| g.trim().to_lowercase())
+                        .filter(|g| !g.is_empty())
+                        .unwrap_or_else(|| "default".to_string());
+
+                    in_proxy_list = if let Some(ref selected) = selected_group {
+                        let is_match = &group_name == selected;
+                        if is_match {
+                            matched_selected_group = true;
+                        }
+                        is_match
+                    } else {
+                        true
+                    };
+                } else {
+                    in_proxy_list = false;
+                }
                 continue;
             }
 
@@ -140,6 +185,15 @@ impl ConfigParser {
 
         // Apply environment variable overrides
         self.apply_env_overrides(&mut config)?;
+
+        if let Some(group) = selected_group {
+            if !matched_selected_group {
+                return Err(Error::Config(format!(
+                    "Proxy group not found: {}",
+                    group
+                )));
+            }
+        }
 
         Ok(config)
     }
@@ -314,7 +368,9 @@ mod dirs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::str::FromStr;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn test_parse_proxy_type() {
@@ -337,5 +393,55 @@ mod tests {
         assert!(localnet.contains(&Ipv4Addr::new(192, 168, 1, 1)));
         assert!(localnet.contains(&Ipv4Addr::new(192, 168, 255, 255)));
         assert!(!localnet.contains(&Ipv4Addr::new(10, 0, 0, 1)));
+    }
+
+    #[test]
+    fn test_parse_proxy_group() {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("proxychains_group_{}.conf", ts));
+        let content = r#"
+dynamic_chain
+[ProxyList]
+socks5 127.0.0.1 1080
+[ProxyList:jp]
+socks5 127.0.0.2 1080
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = ConfigParser::new()
+            .with_path(path.clone())
+            .with_group("jp")
+            .parse()
+            .unwrap();
+        assert_eq!(config.proxies.len(), 1);
+        assert_eq!(config.proxies[0].ip, Ipv4Addr::new(127, 0, 0, 2));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_missing_proxy_group_returns_error() {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("proxychains_group_missing_{}.conf", ts));
+        let content = r#"
+[ProxyList]
+socks5 127.0.0.1 1080
+"#;
+        fs::write(&path, content).unwrap();
+
+        let err = ConfigParser::new()
+            .with_path(path.clone())
+            .with_group("us")
+            .parse()
+            .unwrap_err();
+        assert!(format!("{}", err).contains("Proxy group not found"));
+
+        let _ = fs::remove_file(path);
     }
 }

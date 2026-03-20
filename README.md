@@ -157,6 +157,7 @@ Usage: proxychains4 [OPTIONS] <COMMAND> [ARGS...]
 
 Options:
   -f, --file <PATH>    Configuration file path
+  --group <GROUP>      Proxy group name (uses [ProxyList:<GROUP>])
   -q, --quiet          Quiet mode (suppress output)
   -v, --verbose        Verbose mode (debug output)
   -h, --help           Show help
@@ -226,6 +227,18 @@ socks4 192.168.1.2 1080
 # HTTP proxies
 http 192.168.1.3 8080
 http 192.168.1.4 8080 user pass
+
+# Optional grouped lists
+[ProxyList:jp]
+socks5 10.0.0.2 1080
+
+[ProxyList:us]
+socks5 10.0.0.3 1080
+```
+
+Group usage example:
+```bash
+proxychains4 --group jp curl https://ifconfig.me
 ```
 
 ### Configuration File Locations

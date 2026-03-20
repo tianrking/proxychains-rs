@@ -35,6 +35,10 @@ struct Args {
     #[arg(short = 'v', long)]
     verbose: bool,
 
+    /// Proxy group name, matches config sections like [ProxyList:<group>]
+    #[arg(long, value_name = "GROUP")]
+    group: Option<String>,
+
     /// The command to run
     #[arg(required = true, trailing_var_arg = true)]
     command: Vec<String>,
@@ -86,6 +90,9 @@ fn main() {
         info!("Proxychains4 starting...");
         info!("Chain type: {}", config.chain_type);
         info!("Proxies: {}", config.proxy_count());
+        if let Some(group) = args.group.as_deref() {
+            info!("Proxy group: {}", group);
+        }
     }
 
     // Execute the command with platform-specific injection
@@ -110,6 +117,10 @@ fn load_config(args: &Args) -> Result<Config, String> {
         parser = parser.with_path(path.clone());
     }
 
+    if let Some(ref group) = args.group {
+        parser = parser.with_group(group.clone());
+    }
+
     parser.parse().map_err(|e| e.to_string())
 }
 
@@ -123,8 +134,13 @@ fn set_proxychains_env(config: &Config, args: &Args) {
         env::set_var("PROXYCHAINS_DNS", "1");
     }
 
-    // Note: The actual config file path is handled by the library
-    // when it reads PROXYCHAINS_CONF_FILE
+    if let Some(ref path) = args.config {
+        env::set_var("PROXYCHAINS_CONF_FILE", path);
+    }
+
+    if let Some(ref group) = args.group {
+        env::set_var("PROXYCHAINS_PROXY_GROUP", group);
+    }
 }
 
 // ============================================================================
@@ -322,6 +338,8 @@ mod tests {
             "-q",
             "-f",
             "/etc/proxychains.conf",
+            "--group",
+            "jp",
             "wget",
             "http://example.com",
         ]);
@@ -329,6 +347,7 @@ mod tests {
         let args = args.unwrap();
         assert!(args.quiet);
         assert_eq!(args.config, Some(PathBuf::from("/etc/proxychains.conf")));
+        assert_eq!(args.group, Some("jp".to_string()));
         assert_eq!(args.command, vec!["wget", "http://example.com"]);
     }
 }
