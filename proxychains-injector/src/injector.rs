@@ -106,8 +106,6 @@ impl ProxychainsInjector {
     /// Create a new process and inject DLL (Windows)
     #[cfg(windows)]
     pub fn spawn_and_inject(&self, process_info: &ProcessInfo) -> Result<std::process::Child> {
-        use std::os::windows::process::CommandExt;
-
         debug!(
             "Spawning process: {} {:?}",
             process_info.command, process_info.args
@@ -116,10 +114,6 @@ impl ProxychainsInjector {
         // Create the process
         let mut cmd = std::process::Command::new(&process_info.command);
         cmd.args(&process_info.args);
-
-        // CREATE_SUSPENDED = 0x00000004
-        const CREATE_SUSPENDED: u32 = 0x00000004;
-        cmd.creation_flags(CREATE_SUSPENDED);
 
         let mut child = cmd
             .spawn()

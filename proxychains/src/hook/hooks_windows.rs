@@ -16,7 +16,8 @@ use rand::seq::SliceRandom;
 use tracing::{debug, error, info, warn};
 use windows::Win32::Networking::WinSock::{
     ADDRINFOA, AF_INET, IN_ADDR, IN_ADDR_0, IPPROTO_TCP, SOCKADDR, SOCKADDR_IN, SOCK_STREAM,
-    SOCKET_ERROR, WSAECONNREFUSED, WSAEFAULT, WSAEINVAL, WSASetLastError,
+    SOCKET_ERROR, WSAEALREADY, WSAECONNREFUSED, WSAEFAULT, WSAEINPROGRESS, WSAEINVAL,
+    WSAEWOULDBLOCK, WSAGetLastError, WSASetLastError,
 };
 
 use crate::config::{ChainType, Config, ProxyData, ProxyState};
@@ -105,9 +106,14 @@ unsafe fn connect_socket_to_proxy(sock: usize, proxy: &ProxyData) -> Result<()> 
         mem::size_of::<SOCKADDR_IN>() as i32,
     );
     if ret == SOCKET_ERROR {
+        let wsa_error = WSAGetLastError().0;
+        if wsa_error == WSAEWOULDBLOCK.0 || wsa_error == WSAEINPROGRESS.0 || wsa_error == WSAEALREADY.0 {
+            // Non-blocking sockets can report in-progress; let handshake IO complete it.
+            return Ok(());
+        }
         return Err(Error::ProxyConnection(format!(
-            "Failed to connect to proxy {}:{}",
-            proxy.ip, proxy.port
+            "Failed to connect to proxy {}:{} (WSA {})",
+            proxy.ip, proxy.port, wsa_error
         )));
     }
     Ok(())

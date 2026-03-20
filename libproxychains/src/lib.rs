@@ -167,8 +167,7 @@ mod windows_impl {
                 BOOL(1)
             }
             DLL_PROCESS_DETACH => {
-                // Cleanup (if needed)
-                info!("libproxychains detaching");
+                // Keep DllMain minimal: avoid TLS/logging work during detach.
                 BOOL(1)
             }
             _ => BOOL(1),
