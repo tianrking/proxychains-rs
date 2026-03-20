@@ -108,9 +108,72 @@ jobs:
             proxychains-rs-*.deb
             proxychains-rs-*.dmg
 
+  build-linux-arm64:
+    name: Build ubuntu arm64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (with arm64 target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install cross toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build linux arm64 release binaries
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          set -euo pipefail
+          cargo build --release --workspace --target aarch64-unknown-linux-gnu
+
+      - name: Package Linux arm64 artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/aarch64-unknown-linux-gnu/release/proxychains4 dist/
+          cp target/aarch64-unknown-linux-gnu/release/libproxychains.so dist/
+          cp proxychains.conf dist/
+          cp README.md dist/
+          tar -czf "proxychains-rs-${GITHUB_REF_NAME}-linux-arm64.tar.gz" -C dist .
+
+      - name: Build Linux arm64 deb package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          PKG_ROOT="pkgroot-arm64"
+          rm -rf "${PKG_ROOT}"
+          mkdir -p "${PKG_ROOT}/DEBIAN" "${PKG_ROOT}/usr/bin" "${PKG_ROOT}/usr/lib" "${PKG_ROOT}/etc"
+          cp target/aarch64-unknown-linux-gnu/release/proxychains4 "${PKG_ROOT}/usr/bin/proxychains4"
+          cp target/aarch64-unknown-linux-gnu/release/libproxychains.so "${PKG_ROOT}/usr/lib/libproxychains.so"
+          cp proxychains.conf "${PKG_ROOT}/etc/proxychains.conf"
+          printf "Package: proxychains-rs\nVersion: %s\nSection: net\nPriority: optional\nArchitecture: arm64\nMaintainer: Proxychains Rust Team\nDescription: Cross-platform proxychains implementation in Rust\n" "${VERSION}" > "${PKG_ROOT}/DEBIAN/control"
+          dpkg-deb --build "${PKG_ROOT}" "proxychains-rs-${GITHUB_REF_NAME}-linux-arm64.deb"
+
+      - name: Upload packaged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-arm64
+          path: |
+            proxychains-rs-*-linux-arm64.tar.gz
+            proxychains-rs-*-linux-arm64.deb
+
   publish:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, build-linux-arm64]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -204,8 +267,8 @@ jobs:
 
           ### Assets
           - Windows zip (\`proxychains4.exe\`, \`proxychains.dll\`)
-          - Linux tar.gz
-          - Linux deb
+          - Linux tar.gz (\`x86_64\` + \`arm64\`)
+          - Linux deb (\`amd64\` + \`arm64\`)
           - macOS tar.gz
           - macOS dmg
           - SHA256 checksums: \`SHA256SUMS.txt\`
