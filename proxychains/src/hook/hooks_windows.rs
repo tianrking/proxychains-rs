@@ -10,6 +10,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::os::windows::io::FromRawSocket;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use rand::seq::SliceRandom;
@@ -25,6 +26,7 @@ use crate::dns::{is_fake_ip, DnsResolver};
 use crate::error::{Error, Result};
 use crate::net::{get_ip_from_sockaddr, get_ipaddr_from_sockaddr, get_port_from_sockaddr};
 use crate::proxy::{tunnel_through_proxy, TargetAddress};
+use crate::ConfigParser;
 
 use super::interpose_windows::{
     init_original_functions, original_connect, original_freeaddrinfo, original_getaddrinfo,
@@ -33,22 +35,21 @@ use super::interpose_windows::{
 
 /// Global state for the hook library (Windows).
 pub struct HookState {
-    pub config: Config,
-    pub dns_resolver: DnsResolver,
+    pub config: Mutex<Config>,
     pub proxy_states: Mutex<Vec<ProxyData>>,
     pub load_balance_counter: AtomicUsize,
+    pub next_reload_check: Mutex<Instant>,
     pub initialized: bool,
 }
 
 impl HookState {
     pub fn new(config: Config) -> Self {
-        let dns_resolver = DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
         let proxy_states = Mutex::new(config.proxies.clone());
         Self {
-            config,
-            dns_resolver,
+            config: Mutex::new(config),
             proxy_states,
             load_balance_counter: AtomicUsize::new(0),
+            next_reload_check: Mutex::new(Instant::now() + Duration::from_secs(2)),
             initialized: true,
         }
     }
@@ -68,6 +69,35 @@ struct CustomAddrinfoAllocation {
 
 fn custom_alloc_map() -> &'static Mutex<HashMap<usize, CustomAddrinfoAllocation>> {
     CUSTOM_ADDRINFO_ALLOCATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const CONFIG_RELOAD_INTERVAL: Duration = Duration::from_secs(2);
+
+fn maybe_reload_config(state: &HookState) {
+    let now = Instant::now();
+    {
+        let mut next = state.next_reload_check.lock();
+        if now < *next {
+            return;
+        }
+        *next = now + CONFIG_RELOAD_INTERVAL;
+    }
+
+    match ConfigParser::new().parse() {
+        Ok(config) => {
+            let old_count = state.config.lock().proxies.len();
+            let new_count = config.proxies.len();
+            *state.config.lock() = config.clone();
+            *state.proxy_states.lock() = config.proxies.clone();
+            debug!(
+                "Reloaded proxychains config on Windows (proxies: {} -> {})",
+                old_count, new_count
+            );
+        }
+        Err(e) => {
+            debug!("Config reload skipped due to parse error: {}", e);
+        }
+    }
 }
 
 /// Initialize the hook library.
@@ -218,6 +248,7 @@ unsafe fn connect_chain_on_socket(
 }
 
 fn select_indices(state: &HookState, proxies: &[ProxyData]) -> Option<Vec<usize>> {
+    let config = state.config.lock().clone();
     let alive_indices: Vec<usize> = proxies
         .iter()
         .enumerate()
@@ -225,7 +256,7 @@ fn select_indices(state: &HookState, proxies: &[ProxyData]) -> Option<Vec<usize>
         .map(|(i, _)| i)
         .collect();
 
-    match state.config.chain_type {
+    match config.chain_type {
         ChainType::Strict => {
             if proxies.is_empty() {
                 None
@@ -247,7 +278,7 @@ fn select_indices(state: &HookState, proxies: &[ProxyData]) -> Option<Vec<usize>
             let mut selected = alive_indices;
             let mut rng = rand::thread_rng();
             selected.shuffle(&mut rng);
-            let max_chain = state.config.chain_len.unwrap_or(selected.len()).max(1);
+            let max_chain = config.chain_len.unwrap_or(selected.len()).max(1);
             selected.truncate(max_chain.min(selected.len()));
             Some(selected)
         }
@@ -288,6 +319,9 @@ pub unsafe extern "system" fn hook_connect_impl(
         Some(s) => s,
         None => return original_connect(sock, addr, len),
     };
+    maybe_reload_config(state);
+    let config = state.config.lock().clone();
+    let dns_resolver = DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
 
     if addr.is_null() || len <= 0 {
         return original_connect(sock, addr, len);
@@ -299,17 +333,17 @@ pub unsafe extern "system" fn hook_connect_impl(
     };
     let target_port = get_port_from_sockaddr(addr);
 
-    if state.config.should_bypass_ip(&target_ip) {
+    if config.should_bypass_ip(&target_ip) {
         return original_connect(sock, addr, len);
     }
 
-    let (dnat_ip, final_port) = state.config.apply_dnat_ip(&target_ip, target_port);
+    let (dnat_ip, final_port) = config.apply_dnat_ip(&target_ip, target_port);
     let (final_ip, target_domain) = match dnat_ip {
-        IpAddr::V4(v4) if is_fake_ip(&v4) => (IpAddr::V4(v4), state.dns_resolver.get_hostname(&v4)),
+        IpAddr::V4(v4) if is_fake_ip(&v4) => (IpAddr::V4(v4), dns_resolver.get_hostname(&v4)),
         IpAddr::V6(v6) => {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 if is_fake_ip(&v4) {
-                    (IpAddr::V4(v4), state.dns_resolver.get_hostname(&v4))
+                    (IpAddr::V4(v4), dns_resolver.get_hostname(&v4))
                 } else {
                     (IpAddr::V6(v6), None)
                 }
@@ -326,7 +360,7 @@ pub unsafe extern "system" fn hook_connect_impl(
         TargetAddress::from_ip(final_ip)
     };
 
-    let max_attempts = state.config.max_chain_retries.max(1);
+    let max_attempts = config.max_chain_retries.max(1);
     for attempt in 1..=max_attempts {
         let (selected_indices, selected_proxies) = {
             let proxies = state.proxy_states.lock();
@@ -343,7 +377,7 @@ pub unsafe extern "system" fn hook_connect_impl(
             &selected_proxies,
             &target,
             final_port,
-            state.config.tcp_read_timeout,
+            config.tcp_read_timeout,
         ) {
             Ok(()) => return 0,
             Err((e, failed_hop)) => {
@@ -379,9 +413,15 @@ pub unsafe extern "system" fn hook_getaddrinfo_impl(
     ppresult: *mut *mut c_void,
 ) -> i32 {
     let state = match get_hook_state() {
-        Some(s) if s.config.proxy_dns => s,
-        _ => return original_getaddrinfo(pnode, pservice, phints, ppresult),
+        Some(s) => s,
+        None => return original_getaddrinfo(pnode, pservice, phints, ppresult),
     };
+    maybe_reload_config(state);
+    let config = state.config.lock().clone();
+    if !config.proxy_dns {
+        return original_getaddrinfo(pnode, pservice, phints, ppresult);
+    }
+    let dns_resolver = DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
 
     if pnode.is_null() || ppresult.is_null() {
         return original_getaddrinfo(pnode, pservice, phints, ppresult);
@@ -413,7 +453,7 @@ pub unsafe extern "system" fn hook_getaddrinfo_impl(
         return original_getaddrinfo(pnode, pservice, phints, ppresult);
     }
 
-    let fake_ip = match state.dns_resolver.resolve(hostname) {
+    let fake_ip = match dns_resolver.resolve(hostname) {
         Ok(ip) => ip,
         Err(e) => {
             error!("Failed to resolve {} in hook_getaddrinfo_impl: {}", hostname, e);
@@ -490,9 +530,15 @@ pub unsafe extern "system" fn hook_freeaddrinfo_impl(pres: *mut c_void) {
 #[cfg(windows)]
 pub unsafe extern "system" fn hook_gethostbyname_impl(name: *const i8) -> *mut c_void {
     let state = match get_hook_state() {
-        Some(s) if s.config.proxy_dns => s,
-        _ => return original_gethostbyname(name),
+        Some(s) => s,
+        None => return original_gethostbyname(name),
     };
+    maybe_reload_config(state);
+    let config = state.config.lock().clone();
+    if !config.proxy_dns {
+        return original_gethostbyname(name);
+    }
+    let dns_resolver = DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
 
     if name.is_null() {
         WSASetLastError(WSAEINVAL.0);
@@ -515,7 +561,7 @@ pub unsafe extern "system" fn hook_gethostbyname_impl(name: *const i8) -> *mut c
         return original_gethostbyname(name);
     }
 
-    let fake_ip = match state.dns_resolver.resolve(hostname) {
+    let fake_ip = match dns_resolver.resolve(hostname) {
         Ok(ip) => ip,
         Err(e) => {
             error!("Failed to resolve {} in hook_gethostbyname_impl: {}", hostname, e);
@@ -553,11 +599,14 @@ pub unsafe extern "system" fn hook_getnameinfo_impl(
     let Some(state) = get_hook_state() else {
         return original_getnameinfo(sa, salen, host, hostlen, serv, servlen, flags);
     };
+    maybe_reload_config(state);
+    let config = state.config.lock().clone();
+    let dns_resolver = DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
 
-    if state.config.proxy_dns && !sa.is_null() && !host.is_null() && hostlen > 1 {
+    if config.proxy_dns && !sa.is_null() && !host.is_null() && hostlen > 1 {
         if let Some(ip) = get_ip_from_sockaddr(sa) {
             if is_fake_ip(&ip) {
-                if let Some(hostname) = state.dns_resolver.get_hostname(&ip) {
+                if let Some(hostname) = dns_resolver.get_hostname(&ip) {
                     let bytes = hostname.as_bytes();
                     if bytes.len() + 1 > hostlen as usize {
                         WSASetLastError(WSAEFAULT.0);

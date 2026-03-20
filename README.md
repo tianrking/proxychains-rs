@@ -46,6 +46,9 @@ Recommendation:
   - `proxy_dns`
   - compatibility aliases: `proxy_dns_old`, `proxy_dns_daemon`
   - fake-IP mapping with reverse mapping support
+- Hot config reload (long-running process):
+  - hooks re-check and reload config automatically (about every 2 seconds)
+  - works on Linux/macOS/Windows with aligned behavior
 - Compatibility aliases:
   - `round_robin_chain` -> `load_balance`
 - IPv6 progress:

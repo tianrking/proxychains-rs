@@ -10,6 +10,7 @@ use std::net::IpAddr;
 use std::os::raw::c_char;
 use std::os::unix::io::IntoRawFd;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use libc::{c_int, socklen_t};
 use parking_lot::Mutex;
@@ -19,6 +20,7 @@ use crate::chain::ChainManager;
 use crate::config::Config;
 use crate::dns::is_fake_ip;
 use crate::error::Result;
+use crate::ConfigParser;
 use crate::net::{get_ipaddr_from_sockaddr, get_ip_from_sockaddr, get_port_from_sockaddr};
 
 use super::interpose::{
@@ -29,26 +31,22 @@ use super::interpose::{
 /// Global state for the hook library
 pub struct HookState {
     pub config: Config,
-    pub chain_manager: ChainManager,
-    pub dns_resolver: crate::dns::DnsResolver,
     pub initialized: bool,
+    pub next_reload_check: Instant,
 }
 
 impl HookState {
     pub fn new(config: Config) -> Self {
-        let chain_manager = ChainManager::new(config.clone());
-        let dns_resolver = crate::dns::DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
         Self {
             config,
-            chain_manager,
-            dns_resolver,
             initialized: true,
+            next_reload_check: Instant::now() + Duration::from_secs(2),
         }
     }
 }
 
 /// Global hook state
-static HOOK_STATE: OnceLock<HookState> = OnceLock::new();
+static HOOK_STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
 /// Track addrinfo/sockaddr allocations created by our getaddrinfo hook.
 static CUSTOM_ADDRINFO_ALLOCATIONS: OnceLock<Mutex<HashMap<usize, CustomAddrinfoAllocation>>> =
     OnceLock::new();
@@ -72,6 +70,38 @@ struct CustomAddrinfoAllocation {
 
 fn custom_alloc_map() -> &'static Mutex<HashMap<usize, CustomAddrinfoAllocation>> {
     CUSTOM_ADDRINFO_ALLOCATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const CONFIG_RELOAD_INTERVAL: Duration = Duration::from_secs(2);
+
+#[derive(Clone)]
+struct HookSnapshot {
+    config: Config,
+    dns_resolver: crate::dns::DnsResolver,
+    initialized: bool,
+}
+
+fn maybe_reload_config(state: &mut HookState) {
+    let now = Instant::now();
+    if now < state.next_reload_check {
+        return;
+    }
+    state.next_reload_check = now + CONFIG_RELOAD_INTERVAL;
+
+    match ConfigParser::new().parse() {
+        Ok(config) => {
+            let old_count = state.config.proxies.len();
+            let new_count = config.proxies.len();
+            state.config = config;
+            debug!(
+                "Reloaded proxychains config (proxies: {} -> {})",
+                old_count, new_count
+            );
+        }
+        Err(e) => {
+            debug!("Config reload skipped due to parse error: {}", e);
+        }
+    }
 }
 
 fn parse_service_port(service: *const c_char) -> u16 {
@@ -209,7 +239,7 @@ pub fn init_hooks(config: Config) -> Result<()> {
     let state = HookState::new(config);
 
     // Store globally
-    if HOOK_STATE.set(state).is_err() {
+    if HOOK_STATE.set(Mutex::new(state)).is_err() {
         error!("Hook state already initialized");
     }
 
@@ -219,16 +249,22 @@ pub fn init_hooks(config: Config) -> Result<()> {
 
 /// Check if hooks are initialized
 pub fn is_initialized() -> bool {
-    HOOK_STATE.get().map_or(false, |s| s.initialized)
+    HOOK_STATE
+        .get()
+        .map_or(false, |s| s.lock().initialized)
 }
 
 /// Get the hook state
-fn get_hook_state() -> Option<HookState> {
-    HOOK_STATE.get().map(|s| HookState {
-        config: s.config.clone(),
-        chain_manager: ChainManager::new(s.config.clone()),
-        dns_resolver: crate::dns::DnsResolver::new(s.config.proxy_dns, s.config.remote_dns_subnet),
-        initialized: s.initialized,
+fn get_hook_state() -> Option<HookSnapshot> {
+    let lock = HOOK_STATE.get()?;
+    let mut state = lock.lock();
+    maybe_reload_config(&mut state);
+    let config = state.config.clone();
+    let dns_resolver = crate::dns::DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
+    Some(HookSnapshot {
+        config,
+        dns_resolver,
+        initialized: state.initialized,
     })
 }
 
@@ -306,7 +342,8 @@ pub unsafe fn hook_connect(
     libc::close(sock);
 
     // Connect through proxy chain
-    match state.chain_manager.connect_proxy_chain(
+    let chain_manager = ChainManager::new(state.config.clone());
+    match chain_manager.connect_proxy_chain(
         final_ip,
         final_port,
         target_domain.as_deref(),

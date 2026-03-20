@@ -46,6 +46,9 @@
   - `proxy_dns`
   - 兼容别名：`proxy_dns_old`、`proxy_dns_daemon`
   - Fake-IP 映射与反查
+- 配置热更新（长进程）：
+  - hook 层会自动周期性重读配置（约每 2 秒）
+  - Linux/macOS/Windows 行为对齐
 - 兼容别名：
   - `round_robin_chain` -> `load_balance`
 - IPv6 进展：
