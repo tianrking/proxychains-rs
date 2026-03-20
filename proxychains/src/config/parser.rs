@@ -93,17 +93,17 @@ impl ConfigParser {
 
     /// Parse the configuration
     pub fn parse(&self) -> Result<Config> {
-        // First check for simple SOCKS5 environment variables
-        if let (Ok(host), Ok(port)) = (env::var(ENV_SOCKS5_HOST), env::var(ENV_SOCKS5_PORT)) {
-            if let Ok(port) = port.parse::<u16>() {
-                return self.parse_socks5_env(&host, port);
-            }
-        }
-
         // Find and parse config file
         if let Some(path) = self.find_config_file() {
             self.parse_file(&path)
         } else {
+            // Fall back to simple SOCKS5 environment variables only when no config file is found.
+            if let (Ok(host), Ok(port)) = (env::var(ENV_SOCKS5_HOST), env::var(ENV_SOCKS5_PORT)) {
+                if let Ok(port) = port.parse::<u16>() {
+                    return self.parse_socks5_env(&host, port);
+                }
+            }
+
             // Return default config with no proxies
             let mut config = Config::default();
             self.apply_env_overrides(&mut config)?;
