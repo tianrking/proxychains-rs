@@ -197,9 +197,14 @@ proxychains4 git clone https://github.com/repo.git
 ```ini
 # Chain types: dynamic_chain, strict_chain, random_chain
 dynamic_chain
+# Compatibility alias: round_robin_chain -> load_balance
+# round_robin_chain
 
 # Proxy DNS through the chain (recommended - prevents DNS leaks)
 proxy_dns
+# Compatibility aliases:
+# proxy_dns_old
+# proxy_dns_daemon 127.0.0.1:1053
 
 # Remote DNS subnet for fake IPs (default: 224)
 remote_dns_subnet 224
@@ -242,6 +247,10 @@ Group usage example:
 ```bash
 proxychains4 --group jp curl https://ifconfig.me
 ```
+
+IPv6 notes:
+- IPv6 targets are supported through SOCKS5/HTTP proxy hops.
+- SOCKS4/4a does not support IPv6 target addresses.
 
 Validation and discovery:
 ```bash

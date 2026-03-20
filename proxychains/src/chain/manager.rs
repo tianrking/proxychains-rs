@@ -1,6 +1,6 @@
 //! Proxy chain manager
 
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 
 use parking_lot::Mutex;
 use tracing::{debug, error, info, warn};
@@ -59,7 +59,7 @@ impl ChainManager {
     /// Connect to target through proxy chain
     pub fn connect_proxy_chain(
         &self,
-        target_ip: Ipv4Addr,
+        target_ip: IpAddr,
         target_port: u16,
         target_domain: Option<&str>,
     ) -> Result<std::net::TcpStream> {
@@ -122,7 +122,7 @@ impl ChainManager {
         // Chain through remaining proxies
         for i in 1..proxies.len() {
             let next_proxy = &proxies[i];
-            let next_target = TargetAddress::from_ip(next_proxy.ip);
+            let next_target = TargetAddress::from_ip(IpAddr::V4(next_proxy.ip));
 
             info!(
                 "Chaining to proxy {}:{}",
@@ -220,7 +220,7 @@ impl ChainManager {
             // Chain through remaining proxies
             while let Some(next_idx) = self.find_alive_proxy(proxies, &mut offset) {
                 let next_proxy = &proxies[next_idx];
-                let next_target = TargetAddress::from_ip(next_proxy.ip);
+                let next_target = TargetAddress::from_ip(IpAddr::V4(next_proxy.ip));
 
                 debug!(
                     "Dynamic chain: connecting to proxy {}:{}",
@@ -323,7 +323,7 @@ impl ChainManager {
             // Chain through remaining selected proxies
             for &next_idx in &selected_indices[1..] {
                 let next_proxy = &proxies[next_idx];
-                let next_target = TargetAddress::from_ip(next_proxy.ip);
+                let next_target = TargetAddress::from_ip(IpAddr::V4(next_proxy.ip));
 
                 if let Err(e) = tunnel_through_proxy(
                     &mut stream,
@@ -490,6 +490,7 @@ impl ChainManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
 
     fn create_test_config() -> Config {
         let mut config = Config::default();

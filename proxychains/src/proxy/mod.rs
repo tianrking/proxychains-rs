@@ -12,7 +12,7 @@ mod socks4;
 mod socks5;
 
 use std::io::{Read, Write};
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::time::Duration;
 
 use crate::config::{ProxyData, ProxyType};
@@ -28,16 +28,16 @@ pub use socks5::*;
 #[derive(Debug, Clone)]
 pub enum TargetAddress {
     /// IP address only
-    Ip(Ipv4Addr),
+    Ip(IpAddr),
     /// Domain name only
     Domain(String),
     /// Both IP and domain (for SOCKS4a/5)
-    Both { ip: Ipv4Addr, domain: String },
+    Both { ip: IpAddr, domain: String },
 }
 
 impl TargetAddress {
     /// Create from IP address
-    pub fn from_ip(ip: Ipv4Addr) -> Self {
+    pub fn from_ip(ip: IpAddr) -> Self {
         TargetAddress::Ip(ip)
     }
 
@@ -47,7 +47,7 @@ impl TargetAddress {
     }
 
     /// Create with both IP and domain
-    pub fn from_both(ip: Ipv4Addr, domain: impl Into<String>) -> Self {
+    pub fn from_both(ip: IpAddr, domain: impl Into<String>) -> Self {
         TargetAddress::Both {
             ip,
             domain: domain.into(),
@@ -55,7 +55,7 @@ impl TargetAddress {
     }
 
     /// Get the IP address if available
-    pub fn ip(&self) -> Option<&Ipv4Addr> {
+    pub fn ip(&self) -> Option<&IpAddr> {
         match self {
             TargetAddress::Ip(ip) => Some(ip),
             TargetAddress::Domain(_) => None,
@@ -96,7 +96,7 @@ pub fn tunnel_through_proxy<T: Read + Write>(
     target_port: u16,
     timeout: Duration,
 ) -> Result<()> {
-    match proxy.proxy_type {
+        match proxy.proxy_type {
         ProxyType::Socks5 => {
             // For SOCKS5, prefer domain if available
             let target_addr = if let Some(domain) = target.domain() {
@@ -110,7 +110,15 @@ pub fn tunnel_through_proxy<T: Read + Write>(
         }
         ProxyType::Socks4 => {
             // SOCKS4 requires IP, SOCKS4a can use domain
-            let ip = target.ip().copied().unwrap_or(Ipv4Addr::new(0, 0, 0, 1));
+            let ip = match target.ip() {
+                Some(IpAddr::V4(v4)) => *v4,
+                Some(IpAddr::V6(_)) => {
+                    return Err(Error::Protocol(
+                        "SOCKS4/4a does not support IPv6 targets".to_string(),
+                    ))
+                }
+                None => std::net::Ipv4Addr::new(0, 0, 0, 1),
+            };
             if let Some(domain) = target.domain() {
                 socks4a_connect(stream, proxy, &ip, domain, target_port, timeout)
             } else {
@@ -169,7 +177,7 @@ pub fn establish_proxy_chain(
         } else {
             // Intermediate hop - connect to next proxy
             let next_proxy = &proxies[i];
-            let next_target = TargetAddress::from_ip(next_proxy.ip);
+            let next_target = TargetAddress::from_ip(IpAddr::V4(next_proxy.ip));
             tunnel_through_proxy(
                 &mut stream,
                 &proxies[i - 1],
@@ -186,10 +194,11 @@ pub fn establish_proxy_chain(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
 
     #[test]
     fn test_target_address() {
-        let ip = TargetAddress::from_ip(Ipv4Addr::new(192, 168, 1, 1));
+        let ip = TargetAddress::from_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
         assert!(ip.ip().is_some());
         assert!(ip.domain().is_none());
 
@@ -197,7 +206,7 @@ mod tests {
         assert!(domain.ip().is_none());
         assert!(domain.domain().is_some());
 
-        let both = TargetAddress::from_both(Ipv4Addr::new(192, 168, 1, 1), "example.com");
+        let both = TargetAddress::from_both(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), "example.com");
         assert!(both.ip().is_some());
         assert!(both.domain().is_some());
     }

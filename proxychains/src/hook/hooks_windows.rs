@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::ffi::{c_void, CStr};
 use std::mem::{self, ManuallyDrop};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::os::windows::io::FromRawSocket;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
@@ -151,7 +151,7 @@ unsafe fn connect_chain_on_socket(
 
     let mut current = 0usize;
     for next in 1..selected.len() {
-        let next_target = TargetAddress::from_ip(selected[next].ip);
+        let next_target = TargetAddress::from_ip(IpAddr::V4(selected[next].ip));
         if let Err(e) = tunnel_through_proxy(
             stream_ref,
             &selected[current],
@@ -271,9 +271,9 @@ pub unsafe extern "system" fn hook_connect_impl(
     };
 
     let target = if let Some(domain) = target_domain {
-        TargetAddress::from_both(final_ip, domain)
+        TargetAddress::from_both(IpAddr::V4(final_ip), domain)
     } else {
-        TargetAddress::from_ip(final_ip)
+        TargetAddress::from_ip(IpAddr::V4(final_ip))
     };
 
     let max_attempts = state.config.max_chain_retries.max(1);

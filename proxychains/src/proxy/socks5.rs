@@ -3,7 +3,7 @@
 //! Implements RFC 1928 (SOCKS5) and RFC 1929 (Username/Password Authentication)
 
 use std::io::{Read, Write};
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::time::Duration;
 
 use crate::config::ProxyData;
@@ -98,15 +98,15 @@ impl ReplyCode {
 /// Target address for SOCKS5 connection
 #[derive(Debug, Clone)]
 pub enum TargetAddr {
-    /// IPv4 address
-    Ip(Ipv4Addr),
+    /// IP address (IPv4 or IPv6)
+    Ip(IpAddr),
     /// Domain name
     Domain(String),
 }
 
 impl TargetAddr {
     /// Create from IP address
-    pub fn from_ip(ip: Ipv4Addr) -> Self {
+    pub fn from_ip(ip: IpAddr) -> Self {
         TargetAddr::Ip(ip)
     }
 
@@ -254,8 +254,16 @@ impl<'a> Socks5Connector<'a> {
         // Add address
         match target_addr {
             TargetAddr::Ip(ip) => {
-                request.push(AddressType::Ipv4 as u8);
-                request.extend_from_slice(&ip.octets());
+                match ip {
+                    IpAddr::V4(v4) => {
+                        request.push(AddressType::Ipv4 as u8);
+                        request.extend_from_slice(&v4.octets());
+                    }
+                    IpAddr::V6(v6) => {
+                        request.push(AddressType::Ipv6 as u8);
+                        request.extend_from_slice(&v6.octets());
+                    }
+                }
             }
             TargetAddr::Domain(domain) => {
                 if domain.len() > 255 {
@@ -339,6 +347,7 @@ pub fn socks5_connect<T: Read + Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
     fn test_reply_code_is_success() {
@@ -348,10 +357,13 @@ mod tests {
 
     #[test]
     fn test_target_addr() {
-        let ip = TargetAddr::from_ip(Ipv4Addr::new(192, 168, 1, 1));
+        let ip = TargetAddr::from_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
         assert!(matches!(ip, TargetAddr::Ip(_)));
 
         let domain = TargetAddr::from_domain("example.com");
         assert!(matches!(domain, TargetAddr::Domain(_)));
+
+        let ip6 = TargetAddr::from_ip(IpAddr::V6(Ipv6Addr::LOCALHOST));
+        assert!(matches!(ip6, TargetAddr::Ip(IpAddr::V6(_))));
     }
 }

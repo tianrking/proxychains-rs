@@ -259,6 +259,7 @@ impl ConfigParser {
             "dynamic_chain" => config.chain_type = ChainType::Dynamic,
             "strict_chain" => config.chain_type = ChainType::Strict,
             "random_chain" => config.chain_type = ChainType::Random,
+            "round_robin_chain" => config.chain_type = ChainType::LoadBalance,
             "load_balance" => config.chain_type = ChainType::LoadBalance,
             "failover" => config.chain_type = ChainType::Failover,
             "chain_len" => {
@@ -266,6 +267,9 @@ impl ConfigParser {
             }
             "quiet_mode" => config.quiet_mode = true,
             "proxy_dns" => config.proxy_dns = true,
+            // Compatibility aliases from proxychains-ng.
+            "proxy_dns_old" => config.proxy_dns = true,
+            "proxy_dns_daemon" => config.proxy_dns = true,
             "remote_dns_subnet" => {
                 if let Ok(subnet) = value.parse() {
                     config.remote_dns_subnet = subnet;
@@ -514,6 +518,28 @@ socks5 127.0.0.3 1080
             .unwrap();
         groups.sort();
         assert_eq!(groups, vec!["default", "jp", "us"]);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_proxychains_ng_compat_aliases() {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("proxychains_compat_{}.conf", ts));
+        let content = r#"
+round_robin_chain
+proxy_dns_old
+[ProxyList]
+socks5 127.0.0.1 1080
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = ConfigParser::new().with_path(path.clone()).parse().unwrap();
+        assert_eq!(config.chain_type, ChainType::LoadBalance);
+        assert!(config.proxy_dns);
 
         let _ = fs::remove_file(path);
     }

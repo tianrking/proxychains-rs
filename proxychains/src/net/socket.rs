@@ -1,6 +1,6 @@
 //! Socket utilities
 
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// IP address type union (compatible with C version)
 #[repr(C)]
@@ -134,6 +134,9 @@ pub fn get_port_from_sockaddr(addr: *const libc::sockaddr) -> u16 {
         if sa_family == libc::AF_INET as libc::sa_family_t {
             let addr_in = addr as *const libc::sockaddr_in;
             u16::from_be((*addr_in).sin_port)
+        } else if sa_family == libc::AF_INET6 as libc::sa_family_t {
+            let addr_in6 = addr as *const libc::sockaddr_in6;
+            u16::from_be((*addr_in6).sin6_port)
         } else {
             0
         }
@@ -149,6 +152,25 @@ pub fn get_ip_from_sockaddr(addr: *const libc::sockaddr) -> Option<Ipv4Addr> {
             let addr_in = addr as *const libc::sockaddr_in;
             let ip_bytes = (*addr_in).sin_addr.s_addr.to_ne_bytes();
             Some(Ipv4Addr::from(ip_bytes))
+        } else {
+            None
+        }
+    }
+}
+
+/// Get IPv4/IPv6 address from sockaddr structure.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn get_ipaddr_from_sockaddr(addr: *const libc::sockaddr) -> Option<IpAddr> {
+    unsafe {
+        let sa_family = (*addr).sa_family;
+        if sa_family == libc::AF_INET as libc::sa_family_t {
+            let addr_in = addr as *const libc::sockaddr_in;
+            let ip_bytes = (*addr_in).sin_addr.s_addr.to_ne_bytes();
+            Some(IpAddr::V4(Ipv4Addr::from(ip_bytes)))
+        } else if sa_family == libc::AF_INET6 as libc::sa_family_t {
+            let addr_in6 = addr as *const libc::sockaddr_in6;
+            let octets = (*addr_in6).sin6_addr.s6_addr;
+            Some(IpAddr::V6(Ipv6Addr::from(octets)))
         } else {
             None
         }

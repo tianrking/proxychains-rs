@@ -3,19 +3,23 @@
 //! This module provides the actual hook implementations that intercept
 //! network calls and redirect them through the proxy chain.
 
-use std::ffi::CStr;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::ffi::{CStr, CString};
+use std::net::IpAddr;
 use std::os::raw::c_char;
 use std::os::unix::io::IntoRawFd;
 use std::sync::OnceLock;
 
 use libc::{c_int, socklen_t};
+use parking_lot::Mutex;
 use tracing::{debug, error, info, trace};
 
 use crate::chain::ChainManager;
 use crate::config::Config;
 use crate::dns::is_fake_ip;
 use crate::error::Result;
-use crate::net::{get_ip_from_sockaddr, get_port_from_sockaddr};
+use crate::net::{get_ipaddr_from_sockaddr, get_ip_from_sockaddr, get_port_from_sockaddr};
 
 use super::interpose::{
     init_original_functions, original_connect, original_freeaddrinfo, original_getaddrinfo,
@@ -45,6 +49,49 @@ impl HookState {
 
 /// Global hook state
 static HOOK_STATE: OnceLock<HookState> = OnceLock::new();
+/// Track addrinfo/sockaddr allocations created by our getaddrinfo hook.
+static CUSTOM_ADDRINFO_ALLOCATIONS: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
+
+thread_local! {
+    static GETHOSTBYNAME_STORE: RefCell<Option<Box<HostentStore>>> = const { RefCell::new(None) };
+}
+
+struct HostentStore {
+    name: CString,
+    addr: [u8; 4],
+    addr_list: [*mut c_char; 2],
+    hostent: libc::hostent,
+}
+
+fn custom_alloc_map() -> &'static Mutex<HashMap<usize, usize>> {
+    CUSTOM_ADDRINFO_ALLOCATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn parse_service_port(service: *const c_char) -> u16 {
+    if service.is_null() {
+        return 0;
+    }
+    unsafe {
+        CStr::from_ptr(service)
+            .to_str()
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(0)
+    }
+}
+
+unsafe fn write_hostname_to_buf(host: *mut c_char, hostlen: libc::socklen_t, hostname: &str) -> c_int {
+    if host.is_null() || hostlen <= 1 {
+        return libc::EAI_FAIL;
+    }
+    let bytes = hostname.as_bytes();
+    if bytes.len() + 1 > hostlen as usize {
+        return libc::EAI_OVERFLOW;
+    }
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), host as *mut u8, bytes.len());
+    *host.add(bytes.len()) = 0;
+    0
+}
 
 /// Initialize the hook library
 pub fn init_hooks(config: Config) -> Result<()> {
@@ -100,7 +147,7 @@ pub unsafe fn hook_connect(
     };
 
     // Get target address
-    let target_ip = match get_ip_from_sockaddr(addr) {
+    let target_ip = match get_ipaddr_from_sockaddr(addr) {
         Some(ip) => ip,
         None => return original_connect(sock, addr, len),
     };
@@ -108,19 +155,18 @@ pub unsafe fn hook_connect(
     let target_port = get_port_from_sockaddr(addr);
 
     // Check if we should bypass this connection
-    if state.config.should_bypass(&target_ip) {
+    if state.config.should_bypass_ip(&target_ip) {
         debug!("Bypassing proxy for local address: {}:{}", target_ip, target_port);
         return original_connect(sock, addr, len);
     }
 
     // Apply DNAT if configured
-    let (final_ip, final_port) = state.config.apply_dnat(&target_ip, target_port);
+    let (final_ip, final_port) = state.config.apply_dnat_ip(&target_ip, target_port);
 
     // Check if this is a fake IP (needs remote DNS resolution)
-    let target_domain = if is_fake_ip(&final_ip) {
-        state.dns_resolver.get_hostname(&final_ip)
-    } else {
-        None
+    let target_domain = match final_ip {
+        IpAddr::V4(v4) if is_fake_ip(&v4) => state.dns_resolver.get_hostname(&v4),
+        _ => None,
     };
 
     // Check if proxy DNS is enabled and we have a domain
@@ -219,8 +265,21 @@ pub unsafe fn hook_getaddrinfo(
         return original_getaddrinfo(node, service, hints, res);
     }
 
+    // Preserve behavior for literal IPv4 strings.
+    if hostname.parse::<std::net::Ipv4Addr>().is_ok() {
+        return original_getaddrinfo(node, service, hints, res);
+    }
+
+    // Respect non-IPv4 family hints.
+    if !hints.is_null() {
+        let ai_family = (*hints).ai_family;
+        if ai_family != libc::AF_INET && ai_family != libc::AF_UNSPEC {
+            return original_getaddrinfo(node, service, hints, res);
+        }
+    }
+
     // Generate fake IP
-    let _fake_ip = match state.dns_resolver.resolve(&hostname) {
+    let fake_ip = match state.dns_resolver.resolve(&hostname) {
         Ok(ip) => ip,
         Err(e) => {
             error!("Failed to resolve {} in hook_getaddrinfo: {}", hostname, e);
@@ -228,11 +287,47 @@ pub unsafe fn hook_getaddrinfo(
         }
     };
 
-    debug!("Assigned fake IP {} for {}", _fake_ip, hostname);
+    let service_port = parse_service_port(service);
 
-    // For now, use original getaddrinfo
-    // A full implementation would return fake IPs
-    original_getaddrinfo(node, service, hints, res)
+    let mut sockaddr: libc::sockaddr_in = std::mem::zeroed();
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+    {
+        sockaddr.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
+    }
+    sockaddr.sin_family = libc::AF_INET as libc::sa_family_t;
+    sockaddr.sin_port = service_port.to_be();
+    sockaddr.sin_addr = libc::in_addr {
+        s_addr: u32::from_ne_bytes(fake_ip.octets()),
+    };
+
+    let sockaddr_ptr = Box::into_raw(Box::new(sockaddr));
+    let mut ai: libc::addrinfo = std::mem::zeroed();
+    ai.ai_flags = if hints.is_null() { 0 } else { (*hints).ai_flags };
+    ai.ai_family = libc::AF_INET;
+    ai.ai_socktype = if hints.is_null() {
+        libc::SOCK_STREAM
+    } else {
+        (*hints).ai_socktype
+    };
+    ai.ai_protocol = if hints.is_null() {
+        libc::IPPROTO_TCP
+    } else {
+        (*hints).ai_protocol
+    };
+    ai.ai_addrlen = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+    ai.ai_addr = sockaddr_ptr as *mut libc::sockaddr;
+    ai.ai_canonname = std::ptr::null_mut();
+    ai.ai_next = std::ptr::null_mut();
+
+    let ai_ptr = Box::into_raw(Box::new(ai));
+    *res = ai_ptr;
+    custom_alloc_map()
+        .lock()
+        .insert(ai_ptr as usize, sockaddr_ptr as usize);
+
+    debug!("Assigned fake IP {} for {}", fake_ip, hostname);
+
+    0
 }
 
 /// Hook for gethostbyname() system call
@@ -266,8 +361,13 @@ pub unsafe fn hook_gethostbyname(name: *const c_char) -> *mut libc::hostent {
         return original_gethostbyname(name);
     }
 
+    // Preserve behavior for literal IPv4 strings.
+    if hostname.parse::<std::net::Ipv4Addr>().is_ok() {
+        return original_gethostbyname(name);
+    }
+
     // Generate fake IP
-    let _fake_ip = match state.dns_resolver.resolve(&hostname) {
+    let fake_ip = match state.dns_resolver.resolve(&hostname) {
         Ok(ip) => ip,
         Err(e) => {
             error!("Failed to resolve {} in hook_gethostbyname: {}", hostname, e);
@@ -275,12 +375,34 @@ pub unsafe fn hook_gethostbyname(name: *const c_char) -> *mut libc::hostent {
         }
     };
 
-    debug!("Assigned fake IP {} for {}", _fake_ip, hostname);
+    debug!("Assigned fake IP {} for {}", fake_ip, hostname);
 
-    // This is a simplified implementation
-    // A full implementation would need to manage a static buffer
-    // For now, fall back to original
-    original_gethostbyname(name)
+    let name_cstr = match CString::new(hostname) {
+        Ok(v) => v,
+        Err(_) => return original_gethostbyname(name),
+    };
+
+    GETHOSTBYNAME_STORE.with(|slot| {
+        let mut boxed = Box::new(HostentStore {
+            name: name_cstr,
+            addr: fake_ip.octets(),
+            addr_list: [std::ptr::null_mut(); 2],
+            hostent: std::mem::zeroed(),
+        });
+
+        boxed.addr_list[0] = boxed.addr.as_mut_ptr() as *mut c_char;
+        boxed.addr_list[1] = std::ptr::null_mut();
+
+        boxed.hostent.h_name = boxed.name.as_ptr() as *mut c_char;
+        boxed.hostent.h_aliases = std::ptr::null_mut();
+        boxed.hostent.h_addrtype = libc::AF_INET;
+        boxed.hostent.h_length = 4;
+        boxed.hostent.h_addr_list = boxed.addr_list.as_mut_ptr();
+
+        let hostent_ptr = &mut boxed.hostent as *mut libc::hostent;
+        *slot.borrow_mut() = Some(boxed);
+        hostent_ptr
+    })
 }
 
 /// Hook for freeaddrinfo() system call
@@ -289,8 +411,16 @@ pub unsafe fn hook_gethostbyname(name: *const c_char) -> *mut libc::hostent {
 /// This function makes unsafe FFI calls
 pub unsafe fn hook_freeaddrinfo(res: *mut libc::addrinfo) {
     trace!("hook_freeaddrinfo called");
-    // Our getaddrinfo hook currently falls back to the system allocator, so
-    // free through libc to avoid mismatched allocator/free behavior.
+    if res.is_null() {
+        return;
+    }
+
+    if let Some(sockaddr_ptr) = custom_alloc_map().lock().remove(&(res as usize)) {
+        let _ = Box::from_raw(sockaddr_ptr as *mut libc::sockaddr_in);
+        let _ = Box::from_raw(res);
+        return;
+    }
+
     original_freeaddrinfo(res);
 }
 
@@ -309,8 +439,18 @@ pub unsafe fn hook_getnameinfo(
 ) -> libc::c_int {
     trace!("hook_getnameinfo called");
 
-    // For now, just pass through to original
-    // A full implementation would reverse lookup fake IPs
+    if let Some(state) = get_hook_state() {
+        if state.config.proxy_dns {
+            if let Some(ip) = get_ip_from_sockaddr(sa) {
+                if is_fake_ip(&ip) {
+                    if let Some(hostname) = state.dns_resolver.get_hostname(&ip) {
+                        return write_hostname_to_buf(host, hostlen, &hostname);
+                    }
+                }
+            }
+        }
+    }
+
     original_getnameinfo(sa, salen, host, hostlen, serv, servlen, flags)
 }
 

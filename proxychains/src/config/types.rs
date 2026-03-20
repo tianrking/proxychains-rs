@@ -1,6 +1,6 @@
 //! Configuration types for proxychains
 
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
 /// Proxy protocol type
@@ -234,6 +234,15 @@ impl Config {
         false
     }
 
+    /// Check if an IP should bypass the proxy (IPv4/IPv6).
+    pub fn should_bypass_ip(&self, ip: &IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(v4) => self.should_bypass(v4),
+            // For now, IPv6 bypass only loopback.
+            IpAddr::V6(v6) => v6.is_loopback(),
+        }
+    }
+
     /// Apply DNAT rule if applicable
     pub fn apply_dnat(&self, ip: &Ipv4Addr, port: u16) -> (Ipv4Addr, u16) {
         for dnat in &self.dnats {
@@ -242,6 +251,17 @@ impl Config {
             }
         }
         (*ip, port)
+    }
+
+    /// Apply DNAT rule for IPv4/IPv6.
+    pub fn apply_dnat_ip(&self, ip: &IpAddr, port: u16) -> (IpAddr, u16) {
+        match ip {
+            IpAddr::V4(v4) => {
+                let (new_ip, new_port) = self.apply_dnat(v4, port);
+                (IpAddr::V4(new_ip), new_port)
+            }
+            IpAddr::V6(v6) => (IpAddr::V6(*v6), port),
+        }
     }
 
     /// Get number of proxies
