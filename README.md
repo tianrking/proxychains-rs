@@ -37,6 +37,9 @@ Recommendation:
 - Proxy protocols: `socks5`, `socks4`/`socks4a`, `http`, `raw`
 - Chain modes: `dynamic_chain`, `strict_chain`, `random_chain`, `load_balance`, `failover`
 - Proxy groups: `[ProxyList:<group>]` + `--group`
+- Process tree mode: `--tree`
+  - Windows: root process + child/grandchild process injection
+  - Linux/macOS: inherited preload environment for child processes
 - Discovery/validation:
   - `--list-groups`
   - `--check`
@@ -99,6 +102,7 @@ proxychains4 -f ./proxychains.conf --group jp --check
 proxychains4 -f ./proxychains.conf --group jp --probe
 proxychains4 -f ./proxychains.conf --probe --probe-timeout-ms 1200
 proxychains4 -f ./proxychains.conf --probe --probe-json
+proxychains4 -f ./proxychains.conf --tree curl https://ifconfig.me
 ```
 
 ## Example Config

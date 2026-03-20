@@ -70,6 +70,10 @@ struct Args {
     #[arg(long)]
     probe_fail_only: bool,
 
+    /// Enable process-tree mode (inject/proxy child and grandchild processes)
+    #[arg(long)]
+    tree: bool,
+
     /// The command to run
     #[arg(
         required_unless_present_any = ["list_groups", "check", "probe"],
@@ -496,6 +500,10 @@ fn execute_command(args: &Args, config: &Config) -> Result<i32, String> {
     // Set proxychains environment variables
     set_proxychains_env(config, args);
 
+    if args.tree {
+        debug!("tree mode enabled (unix): relying on environment inheritance");
+    }
+
     // Build command arguments
     let program = &args.command[0];
     let c_args: Vec<CString> = args
@@ -618,9 +626,15 @@ fn execute_command(args: &Args, config: &Config) -> Result<i32, String> {
 
     debug!("Spawning and injecting: {:?}", process_info);
 
-    let exit_code = injector
-        .spawn_inject_wait(&process_info)
-        .map_err(|e| format!("Failed to spawn/inject/wait: {}", e))?;
+    let exit_code = if args.tree {
+        injector
+            .spawn_inject_tree_wait(&process_info)
+            .map_err(|e| format!("Failed to spawn/inject tree/wait: {}", e))?
+    } else {
+        injector
+            .spawn_inject_wait(&process_info)
+            .map_err(|e| format!("Failed to spawn/inject/wait: {}", e))?
+    };
 
     info!("Process exited with code: {}", exit_code);
 
@@ -703,5 +717,19 @@ mod tests {
         assert!(args.is_ok());
         let args = args.unwrap();
         assert!(args.probe_fail_only);
+    }
+
+    #[test]
+    fn test_args_tree_without_command_fails() {
+        let args = Args::try_parse_from(["proxychains4", "--tree"]);
+        assert!(args.is_err());
+    }
+
+    #[test]
+    fn test_args_tree_with_command() {
+        let args = Args::try_parse_from(["proxychains4", "--tree", "curl", "https://example.com"]);
+        assert!(args.is_ok());
+        let args = args.unwrap();
+        assert!(args.tree);
     }
 }

@@ -221,6 +221,121 @@ impl ProxychainsInjector {
         }
     }
 
+    /// Create a suspended process, inject DLL, resume, and keep injecting descendants
+    /// (child/grandchild processes) until the root process exits.
+    #[cfg(windows)]
+    pub fn spawn_inject_tree_wait(&self, process_info: &ProcessInfo) -> Result<i32> {
+        use std::collections::HashSet;
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::{PCWSTR, PWSTR};
+        use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+        use windows::Win32::System::Threading::{
+            CreateProcessW, GetExitCodeProcess, ResumeThread, WaitForSingleObject,
+            CREATE_SUSPENDED, PROCESS_INFORMATION, STARTUPINFOW,
+        };
+
+        fn quote_arg(arg: &str) -> String {
+            if arg.is_empty()
+                || arg.contains(' ')
+                || arg.contains('\t')
+                || arg.contains('"')
+                || arg.contains('\\')
+            {
+                let escaped = arg.replace('\\', "\\\\").replace('"', "\\\"");
+                format!("\"{}\"", escaped)
+            } else {
+                arg.to_string()
+            }
+        }
+
+        let mut command_line = quote_arg(&process_info.command);
+        for arg in &process_info.args {
+            command_line.push(' ');
+            command_line.push_str(&quote_arg(arg));
+        }
+
+        debug!("Spawning suspended process (tree mode): {}", command_line);
+
+        let mut cmd_wide: Vec<u16> = std::ffi::OsStr::new(&command_line)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut startup_info = STARTUPINFOW::default();
+        startup_info.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+        let mut process_info_win = PROCESS_INFORMATION::default();
+
+        unsafe {
+            CreateProcessW(
+                PCWSTR::null(),
+                PWSTR(cmd_wide.as_mut_ptr()),
+                None,
+                None,
+                false,
+                CREATE_SUSPENDED,
+                None,
+                PCWSTR::null(),
+                &startup_info,
+                &mut process_info_win,
+            )
+            .map_err(|e| InjectorError::ProcessCreationFailed(format!("{:?}", e)))?;
+
+            let process_handle: HANDLE = process_info_win.hProcess;
+            let thread_handle: HANDLE = process_info_win.hThread;
+            let root_pid = process_info_win.dwProcessId;
+            debug!("Suspended root process created with PID: {}", root_pid);
+
+            if let Err(e) = self.inject_dll(process_handle) {
+                let _ = CloseHandle(thread_handle);
+                let _ = CloseHandle(process_handle);
+                return Err(e);
+            }
+            info!("Successfully injected DLL into suspended root process {}", root_pid);
+
+            let resume_ret = ResumeThread(thread_handle);
+            if resume_ret == u32::MAX {
+                let _ = CloseHandle(thread_handle);
+                let _ = CloseHandle(process_handle);
+                return Err(InjectorError::WindowsApi("ResumeThread failed".into()));
+            }
+
+            let mut injected_pids: HashSet<u32> = HashSet::new();
+            injected_pids.insert(root_pid);
+
+            loop {
+                let descendants = enumerate_descendant_pids(root_pid)?;
+                for pid in descendants {
+                    if injected_pids.contains(&pid) {
+                        continue;
+                    }
+                    match self.inject_by_pid(pid) {
+                        Ok(_) => {
+                            injected_pids.insert(pid);
+                        }
+                        Err(e) => {
+                            debug!("Tree-mode injection skipped for PID {}: {}", pid, e);
+                        }
+                    }
+                }
+
+                let wait_ret = WaitForSingleObject(process_handle, 150);
+                if wait_ret == WAIT_OBJECT_0 {
+                    break;
+                }
+            }
+
+            let mut exit_code = 1u32;
+            GetExitCodeProcess(process_handle, &mut exit_code).map_err(|e| {
+                InjectorError::WindowsApi(format!("GetExitCodeProcess failed: {:?}", e))
+            })?;
+
+            let _ = CloseHandle(thread_handle);
+            let _ = CloseHandle(process_handle);
+
+            Ok(exit_code as i32)
+        }
+    }
+
     /// Internal DLL injection method (Windows)
     #[cfg(windows)]
     unsafe fn inject_dll(&self, process: windows::Win32::Foundation::HANDLE) -> Result<()> {
@@ -319,6 +434,54 @@ impl ProxychainsInjector {
     #[cfg(unix)]
     pub fn spawn_and_inject(&self, _process_info: &ProcessInfo) -> Result<std::process::Child> {
         Err(InjectorError::UnsupportedPlatform)
+    }
+}
+
+#[cfg(windows)]
+fn enumerate_descendant_pids(root_pid: u32) -> Result<Vec<u32>> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+            .map_err(|e| InjectorError::WindowsApi(format!("CreateToolhelp32Snapshot failed: {:?}", e)))?;
+
+        let mut entry = PROCESSENTRY32W::default();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+        let mut parent_by_pid: HashMap<u32, u32> = HashMap::new();
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                parent_by_pid.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+
+        let _ = CloseHandle(snapshot);
+
+        let mut seen: HashSet<u32> = HashSet::new();
+        let mut queue: VecDeque<u32> = VecDeque::new();
+        let mut descendants = Vec::new();
+
+        queue.push_back(root_pid);
+        seen.insert(root_pid);
+
+        while let Some(parent) = queue.pop_front() {
+            for (&pid, &ppid) in parent_by_pid.iter() {
+                if ppid == parent && seen.insert(pid) {
+                    descendants.push(pid);
+                    queue.push_back(pid);
+                }
+            }
+        }
+
+        Ok(descendants)
     }
 }
 
