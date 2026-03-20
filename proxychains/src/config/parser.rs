@@ -113,15 +113,13 @@ impl ConfigParser {
 
     /// Parse SOCKS5 from environment variables
     fn parse_socks5_env(&self, host: &str, port: u16) -> Result<Config> {
-        let ip: Ipv4Addr = host.parse().map_err(|_| {
-            Error::Config(format!("Invalid SOCKS5 host: {}", host))
-        })?;
-
         let mut config = Config::default();
         config.proxy_dns = env::var(ENV_DNS).is_ok();
         config.quiet_mode = env::var(ENV_QUIET_MODE).is_ok();
 
-        config.proxies.push(ProxyData::new(ip, port, ProxyType::Socks5));
+        config
+            .proxies
+            .push(ProxyData::new_host(host.to_string(), port, ProxyType::Socks5));
 
         Ok(config)
     }
@@ -364,15 +362,16 @@ impl ConfigParser {
             Error::Config(e)
         })?;
 
-        let ip: Ipv4Addr = parts[1].parse().map_err(|_| {
-            Error::Config(format!("Invalid proxy host: {}", parts[1]))
-        })?;
+        let host = parts[1].to_string();
+        if host.is_empty() {
+            return Err(Error::Config("Invalid proxy host: empty".to_string()));
+        }
 
         let port: u16 = parts[2].parse().map_err(|_| {
             Error::Config(format!("Invalid proxy port: {}", parts[2]))
         })?;
 
-        let mut proxy = ProxyData::new(ip, port, proxy_type);
+        let mut proxy = ProxyData::new_host(host, port, proxy_type);
 
         // Parse optional credentials
         if parts.len() >= 5 {
@@ -542,5 +541,38 @@ socks5 127.0.0.1 1080
         assert!(config.proxy_dns);
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_parse_proxy_domain_host() {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("proxychains_domain_host_{}.conf", ts));
+        let content = r#"
+[ProxyList]
+socks5 proxy.example.com 1080
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = ConfigParser::new().with_path(path.clone()).parse().unwrap();
+        assert_eq!(config.proxies.len(), 1);
+        assert_eq!(config.proxies[0].host, "proxy.example.com");
+        assert_eq!(config.proxies[0].port, 1080);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_parse_socks5_env_domain_host() {
+        std::env::set_var(ENV_SOCKS5_HOST, "proxy.example.com");
+        std::env::set_var(ENV_SOCKS5_PORT, "1080");
+        let config = ConfigParser::new().parse().unwrap();
+        assert_eq!(config.proxies.len(), 1);
+        assert_eq!(config.proxies[0].host, "proxy.example.com");
+        assert_eq!(config.proxies[0].port, 1080);
+        std::env::remove_var(ENV_SOCKS5_HOST);
+        std::env::remove_var(ENV_SOCKS5_PORT);
     }
 }

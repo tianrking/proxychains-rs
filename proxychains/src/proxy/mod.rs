@@ -84,7 +84,7 @@ impl TargetAddress {
 
 /// Connect to a proxy server
 pub fn connect_to_proxy(proxy: &ProxyData, timeout: Duration) -> Result<std::net::TcpStream> {
-    let addr = proxy.socket_addr();
+    let addr = proxy.resolved_socket_addr()?;
     connect_with_timeout(&addr, timeout)
 }
 
@@ -177,7 +177,7 @@ pub fn establish_proxy_chain(
         } else {
             // Intermediate hop - connect to next proxy
             let next_proxy = &proxies[i];
-            let next_target = TargetAddress::from_ip(IpAddr::V4(next_proxy.ip));
+            let next_target = TargetAddress::from_domain(next_proxy.host.clone());
             tunnel_through_proxy(
                 &mut stream,
                 &proxies[i - 1],

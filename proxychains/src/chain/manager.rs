@@ -122,11 +122,11 @@ impl ChainManager {
         // Chain through remaining proxies
         for i in 1..proxies.len() {
             let next_proxy = &proxies[i];
-            let next_target = TargetAddress::from_ip(IpAddr::V4(next_proxy.ip));
+            let next_target = TargetAddress::from_domain(next_proxy.host.clone());
 
             info!(
                 "Chaining to proxy {}:{}",
-                next_proxy.ip, next_proxy.port
+                next_proxy.host, next_proxy.port
             );
 
             if let Err(e) = tunnel_through_proxy(
@@ -220,11 +220,11 @@ impl ChainManager {
             // Chain through remaining proxies
             while let Some(next_idx) = self.find_alive_proxy(proxies, &mut offset) {
                 let next_proxy = &proxies[next_idx];
-                let next_target = TargetAddress::from_ip(IpAddr::V4(next_proxy.ip));
+                let next_target = TargetAddress::from_domain(next_proxy.host.clone());
 
                 debug!(
                     "Dynamic chain: connecting to proxy {}:{}",
-                    next_proxy.ip, next_proxy.port
+                    next_proxy.host, next_proxy.port
                 );
 
                 if let Err(e) = tunnel_through_proxy(
@@ -323,7 +323,7 @@ impl ChainManager {
             // Chain through remaining selected proxies
             for &next_idx in &selected_indices[1..] {
                 let next_proxy = &proxies[next_idx];
-                let next_target = TargetAddress::from_ip(IpAddr::V4(next_proxy.ip));
+                let next_target = TargetAddress::from_domain(next_proxy.host.clone());
 
                 if let Err(e) = tunnel_through_proxy(
                     &mut stream,
@@ -380,7 +380,7 @@ impl ChainManager {
         let proxy = &proxies[selected_idx];
         debug!(
             "Load balance: selected proxy {}:{}",
-            proxy.ip, proxy.port
+            proxy.host, proxy.port
         );
 
         // Connect to proxy

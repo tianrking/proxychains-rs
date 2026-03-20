@@ -8,7 +8,7 @@
 
 use std::env;
 use std::io::ErrorKind;
-use std::net::{SocketAddr, SocketAddrV4, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process;
 use std::time::SystemTime;
@@ -211,7 +211,7 @@ fn print_check_summary(config: &Config, args: &Args) {
             "  {}. {} {}:{} ({})",
             idx + 1,
             proxy.proxy_type,
-            proxy.ip,
+            proxy.host,
             proxy.port,
             auth
         );
@@ -228,8 +228,22 @@ fn run_probe(config: &Config, args: &Args) -> usize {
     let selected_group = args.group.as_deref().unwrap_or("default/all").to_string();
 
     for (idx, proxy) in config.proxies.iter().enumerate() {
-        let target_v4 = SocketAddrV4::new(proxy.ip, proxy.port);
-        let target = SocketAddr::V4(target_v4);
+        let target = match proxy.resolved_socket_addr() {
+            Ok(v4) => SocketAddr::V4(v4),
+            Err(e) => {
+                failed += 1;
+                results.push(ProbeNode {
+                    index: idx + 1,
+                    proxy_type: proxy.proxy_type.to_string(),
+                    address: format!("{}:{}", proxy.host, proxy.port),
+                    ok: false,
+                    latency_ms: 0,
+                    failure_type: Some("resolve_error".to_string()),
+                    error: Some(e.to_string()),
+                });
+                continue;
+            }
+        };
         let start = Instant::now();
         match TcpStream::connect_timeout(&target, timeout) {
             Ok(stream) => {
@@ -238,7 +252,7 @@ fn run_probe(config: &Config, args: &Args) -> usize {
                 results.push(ProbeNode {
                     index: idx + 1,
                     proxy_type: proxy.proxy_type.to_string(),
-                    address: format!("{}:{}", proxy.ip, proxy.port),
+                    address: format!("{}:{}", proxy.host, proxy.port),
                     ok: true,
                     latency_ms: elapsed,
                     failure_type: None,
@@ -252,7 +266,7 @@ fn run_probe(config: &Config, args: &Args) -> usize {
                 results.push(ProbeNode {
                     index: idx + 1,
                     proxy_type: proxy.proxy_type.to_string(),
-                    address: format!("{}:{}", proxy.ip, proxy.port),
+                    address: format!("{}:{}", proxy.host, proxy.port),
                     ok: false,
                     latency_ms: elapsed,
                     failure_type: Some(failure_type),

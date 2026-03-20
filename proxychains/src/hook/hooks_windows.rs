@@ -153,7 +153,8 @@ fn make_sockaddr_in6_mapped_bytes(ip: Ipv4Addr, port: u16) -> [u8; 28] {
 }
 
 unsafe fn connect_socket_to_proxy(sock: usize, proxy: &ProxyData) -> Result<()> {
-    let sockaddr = make_sockaddr_in(proxy.ip, proxy.port);
+    let resolved_ip = proxy.resolve_ipv4()?;
+    let sockaddr = make_sockaddr_in(resolved_ip, proxy.port);
     let ret = original_connect(
         sock,
         &sockaddr as *const SOCKADDR_IN as *const c_void,
@@ -171,7 +172,7 @@ unsafe fn connect_socket_to_proxy(sock: usize, proxy: &ProxyData) -> Result<()> 
 
         // IPv6 sockets cannot use IPv4 sockaddr directly. Retry using an IPv4-mapped
         // IPv6 destination (::ffff:a.b.c.d).
-        let mapped = make_sockaddr_in6_mapped_bytes(proxy.ip, proxy.port);
+        let mapped = make_sockaddr_in6_mapped_bytes(resolved_ip, proxy.port);
         let mapped_ret = original_connect(
             sock,
             mapped.as_ptr() as *const c_void,
@@ -187,7 +188,7 @@ unsafe fn connect_socket_to_proxy(sock: usize, proxy: &ProxyData) -> Result<()> 
             }
             return Err(Error::ProxyConnection(format!(
                 "Failed to connect to proxy {}:{} (WSA {}, retry WSA {})",
-                proxy.ip, proxy.port, wsa_error, mapped_err
+                proxy.host, proxy.port, wsa_error, mapped_err
             )));
         }
     }

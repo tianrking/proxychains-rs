@@ -118,6 +118,7 @@ max_chain_retries 8
 
 [ProxyList]
 socks5 127.0.0.1 1080
+# socks5 proxy.example.com 1080
 # socks4 127.0.0.1 1081
 # http   127.0.0.1 8080
 

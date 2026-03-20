@@ -1,7 +1,8 @@
 //! Configuration types for proxychains
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, ToSocketAddrs};
 use std::time::Duration;
+use crate::error::{Error, Result};
 
 /// Proxy protocol type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -27,7 +28,7 @@ impl std::fmt::Display for ProxyType {
 impl std::str::FromStr for ProxyType {
     type Err = String;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "socks5" | "socks5h" => Ok(ProxyType::Socks5),
             "socks4" | "socks4a" => Ok(ProxyType::Socks4),
@@ -74,6 +75,8 @@ impl std::fmt::Display for ChainType {
 /// Proxy data structure
 #[derive(Debug, Clone)]
 pub struct ProxyData {
+    /// Proxy hostname (domain or IPv4 literal)
+    pub host: String,
     /// Proxy IP address
     pub ip: Ipv4Addr,
     /// Proxy port
@@ -91,6 +94,7 @@ pub struct ProxyData {
 impl Default for ProxyData {
     fn default() -> Self {
         Self {
+            host: "127.0.0.1".to_string(),
             ip: Ipv4Addr::new(127, 0, 0, 1),
             port: 1080,
             proxy_type: ProxyType::default(),
@@ -105,6 +109,22 @@ impl ProxyData {
     /// Create a new proxy data
     pub fn new(ip: Ipv4Addr, port: u16, proxy_type: ProxyType) -> Self {
         Self {
+            host: ip.to_string(),
+            ip,
+            port,
+            proxy_type,
+            ..Default::default()
+        }
+    }
+
+    /// Create a proxy from host string (domain or IPv4 literal).
+    pub fn new_host(host: impl Into<String>, port: u16, proxy_type: ProxyType) -> Self {
+        let host = host.into();
+        let ip = host
+            .parse::<Ipv4Addr>()
+            .unwrap_or_else(|_| Ipv4Addr::new(0, 0, 0, 0));
+        Self {
+            host,
             ip,
             port,
             proxy_type,
@@ -122,6 +142,32 @@ impl ProxyData {
     /// Get socket address
     pub fn socket_addr(&self) -> SocketAddrV4 {
         SocketAddrV4::new(self.ip, self.port)
+    }
+
+    /// Resolve configured host to IPv4 address.
+    pub fn resolve_ipv4(&self) -> Result<Ipv4Addr> {
+        if self.host.eq_ignore_ascii_case("localhost") {
+            return Ok(Ipv4Addr::new(127, 0, 0, 1));
+        }
+        if let Ok(ip) = self.host.parse::<Ipv4Addr>() {
+            return Ok(ip);
+        }
+
+        let mut addrs = (self.host.as_str(), self.port)
+            .to_socket_addrs()
+            .map_err(|e| Error::Dns(format!("Failed to resolve proxy host {}: {}", self.host, e)))?;
+
+        addrs
+            .find_map(|addr| match addr.ip() {
+                IpAddr::V4(v4) => Some(v4),
+                IpAddr::V6(_) => None,
+            })
+            .ok_or_else(|| Error::Dns(format!("No IPv4 address for proxy host {}", self.host)))
+    }
+
+    /// Resolve proxy host and build socket address.
+    pub fn resolved_socket_addr(&self) -> Result<SocketAddrV4> {
+        Ok(SocketAddrV4::new(self.resolve_ipv4()?, self.port))
     }
 }
 
