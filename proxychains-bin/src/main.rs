@@ -7,8 +7,10 @@
 //! - Windows: Uses DLL injection
 
 use std::env;
+use std::net::{SocketAddr, SocketAddrV4, TcpStream};
 use std::path::PathBuf;
 use std::process;
+use std::time::{Duration, Instant};
 
 use clap::Parser;
 use tracing::{debug, error, info, Level};
@@ -47,9 +49,17 @@ struct Args {
     #[arg(long)]
     check: bool,
 
+    /// Probe configured proxy nodes and print per-node reachability
+    #[arg(long)]
+    probe: bool,
+
+    /// Probe timeout in milliseconds (default: config tcp_connect_time_out)
+    #[arg(long, value_name = "MS")]
+    probe_timeout_ms: Option<u64>,
+
     /// The command to run
     #[arg(
-        required_unless_present_any = ["list_groups", "check"],
+        required_unless_present_any = ["list_groups", "check", "probe"],
         trailing_var_arg = true
     )]
     command: Vec<String>,
@@ -121,6 +131,11 @@ fn main() {
         process::exit(0);
     }
 
+    if args.probe {
+        let failed = run_probe(&config, &args);
+        process::exit(if failed == 0 { 0 } else { 2 });
+    }
+
     // Execute the command with platform-specific injection
     match execute_command(&args, &config) {
         Ok(status) => {
@@ -188,6 +203,62 @@ fn print_check_summary(config: &Config, args: &Args) {
             auth
         );
     }
+}
+
+fn run_probe(config: &Config, args: &Args) -> usize {
+    let timeout = args
+        .probe_timeout_ms
+        .map(Duration::from_millis)
+        .unwrap_or(config.tcp_connect_timeout);
+    let mut failed = 0usize;
+
+    println!("Proxy probe:");
+    println!("  timeout_ms={}", timeout.as_millis());
+    println!(
+        "  group={}",
+        args.group.as_deref().unwrap_or("default/all")
+    );
+
+    for (idx, proxy) in config.proxies.iter().enumerate() {
+        let target_v4 = SocketAddrV4::new(proxy.ip, proxy.port);
+        let target = SocketAddr::V4(target_v4);
+        let start = Instant::now();
+        match TcpStream::connect_timeout(&target, timeout) {
+            Ok(stream) => {
+                let elapsed = start.elapsed().as_millis();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                println!(
+                    "  [{}] OK   {:<6} {}:{}  {} ms",
+                    idx + 1,
+                    proxy.proxy_type,
+                    proxy.ip,
+                    proxy.port,
+                    elapsed
+                );
+            }
+            Err(e) => {
+                failed += 1;
+                let elapsed = start.elapsed().as_millis();
+                println!(
+                    "  [{}] FAIL {:<6} {}:{}  {} ms  ({})",
+                    idx + 1,
+                    proxy.proxy_type,
+                    proxy.ip,
+                    proxy.port,
+                    elapsed,
+                    e
+                );
+            }
+        }
+    }
+
+    println!(
+        "Probe summary: total={}, ok={}, fail={}",
+        config.proxies.len(),
+        config.proxies.len().saturating_sub(failed),
+        failed
+    );
+    failed
 }
 
 /// Set proxychains-specific environment variables
@@ -423,6 +494,15 @@ mod tests {
         assert!(args.is_ok());
         let args = args.unwrap();
         assert!(args.list_groups);
+        assert!(args.command.is_empty());
+    }
+
+    #[test]
+    fn test_args_probe_without_command() {
+        let args = Args::try_parse_from(["proxychains4", "--probe"]);
+        assert!(args.is_ok());
+        let args = args.unwrap();
+        assert!(args.probe);
         assert!(args.command.is_empty());
     }
 }

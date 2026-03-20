@@ -40,6 +40,7 @@ Recommendation:
 - Discovery/validation:
   - `--list-groups`
   - `--check`
+  - `--probe` (quick per-node reachability/latency check)
 - DNS:
   - `proxy_dns`
   - compatibility aliases: `proxy_dns_old`, `proxy_dns_daemon`
@@ -88,6 +89,8 @@ Validate config and groups:
 ```bash
 proxychains4 -f ./proxychains.conf --list-groups
 proxychains4 -f ./proxychains.conf --group jp --check
+proxychains4 -f ./proxychains.conf --group jp --probe
+proxychains4 -f ./proxychains.conf --probe --probe-timeout-ms 1200
 ```
 
 ## Example Config
