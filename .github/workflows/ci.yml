@@ -104,16 +104,10 @@ jobs:
               "socks5 127.0.0.1 19080" \
               "http 127.0.0.1 18080" > ci.e2e.conf
 
-            cargo run -p proxychains-bin -- -f ./ci.e2e.conf --probe --probe-json > probe-report.json || true
-            python3 -c "import json; r=json.load(open(\"probe-report.json\",\"r\",encoding=\"utf-8\")); assert \"summary\" in r; assert int(r[\"summary\"][\"fail\"]) == 0"
+            cargo run -p proxychains-bin -- -f ./ci.e2e.conf --probe --probe-json > probe-report.json 2>probe-stderr.log || true
+            python3 -c "import json; txt=open(\"probe-report.json\",\"r\",encoding=\"utf-8\").read(); s=txt.find(\"{\"); e=txt.rfind(\"}\"); assert s != -1 and e != -1 and e > s, txt; r=json.loads(txt[s:e+1]); assert \"summary\" in r, r; assert int(r[\"summary\"][\"fail\"]) == 0, r"
 
-            DNS_V4=$(cargo run -q -p proxychains-bin -- -q -f ./ci.e2e.conf python3 -c "import socket;print(socket.getaddrinfo(\"dns-proxychains-e2e.invalid\",443,0,socket.SOCK_STREAM)[0][4][0])" | tr -d "\r\n")
-            echo "dns v4 fake ip: ${DNS_V4}"
-            DNS_V4="${DNS_V4}" python3 -c "import ipaddress, os; n = ipaddress.ip_network(\"224.0.0.0/8\"); ip = ipaddress.ip_address(os.environ[\"DNS_V4\"]); mapped = getattr(ip, \"ipv4_mapped\", None); ok = (ip.version == 4 and ip in n) or (ip.version == 6 and mapped is not None and mapped in n); assert ok"
-
-            DNS_V6=$(cargo run -q -p proxychains-bin -- -q -f ./ci.e2e.conf python3 -c "import socket;print(socket.getaddrinfo(\"dns-proxychains-e2e.invalid\",443,socket.AF_INET6,socket.SOCK_STREAM)[0][4][0])" | tr -d "\r\n")
-            echo "dns v6 fake ip: ${DNS_V6}"
-            DNS_V6="${DNS_V6}" python3 -c "import ipaddress, os; n = ipaddress.ip_network(\"224.0.0.0/8\"); lo_min = int(ipaddress.ip_address(\"224.0.0.0\")); lo_max = int(ipaddress.ip_address(\"239.255.255.255\")); ip = ipaddress.ip_address(os.environ[\"DNS_V6\"]); mapped = getattr(ip, \"ipv4_mapped\", None); v4compat = ip.version == 6 and (int(ip) >> 32) == 0 and lo_min <= (int(ip) & 0xffffffff) <= lo_max; v4mapped = ip.version == 6 and mapped is not None and mapped in n; assert v4compat or v4mapped"
+            cargo run -q -p proxychains-bin -- -q -f ./ci.e2e.conf python3 -c "import ipaddress,socket,sys; n=ipaddress.ip_network('224.0.0.0/8'); lo_min=int(ipaddress.ip_address('224.0.0.0')); lo_max=int(ipaddress.ip_address('239.255.255.255')); host='dns-proxychains-e2e.invalid'; v4=socket.getaddrinfo(host,443,0,socket.SOCK_STREAM)[0][4][0]; print(f'dns v4 fake ip: {v4}'); ip4=ipaddress.ip_address(v4); mapped4=getattr(ip4,'ipv4_mapped',None); assert ((ip4.version==4 and ip4 in n) or (ip4.version==6 and mapped4 is not None and mapped4 in n)); v6=socket.getaddrinfo(host,443,socket.AF_INET6,socket.SOCK_STREAM)[0][4][0]; print(f'dns v6 fake ip: {v6}'); ip6=ipaddress.ip_address(v6); mapped6=getattr(ip6,'ipv4_mapped',None); v4compat=(ip6.version==6 and (int(ip6)>>32)==0 and lo_min <= (int(ip6)&0xffffffff) <= lo_max); v4mapped=(ip6.version==6 and mapped6 is not None and mapped6 in n); assert (v4compat or v4mapped)"
 
             PROXYCHAINS_TEST_SOCKS5_ADDR=127.0.0.1:19080 \
             PROXYCHAINS_TEST_HTTP_ADDR=127.0.0.1:18080 \
