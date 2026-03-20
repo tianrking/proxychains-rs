@@ -158,6 +158,8 @@ Usage: proxychains4 [OPTIONS] <COMMAND> [ARGS...]
 Options:
   -f, --file <PATH>    Configuration file path
   --group <GROUP>      Proxy group name (uses [ProxyList:<GROUP>])
+  --list-groups        List available proxy groups and exit
+  --check              Validate config and print selected proxies, then exit
   -q, --quiet          Quiet mode (suppress output)
   -v, --verbose        Verbose mode (debug output)
   -h, --help           Show help
@@ -239,6 +241,25 @@ socks5 10.0.0.3 1080
 Group usage example:
 ```bash
 proxychains4 --group jp curl https://ifconfig.me
+```
+
+Validation and discovery:
+```bash
+proxychains4 -f ./proxychains.conf --list-groups
+proxychains4 -f ./proxychains.conf --group jp --check
+```
+
+---
+
+## Testing & Quality
+
+Recommended checks before release:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets
+cargo test --workspace --all-targets
+cargo build --release --workspace
 ```
 
 ### Configuration File Locations

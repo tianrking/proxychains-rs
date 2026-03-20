@@ -24,8 +24,19 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install rustfmt/clippy
+        run: rustup component add rustfmt clippy
+
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting (advisory)
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets
 
       - name: Run tests
         run: cargo test --workspace --all-targets

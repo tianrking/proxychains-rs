@@ -39,8 +39,19 @@ struct Args {
     #[arg(long, value_name = "GROUP")]
     group: Option<String>,
 
+    /// List available proxy groups from config and exit
+    #[arg(long)]
+    list_groups: bool,
+
+    /// Validate config and print selected proxies without running command
+    #[arg(long)]
+    check: bool,
+
     /// The command to run
-    #[arg(required = true, trailing_var_arg = true)]
+    #[arg(
+        required_unless_present_any = ["list_groups", "check"],
+        trailing_var_arg = true
+    )]
     command: Vec<String>,
 }
 
@@ -64,6 +75,16 @@ fn main() {
             .finish();
         tracing::subscriber::set_global_default(subscriber)
             .expect("Failed to set tracing subscriber");
+    }
+
+    if args.list_groups {
+        if let Err(e) = list_groups(&args) {
+            if !args.quiet {
+                eprintln!("proxychains: {}", e);
+            }
+            process::exit(1);
+        }
+        process::exit(0);
     }
 
     // Parse configuration
@@ -95,6 +116,11 @@ fn main() {
         }
     }
 
+    if args.check {
+        print_check_summary(&config, &args);
+        process::exit(0);
+    }
+
     // Execute the command with platform-specific injection
     match execute_command(&args, &config) {
         Ok(status) => {
@@ -111,6 +137,10 @@ fn main() {
 
 /// Load configuration from file or environment
 fn load_config(args: &Args) -> Result<Config, String> {
+    build_parser(args).parse().map_err(|e| e.to_string())
+}
+
+fn build_parser(args: &Args) -> ConfigParser {
     let mut parser = ConfigParser::new();
 
     if let Some(ref path) = args.config {
@@ -121,7 +151,43 @@ fn load_config(args: &Args) -> Result<Config, String> {
         parser = parser.with_group(group.clone());
     }
 
-    parser.parse().map_err(|e| e.to_string())
+    parser
+}
+
+fn list_groups(args: &Args) -> Result<(), String> {
+    let parser = build_parser(args);
+    let mut groups = parser.list_proxy_groups().map_err(|e| e.to_string())?;
+    groups.sort();
+    if groups.is_empty() {
+        println!("No [ProxyList] groups found in config");
+        return Ok(());
+    }
+    for group in groups {
+        println!("{}", group);
+    }
+    Ok(())
+}
+
+fn print_check_summary(config: &Config, args: &Args) {
+    println!("Config check: OK");
+    println!("Chain type: {}", config.chain_type);
+    println!("Proxy count: {}", config.proxy_count());
+    println!("Proxy DNS: {}", config.proxy_dns);
+    println!(
+        "Selected group: {}",
+        args.group.as_deref().unwrap_or("default/all")
+    );
+    for (idx, proxy) in config.proxies.iter().enumerate() {
+        let auth = if proxy.user.is_some() { "auth" } else { "no-auth" };
+        println!(
+            "  {}. {} {}:{} ({})",
+            idx + 1,
+            proxy.proxy_type,
+            proxy.ip,
+            proxy.port,
+            auth
+        );
+    }
 }
 
 /// Set proxychains-specific environment variables
@@ -349,5 +415,14 @@ mod tests {
         assert_eq!(args.config, Some(PathBuf::from("/etc/proxychains.conf")));
         assert_eq!(args.group, Some("jp".to_string()));
         assert_eq!(args.command, vec!["wget", "http://example.com"]);
+    }
+
+    #[test]
+    fn test_args_list_groups_without_command() {
+        let args = Args::try_parse_from(["proxychains4", "--list-groups"]);
+        assert!(args.is_ok());
+        let args = args.unwrap();
+        assert!(args.list_groups);
+        assert!(args.command.is_empty());
     }
 }

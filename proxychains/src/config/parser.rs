@@ -198,6 +198,53 @@ impl ConfigParser {
         Ok(config)
     }
 
+    /// List available proxy groups in the configuration file.
+    ///
+    /// Returns group names found in `[ProxyList]` and `[ProxyList:<name>]`
+    /// sections. The unnamed default section is represented as `default`.
+    pub fn list_proxy_groups(&self) -> Result<Vec<String>> {
+        let path = self
+            .find_config_file()
+            .ok_or_else(|| Error::Config("Could not find configuration file".to_string()))?;
+        self.list_proxy_groups_from_file(path)
+    }
+
+    /// List available proxy groups from a specific file.
+    pub fn list_proxy_groups_from_file<P: AsRef<Path>>(&self, path: P) -> Result<Vec<String>> {
+        let path = path.as_ref();
+        let file = fs::File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut groups: Vec<String> = Vec::new();
+
+        for line in reader.lines() {
+            let line = line?;
+            let trimmed = line.trim();
+            if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+                continue;
+            }
+
+            let section = trimmed
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim();
+            if !section.to_lowercase().starts_with("proxylist") {
+                continue;
+            }
+
+            let group_name = section
+                .split_once(':')
+                .map(|(_, g)| g.trim().to_lowercase())
+                .filter(|g| !g.is_empty())
+                .unwrap_or_else(|| "default".to_string());
+
+            if !groups.iter().any(|g| g == &group_name) {
+                groups.push(group_name);
+            }
+        }
+
+        Ok(groups)
+    }
+
     /// Parse a configuration line
     fn parse_config_line(&self, line: &str, config: &mut Config) -> Result<()> {
         let parts: Vec<&str> = line.splitn(2, char::is_whitespace).collect();
@@ -441,6 +488,32 @@ socks5 127.0.0.1 1080
             .parse()
             .unwrap_err();
         assert!(format!("{}", err).contains("Proxy group not found"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_list_proxy_groups() {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("proxychains_groups_{}.conf", ts));
+        let content = r#"
+[ProxyList]
+socks5 127.0.0.1 1080
+[ProxyList:JP]
+socks5 127.0.0.2 1080
+[ProxyList:us]
+socks5 127.0.0.3 1080
+"#;
+        fs::write(&path, content).unwrap();
+
+        let mut groups = ConfigParser::new()
+            .list_proxy_groups_from_file(path.clone())
+            .unwrap();
+        groups.sort();
+        assert_eq!(groups, vec!["default", "jp", "us"]);
 
         let _ = fs::remove_file(path);
     }
