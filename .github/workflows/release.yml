@@ -63,12 +63,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          ARCH_RAW="$(uname -m)"
+          if [ "${ARCH_RAW}" = "arm64" ] || [ "${ARCH_RAW}" = "aarch64" ]; then
+            ARCH="arm64"
+          else
+            ARCH="x86_64"
+          fi
           mkdir -p dist
           cp target/release/proxychains4 dist/
           cp target/release/libproxychains.dylib dist/
           cp proxychains.conf dist/
           cp README.md dist/
-          tar -czf "proxychains-rs-${GITHUB_REF_NAME}-macos-x86_64.tar.gz" -C dist .
+          tar -czf "proxychains-rs-${GITHUB_REF_NAME}-macos-${ARCH}.tar.gz" -C dist .
+
+          PKG_DIR="proxychains-rs-${GITHUB_REF_NAME}-macos-${ARCH}"
+          rm -rf "${PKG_DIR}"
+          mkdir -p "${PKG_DIR}"
+          cp -R dist/. "${PKG_DIR}/"
+          hdiutil create \
+            -volname "proxychains-rs ${GITHUB_REF_NAME}" \
+            -srcfolder "${PKG_DIR}" \
+            -ov \
+            -format UDZO \
+            "proxychains-rs-${GITHUB_REF_NAME}-macos-${ARCH}.dmg"
 
       - name: Package Windows artifacts
         if: runner.os == 'Windows'
@@ -89,6 +106,7 @@ jobs:
             proxychains-rs-*.tar.gz
             proxychains-rs-*.zip
             proxychains-rs-*.deb
+            proxychains-rs-*.dmg
 
   publish:
     name: Publish GitHub Release
@@ -110,7 +128,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          find release-assets -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.deb' \) -print0 \
+          find release-assets -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.deb' -o -name '*.dmg' \) -print0 \
             | sort -z \
             | xargs -0 sha256sum > SHA256SUMS.txt
 
@@ -189,6 +207,7 @@ jobs:
           - Linux tar.gz
           - Linux deb
           - macOS tar.gz
+          - macOS dmg
           - SHA256 checksums: \`SHA256SUMS.txt\`
 
           EOF
@@ -202,4 +221,5 @@ jobs:
             release-assets/**/*.tar.gz
             release-assets/**/*.zip
             release-assets/**/*.deb
+            release-assets/**/*.dmg
             SHA256SUMS.txt
