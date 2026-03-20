@@ -18,8 +18,8 @@ use tracing::{debug, error, info, warn};
 use windows::Win32::Networking::WinSock::{
     ADDRINFOA, ADDRINFOW, AF_INET, AF_INET6, IN_ADDR, IN_ADDR_0, IPPROTO_TCP, SOCKADDR,
     SOCKADDR_IN, SOCK_STREAM, SOCKET_ERROR, WSAEALREADY, WSAECONNREFUSED, WSAEFAULT,
-    WSAEINPROGRESS, WSAEINVAL, WSAEOPNOTSUPP, WSAEWOULDBLOCK, WSAGetLastError, WSAHOST_NOT_FOUND,
-    WSASetLastError,
+    WSAEINPROGRESS, WSAEINVAL, WSAEWOULDBLOCK, WSAGetLastError, WSAHOST_NOT_FOUND, WSASetLastError,
+    SOCKET, SEND_RECV_FLAGS, send,
 };
 use windows::core::GUID;
 use windows::Win32::System::IO::OVERLAPPED;
@@ -464,8 +464,7 @@ const WSAID_CONNECTEX: GUID = GUID::from_u128(0x25a207b9_ddf3_4660_8ee9_76e58c74
 /// ConnectEx replacement used when applications query extension function pointers via WSAIoctl.
 ///
 /// This implementation is intentionally synchronous:
-/// - `dwSendDataLength > 0` is rejected (`WSAEOPNOTSUPP`) because initial-send semantics are
-///   not yet mirrored.
+/// - It supports optional initial send buffer semantics (`lpSendBuffer` + `dwSendDataLength`).
 #[cfg(windows)]
 pub unsafe extern "system" fn hook_connect_ex_impl(
     sock: usize,
@@ -476,8 +475,8 @@ pub unsafe extern "system" fn hook_connect_ex_impl(
     bytes_sent: *mut u32,
     overlapped: *mut c_void,
 ) -> i32 {
-    if !send_buf.is_null() && send_len > 0 {
-        WSASetLastError(WSAEOPNOTSUPP.0);
+    if send_len > 0 && send_buf.is_null() {
+        WSASetLastError(WSAEFAULT.0);
         return 0;
     }
 
@@ -489,6 +488,17 @@ pub unsafe extern "system" fn hook_connect_ex_impl(
     if ret == SOCKET_ERROR {
         0
     } else {
+        if send_len > 0 {
+            let send_slice =
+                std::slice::from_raw_parts(send_buf as *const u8, send_len as usize);
+            let sent = send(SOCKET(sock), send_slice, SEND_RECV_FLAGS(0));
+            if sent == SOCKET_ERROR {
+                return 0;
+            }
+            if !bytes_sent.is_null() {
+                *bytes_sent = sent as u32;
+            }
+        }
         if !overlapped.is_null() {
             let ov = &mut *(overlapped as *mut OVERLAPPED);
             if !ov.hEvent.is_invalid() {
@@ -894,7 +904,23 @@ pub unsafe extern "system" fn hook_dns_query_a_impl(
     if hostname.parse::<IpAddr>().is_ok() || crate::dns::lookup_in_hosts(hostname).is_some() {
         return original_dns_query_a(name, query_type, options, extra, result, reserved);
     }
-    DNS_ERROR_RCODE_NAME_ERROR
+    let dns_resolver = DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
+    let fake_ip = match dns_resolver.resolve(hostname) {
+        Ok(ip) => ip,
+        Err(_) => return DNS_ERROR_RCODE_NAME_ERROR,
+    };
+    let fake_ip_c = match CString::new(fake_ip.to_string()) {
+        Ok(v) => v,
+        Err(_) => return DNS_ERROR_RCODE_NAME_ERROR,
+    };
+    original_dns_query_a(
+        fake_ip_c.as_ptr(),
+        query_type,
+        options,
+        extra,
+        result,
+        reserved,
+    )
 }
 
 /// Windows DnsQuery_W hook implementation.
@@ -924,7 +950,24 @@ pub unsafe extern "system" fn hook_dns_query_w_impl(
     if hostname.parse::<IpAddr>().is_ok() || crate::dns::lookup_in_hosts(&hostname).is_some() {
         return original_dns_query_w(name, query_type, options, extra, result, reserved);
     }
-    DNS_ERROR_RCODE_NAME_ERROR
+    let dns_resolver = DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
+    let fake_ip = match dns_resolver.resolve(&hostname) {
+        Ok(ip) => ip,
+        Err(_) => return DNS_ERROR_RCODE_NAME_ERROR,
+    };
+    let fake_wide: Vec<u16> = fake_ip
+        .to_string()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    original_dns_query_w(
+        fake_wide.as_ptr(),
+        query_type,
+        options,
+        extra,
+        result,
+        reserved,
+    )
 }
 
 /// Windows freeaddrinfo hook implementation.
