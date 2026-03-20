@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use serde::Serialize;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use tracing::{debug, error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
@@ -299,17 +301,26 @@ fn build_probe_report(results: Vec<ProbeNode>, timeout: Duration, group: String)
             _ => stats.other += 1,
         }
     }
+    let generated_at = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     ProbeReport {
         schema_version: "1.0".to_string(),
-        generated_at: SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs()),
+        generated_at,
+        generated_at_iso8601: format_unix_ts_iso8601(generated_at),
         timeout_ms: timeout.as_millis(),
         selected_group: group,
         summary: ProbeSummary { total, ok, fail },
         failure_stats: stats,
         nodes: results,
     }
+}
+
+fn format_unix_ts_iso8601(ts: u64) -> String {
+    OffsetDateTime::from_unix_timestamp(ts as i64)
+        .ok()
+        .and_then(|dt| dt.format(&Rfc3339).ok())
+        .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string())
 }
 
 fn print_probe_report(report: &ProbeReport) {
@@ -354,6 +365,7 @@ fn print_probe_report(report: &ProbeReport) {
 struct ProbeReport {
     schema_version: String,
     generated_at: u64,
+    generated_at_iso8601: String,
     timeout_ms: u128,
     selected_group: String,
     summary: ProbeSummary,
