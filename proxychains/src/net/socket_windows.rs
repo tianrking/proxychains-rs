@@ -3,7 +3,7 @@
 //! This module provides Windows-specific implementations for socket operations
 //! using the Winsock2 API.
 
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Get the port from a SOCKADDR structure (Windows-specific)
 #[cfg(windows)]
@@ -16,6 +16,10 @@ pub fn get_port_from_sockaddr(addr: *const core::ffi::c_void) -> u16 {
             // SOCKADDR_IN structure:
             // sin_family: u16 (2 bytes)
             // sin_port: u16 (2 bytes) - network byte order
+            let port_ptr = (addr as *const u8).add(2) as *const u16;
+            u16::from_be(*port_ptr)
+        } else if sa_family == 23 {
+            // SOCKADDR_IN6 has the same port offset.
             let port_ptr = (addr as *const u8).add(2) as *const u16;
             u16::from_be(*port_ptr)
         } else {
@@ -43,6 +47,28 @@ pub fn get_ip_from_sockaddr(addr: *const core::ffi::c_void) -> Option<Ipv4Addr> 
                 *ip_ptr.add(3),
             ];
             Some(Ipv4Addr::from(ip_bytes))
+        } else {
+            None
+        }
+    }
+}
+
+/// Get the IP address (IPv4/IPv6) from a SOCKADDR structure.
+#[cfg(windows)]
+pub fn get_ipaddr_from_sockaddr(addr: *const core::ffi::c_void) -> Option<IpAddr> {
+    unsafe {
+        let sa_family = *(addr as *const u16);
+        if sa_family == 2 {
+            let ip_ptr = (addr as *const u8).add(4);
+            let ip_bytes = [*ip_ptr, *ip_ptr.add(1), *ip_ptr.add(2), *ip_ptr.add(3)];
+            Some(IpAddr::V4(Ipv4Addr::from(ip_bytes)))
+        } else if sa_family == 23 {
+            // SOCKADDR_IN6 layout:
+            // sin6_family (2), sin6_port (2), sin6_flowinfo (4), sin6_addr (16), sin6_scope_id (4)
+            let ip_ptr = (addr as *const u8).add(8);
+            let mut octets = [0u8; 16];
+            std::ptr::copy_nonoverlapping(ip_ptr, octets.as_mut_ptr(), 16);
+            Some(IpAddr::V6(Ipv6Addr::from(octets)))
         } else {
             None
         }
@@ -125,5 +151,27 @@ mod tests {
     fn test_is_localhost() {
         assert!(is_localhost(&Ipv4Addr::new(127, 0, 0, 1)));
         assert!(!is_localhost(&Ipv4Addr::new(192, 168, 1, 1)));
+    }
+
+    #[test]
+    fn test_parse_ipv6_sockaddr_layout() {
+        // Build a minimal SOCKADDR_IN6 byte layout.
+        let mut raw = [0u8; 28];
+        raw[0] = 23; // AF_INET6 low byte
+        raw[1] = 0;
+        raw[2] = 0x13; // port 4919 in network byte order
+        raw[3] = 0x37;
+        raw[8..24].copy_from_slice(&[
+            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]);
+
+        let addr_ptr = raw.as_ptr() as *const core::ffi::c_void;
+        assert_eq!(get_port_from_sockaddr(addr_ptr), 4919);
+        assert_eq!(
+            get_ipaddr_from_sockaddr(addr_ptr),
+            Some(IpAddr::V6(Ipv6Addr::new(
+                0x2001, 0x0db8, 0, 0, 0, 0, 0, 1
+            )))
+        );
     }
 }

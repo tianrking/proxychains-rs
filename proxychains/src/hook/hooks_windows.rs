@@ -4,7 +4,7 @@
 //! chain on the original socket handle.
 
 use std::collections::HashMap;
-use std::ffi::{c_void, CStr};
+use std::ffi::{c_void, CStr, CString};
 use std::mem::{self, ManuallyDrop};
 use std::net::{IpAddr, Ipv4Addr};
 use std::os::windows::io::FromRawSocket;
@@ -17,13 +17,14 @@ use tracing::{debug, error, info, warn};
 use windows::Win32::Networking::WinSock::{
     ADDRINFOA, AF_INET, IN_ADDR, IN_ADDR_0, IPPROTO_TCP, SOCKADDR, SOCKADDR_IN, SOCK_STREAM,
     SOCKET_ERROR, WSAEALREADY, WSAECONNREFUSED, WSAEFAULT, WSAEINPROGRESS, WSAEINVAL,
+    WSAHOST_NOT_FOUND,
     WSAEWOULDBLOCK, WSAGetLastError, WSASetLastError,
 };
 
 use crate::config::{ChainType, Config, ProxyData, ProxyState};
 use crate::dns::{is_fake_ip, DnsResolver};
 use crate::error::{Error, Result};
-use crate::net::{get_ip_from_sockaddr, get_port_from_sockaddr};
+use crate::net::{get_ip_from_sockaddr, get_ipaddr_from_sockaddr, get_port_from_sockaddr};
 use crate::proxy::{tunnel_through_proxy, TargetAddress};
 
 use super::interpose_windows::{
@@ -253,27 +254,37 @@ pub unsafe extern "system" fn hook_connect_impl(
         return original_connect(sock, addr, len);
     }
 
-    let target_ip = match get_ip_from_sockaddr(addr) {
+    let target_ip = match get_ipaddr_from_sockaddr(addr) {
         Some(ip) => ip,
         None => return original_connect(sock, addr, len),
     };
     let target_port = get_port_from_sockaddr(addr);
 
-    if state.config.should_bypass(&target_ip) {
+    if state.config.should_bypass_ip(&target_ip) {
         return original_connect(sock, addr, len);
     }
 
-    let (final_ip, final_port) = state.config.apply_dnat(&target_ip, target_port);
-    let target_domain = if is_fake_ip(&final_ip) {
-        state.dns_resolver.get_hostname(&final_ip)
-    } else {
-        None
+    let (dnat_ip, final_port) = state.config.apply_dnat_ip(&target_ip, target_port);
+    let (final_ip, target_domain) = match dnat_ip {
+        IpAddr::V4(v4) if is_fake_ip(&v4) => (IpAddr::V4(v4), state.dns_resolver.get_hostname(&v4)),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                if is_fake_ip(&v4) {
+                    (IpAddr::V4(v4), state.dns_resolver.get_hostname(&v4))
+                } else {
+                    (IpAddr::V6(v6), None)
+                }
+            } else {
+                (IpAddr::V6(v6), None)
+            }
+        }
+        _ => (dnat_ip, None),
     };
 
     let target = if let Some(domain) = target_domain {
-        TargetAddress::from_both(IpAddr::V4(final_ip), domain)
+        TargetAddress::from_both(final_ip, domain)
     } else {
-        TargetAddress::from_ip(IpAddr::V4(final_ip))
+        TargetAddress::from_ip(final_ip)
     };
 
     let max_attempts = state.config.max_chain_retries.max(1);
@@ -340,7 +351,7 @@ pub unsafe extern "system" fn hook_getaddrinfo_impl(
     if !phints.is_null() {
         let hints = &*(phints as *const ADDRINFOA);
         if hints.ai_family != 0 && hints.ai_family != AF_INET.0 as i32 {
-            return original_getaddrinfo(pnode, pservice, phints, ppresult);
+            return WSAHOST_NOT_FOUND.0;
         }
     }
 
@@ -349,7 +360,7 @@ pub unsafe extern "system" fn hook_getaddrinfo_impl(
         Err(_) => return original_getaddrinfo(pnode, pservice, phints, ppresult),
     };
 
-    if hostname.parse::<Ipv4Addr>().is_ok() {
+    if hostname.parse::<IpAddr>().is_ok() {
         return original_getaddrinfo(pnode, pservice, phints, ppresult);
     }
 
@@ -361,7 +372,7 @@ pub unsafe extern "system" fn hook_getaddrinfo_impl(
         Ok(ip) => ip,
         Err(e) => {
             error!("Failed to resolve {} in hook_getaddrinfo_impl: {}", hostname, e);
-            return original_getaddrinfo(pnode, pservice, phints, ppresult);
+            return WSAHOST_NOT_FOUND.0;
         }
     };
 
@@ -414,7 +425,54 @@ pub unsafe extern "system" fn hook_freeaddrinfo_impl(pres: *mut c_void) {
 /// Windows gethostbyname hook implementation.
 #[cfg(windows)]
 pub unsafe extern "system" fn hook_gethostbyname_impl(name: *const i8) -> *mut c_void {
-    original_gethostbyname(name)
+    let state = match get_hook_state() {
+        Some(s) if s.config.proxy_dns => s,
+        _ => return original_gethostbyname(name),
+    };
+
+    if name.is_null() {
+        WSASetLastError(WSAEINVAL.0);
+        return std::ptr::null_mut();
+    }
+
+    let hostname = match CStr::from_ptr(name).to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            WSASetLastError(WSAEINVAL.0);
+            return std::ptr::null_mut();
+        }
+    };
+
+    if hostname.parse::<IpAddr>().is_ok() {
+        return original_gethostbyname(name);
+    }
+
+    if crate::dns::lookup_in_hosts(hostname).is_some() {
+        return original_gethostbyname(name);
+    }
+
+    let fake_ip = match state.dns_resolver.resolve(hostname) {
+        Ok(ip) => ip,
+        Err(e) => {
+            error!("Failed to resolve {} in hook_gethostbyname_impl: {}", hostname, e);
+            WSASetLastError(WSAHOST_NOT_FOUND.0);
+            return std::ptr::null_mut();
+        }
+    };
+
+    let fake_ip_cstr = match CString::new(fake_ip.to_string()) {
+        Ok(v) => v,
+        Err(_) => {
+            WSASetLastError(WSAHOST_NOT_FOUND.0);
+            return std::ptr::null_mut();
+        }
+    };
+
+    let result = original_gethostbyname(fake_ip_cstr.as_ptr());
+    if result.is_null() {
+        WSASetLastError(WSAHOST_NOT_FOUND.0);
+    }
+    result
 }
 
 /// Windows getnameinfo hook implementation.

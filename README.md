@@ -250,6 +250,8 @@ proxychains4 --group jp curl https://ifconfig.me
 
 IPv6 notes:
 - IPv6 targets are supported through SOCKS5/HTTP proxy hops.
+- With `proxy_dns` enabled, hostname lookups avoid system-DNS fallback paths.
+- `getaddrinfo(AF_INET6)` is handled via IPv4-mapped fake addresses for compatibility.
 - SOCKS4/4a does not support IPv6 target addresses.
 
 Validation and discovery:

@@ -50,7 +50,8 @@ impl HookState {
 /// Global hook state
 static HOOK_STATE: OnceLock<HookState> = OnceLock::new();
 /// Track addrinfo/sockaddr allocations created by our getaddrinfo hook.
-static CUSTOM_ADDRINFO_ALLOCATIONS: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
+static CUSTOM_ADDRINFO_ALLOCATIONS: OnceLock<Mutex<HashMap<usize, CustomAddrinfoAllocation>>> =
+    OnceLock::new();
 
 thread_local! {
     static GETHOSTBYNAME_STORE: RefCell<Option<Box<HostentStore>>> = const { RefCell::new(None) };
@@ -63,7 +64,13 @@ struct HostentStore {
     hostent: libc::hostent,
 }
 
-fn custom_alloc_map() -> &'static Mutex<HashMap<usize, usize>> {
+#[derive(Clone, Copy)]
+struct CustomAddrinfoAllocation {
+    sockaddr_ptr: usize,
+    family: libc::c_int,
+}
+
+fn custom_alloc_map() -> &'static Mutex<HashMap<usize, CustomAddrinfoAllocation>> {
     CUSTOM_ADDRINFO_ALLOCATIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -91,6 +98,106 @@ unsafe fn write_hostname_to_buf(host: *mut c_char, hostlen: libc::socklen_t, hos
     std::ptr::copy_nonoverlapping(bytes.as_ptr(), host as *mut u8, bytes.len());
     *host.add(bytes.len()) = 0;
     0
+}
+
+unsafe fn store_fake_addrinfo_result(
+    fake_ip: std::net::Ipv4Addr,
+    service_port: u16,
+    hints: *const libc::addrinfo,
+    requested_family: libc::c_int,
+    res: *mut *mut libc::addrinfo,
+) -> c_int {
+    match requested_family {
+        libc::AF_INET => {
+            let mut sockaddr: libc::sockaddr_in = std::mem::zeroed();
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+            {
+                sockaddr.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
+            }
+            sockaddr.sin_family = libc::AF_INET as libc::sa_family_t;
+            sockaddr.sin_port = service_port.to_be();
+            sockaddr.sin_addr = libc::in_addr {
+                s_addr: u32::from_ne_bytes(fake_ip.octets()),
+            };
+
+            let sockaddr_ptr = Box::into_raw(Box::new(sockaddr));
+            let mut ai: libc::addrinfo = std::mem::zeroed();
+            ai.ai_flags = if hints.is_null() { 0 } else { (*hints).ai_flags };
+            ai.ai_family = libc::AF_INET;
+            ai.ai_socktype = if hints.is_null() {
+                libc::SOCK_STREAM
+            } else {
+                (*hints).ai_socktype
+            };
+            ai.ai_protocol = if hints.is_null() {
+                libc::IPPROTO_TCP
+            } else {
+                (*hints).ai_protocol
+            };
+            ai.ai_addrlen = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+            ai.ai_addr = sockaddr_ptr as *mut libc::sockaddr;
+            ai.ai_canonname = std::ptr::null_mut();
+            ai.ai_next = std::ptr::null_mut();
+
+            let ai_ptr = Box::into_raw(Box::new(ai));
+            *res = ai_ptr;
+            custom_alloc_map().lock().insert(
+                ai_ptr as usize,
+                CustomAddrinfoAllocation {
+                    sockaddr_ptr: sockaddr_ptr as usize,
+                    family: libc::AF_INET,
+                },
+            );
+            0
+        }
+        libc::AF_INET6 => {
+            let mut mapped = [0u8; 16];
+            mapped[10] = 0xff;
+            mapped[11] = 0xff;
+            mapped[12..16].copy_from_slice(&fake_ip.octets());
+
+            let mut sockaddr: libc::sockaddr_in6 = std::mem::zeroed();
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+            {
+                sockaddr.sin6_len = std::mem::size_of::<libc::sockaddr_in6>() as u8;
+            }
+            sockaddr.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+            sockaddr.sin6_port = service_port.to_be();
+            sockaddr.sin6_addr = libc::in6_addr { s6_addr: mapped };
+            sockaddr.sin6_scope_id = 0;
+
+            let sockaddr_ptr = Box::into_raw(Box::new(sockaddr));
+            let mut ai: libc::addrinfo = std::mem::zeroed();
+            ai.ai_flags = if hints.is_null() { 0 } else { (*hints).ai_flags };
+            ai.ai_family = libc::AF_INET6;
+            ai.ai_socktype = if hints.is_null() {
+                libc::SOCK_STREAM
+            } else {
+                (*hints).ai_socktype
+            };
+            ai.ai_protocol = if hints.is_null() {
+                libc::IPPROTO_TCP
+            } else {
+                (*hints).ai_protocol
+            };
+            ai.ai_addrlen = std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
+            ai.ai_addr = sockaddr_ptr as *mut libc::sockaddr;
+            ai.ai_canonname = std::ptr::null_mut();
+            ai.ai_next = std::ptr::null_mut();
+
+            let ai_ptr = Box::into_raw(Box::new(ai));
+            *res = ai_ptr;
+            custom_alloc_map().lock().insert(
+                ai_ptr as usize,
+                CustomAddrinfoAllocation {
+                    sockaddr_ptr: sockaddr_ptr as usize,
+                    family: libc::AF_INET6,
+                },
+            );
+            0
+        }
+        _ => libc::EAI_FAMILY,
+    }
 }
 
 /// Initialize the hook library
@@ -161,12 +268,24 @@ pub unsafe fn hook_connect(
     }
 
     // Apply DNAT if configured
-    let (final_ip, final_port) = state.config.apply_dnat_ip(&target_ip, target_port);
+    let (dnat_ip, final_port) = state.config.apply_dnat_ip(&target_ip, target_port);
 
-    // Check if this is a fake IP (needs remote DNS resolution)
-    let target_domain = match final_ip {
-        IpAddr::V4(v4) if is_fake_ip(&v4) => state.dns_resolver.get_hostname(&v4),
-        _ => None,
+    // Check if this is a fake IP (needs remote DNS resolution). For IPv6-mapped
+    // fake addresses, collapse to IPv4 so SOCKS4a path can still use the domain.
+    let (final_ip, target_domain) = match dnat_ip {
+        IpAddr::V4(v4) if is_fake_ip(&v4) => (IpAddr::V4(v4), state.dns_resolver.get_hostname(&v4)),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                if is_fake_ip(&v4) {
+                    (IpAddr::V4(v4), state.dns_resolver.get_hostname(&v4))
+                } else {
+                    (IpAddr::V6(v6), None)
+                }
+            } else {
+                (IpAddr::V6(v6), None)
+            }
+        }
+        _ => (dnat_ip, None),
     };
 
     // Check if proxy DNS is enabled and we have a domain
@@ -265,65 +384,36 @@ pub unsafe fn hook_getaddrinfo(
         return original_getaddrinfo(node, service, hints, res);
     }
 
-    // Preserve behavior for literal IPv4 strings.
-    if hostname.parse::<std::net::Ipv4Addr>().is_ok() {
+    // Preserve behavior for literal IP strings.
+    if hostname.parse::<std::net::IpAddr>().is_ok() {
         return original_getaddrinfo(node, service, hints, res);
     }
 
-    // Respect non-IPv4 family hints.
-    if !hints.is_null() {
-        let ai_family = (*hints).ai_family;
-        if ai_family != libc::AF_INET && ai_family != libc::AF_UNSPEC {
-            return original_getaddrinfo(node, service, hints, res);
+    let requested_family = if hints.is_null() {
+        libc::AF_INET
+    } else {
+        match (*hints).ai_family {
+            libc::AF_UNSPEC => libc::AF_INET,
+            libc::AF_INET => libc::AF_INET,
+            libc::AF_INET6 => libc::AF_INET6,
+            _ => return libc::EAI_FAMILY,
         }
-    }
+    };
 
     // Generate fake IP
     let fake_ip = match state.dns_resolver.resolve(&hostname) {
         Ok(ip) => ip,
         Err(e) => {
             error!("Failed to resolve {} in hook_getaddrinfo: {}", hostname, e);
-            return original_getaddrinfo(node, service, hints, res);
+            return libc::EAI_NONAME;
         }
     };
 
     let service_port = parse_service_port(service);
-
-    let mut sockaddr: libc::sockaddr_in = std::mem::zeroed();
-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
-    {
-        sockaddr.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
+    let ret = store_fake_addrinfo_result(fake_ip, service_port, hints, requested_family, res);
+    if ret != 0 {
+        return ret;
     }
-    sockaddr.sin_family = libc::AF_INET as libc::sa_family_t;
-    sockaddr.sin_port = service_port.to_be();
-    sockaddr.sin_addr = libc::in_addr {
-        s_addr: u32::from_ne_bytes(fake_ip.octets()),
-    };
-
-    let sockaddr_ptr = Box::into_raw(Box::new(sockaddr));
-    let mut ai: libc::addrinfo = std::mem::zeroed();
-    ai.ai_flags = if hints.is_null() { 0 } else { (*hints).ai_flags };
-    ai.ai_family = libc::AF_INET;
-    ai.ai_socktype = if hints.is_null() {
-        libc::SOCK_STREAM
-    } else {
-        (*hints).ai_socktype
-    };
-    ai.ai_protocol = if hints.is_null() {
-        libc::IPPROTO_TCP
-    } else {
-        (*hints).ai_protocol
-    };
-    ai.ai_addrlen = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-    ai.ai_addr = sockaddr_ptr as *mut libc::sockaddr;
-    ai.ai_canonname = std::ptr::null_mut();
-    ai.ai_next = std::ptr::null_mut();
-
-    let ai_ptr = Box::into_raw(Box::new(ai));
-    *res = ai_ptr;
-    custom_alloc_map()
-        .lock()
-        .insert(ai_ptr as usize, sockaddr_ptr as usize);
 
     debug!("Assigned fake IP {} for {}", fake_ip, hostname);
 
@@ -361,8 +451,8 @@ pub unsafe fn hook_gethostbyname(name: *const c_char) -> *mut libc::hostent {
         return original_gethostbyname(name);
     }
 
-    // Preserve behavior for literal IPv4 strings.
-    if hostname.parse::<std::net::Ipv4Addr>().is_ok() {
+    // Preserve behavior for literal IP strings.
+    if hostname.parse::<std::net::IpAddr>().is_ok() {
         return original_gethostbyname(name);
     }
 
@@ -371,7 +461,7 @@ pub unsafe fn hook_gethostbyname(name: *const c_char) -> *mut libc::hostent {
         Ok(ip) => ip,
         Err(e) => {
             error!("Failed to resolve {} in hook_gethostbyname: {}", hostname, e);
-            return original_gethostbyname(name);
+            return std::ptr::null_mut();
         }
     };
 
@@ -415,8 +505,12 @@ pub unsafe fn hook_freeaddrinfo(res: *mut libc::addrinfo) {
         return;
     }
 
-    if let Some(sockaddr_ptr) = custom_alloc_map().lock().remove(&(res as usize)) {
-        let _ = Box::from_raw(sockaddr_ptr as *mut libc::sockaddr_in);
+    if let Some(alloc) = custom_alloc_map().lock().remove(&(res as usize)) {
+        if alloc.family == libc::AF_INET6 {
+            let _ = Box::from_raw(alloc.sockaddr_ptr as *mut libc::sockaddr_in6);
+        } else {
+            let _ = Box::from_raw(alloc.sockaddr_ptr as *mut libc::sockaddr_in);
+        }
         let _ = Box::from_raw(res);
         return;
     }
