@@ -164,9 +164,13 @@ pub unsafe fn hook_connect(
         }
         Err(e) => {
             error!("Failed to establish proxy chain: {}", e);
-            // Set errno using nix
-            let _ = nix::errno::Errno::last_raw();
-            unsafe {
+            // Set errno in a platform-specific way.
+            #[cfg(target_os = "linux")]
+            {
+                *libc::__errno_location() = libc::ECONNREFUSED;
+            }
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+            {
                 *libc::__error() = libc::ECONNREFUSED;
             }
             -1
