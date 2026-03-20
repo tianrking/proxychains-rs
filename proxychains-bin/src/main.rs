@@ -11,6 +11,7 @@ use std::io::ErrorKind;
 use std::net::{SocketAddr, SocketAddrV4, TcpStream};
 use std::path::PathBuf;
 use std::process;
+use std::time::SystemTime;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
@@ -299,6 +300,10 @@ fn build_probe_report(results: Vec<ProbeNode>, timeout: Duration, group: String)
         }
     }
     ProbeReport {
+        schema_version: "1.0".to_string(),
+        generated_at: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
         timeout_ms: timeout.as_millis(),
         selected_group: group,
         summary: ProbeSummary { total, ok, fail },
@@ -347,6 +352,8 @@ fn print_probe_report(report: &ProbeReport) {
 
 #[derive(Debug, Serialize)]
 struct ProbeReport {
+    schema_version: String,
+    generated_at: u64,
     timeout_ms: u128,
     selected_group: String,
     summary: ProbeSummary,
