@@ -133,6 +133,94 @@ impl ProxychainsInjector {
         Ok(child)
     }
 
+    /// Create a suspended process, inject DLL, resume, and wait for completion (Windows).
+    #[cfg(windows)]
+    pub fn spawn_inject_wait(&self, process_info: &ProcessInfo) -> Result<i32> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::{PCWSTR, PWSTR};
+        use windows::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows::Win32::System::Threading::{
+            CreateProcessW, GetExitCodeProcess, ResumeThread, WaitForSingleObject,
+            CREATE_SUSPENDED, INFINITE, PROCESS_INFORMATION, STARTUPINFOW,
+        };
+
+        fn quote_arg(arg: &str) -> String {
+            if arg.is_empty()
+                || arg.contains(' ')
+                || arg.contains('\t')
+                || arg.contains('"')
+                || arg.contains('\\')
+            {
+                let escaped = arg.replace('\\', "\\\\").replace('"', "\\\"");
+                format!("\"{}\"", escaped)
+            } else {
+                arg.to_string()
+            }
+        }
+
+        let mut command_line = quote_arg(&process_info.command);
+        for arg in &process_info.args {
+            command_line.push(' ');
+            command_line.push_str(&quote_arg(arg));
+        }
+
+        debug!("Spawning suspended process: {}", command_line);
+
+        let mut cmd_wide: Vec<u16> = std::ffi::OsStr::new(&command_line)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut startup_info = STARTUPINFOW::default();
+        startup_info.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+        let mut process_info_win = PROCESS_INFORMATION::default();
+
+        unsafe {
+            CreateProcessW(
+                PCWSTR::null(),
+                PWSTR(cmd_wide.as_mut_ptr()),
+                None,
+                None,
+                false,
+                CREATE_SUSPENDED,
+                None,
+                PCWSTR::null(),
+                &startup_info,
+                &mut process_info_win,
+            )
+            .map_err(|e| InjectorError::ProcessCreationFailed(format!("{:?}", e)))?;
+
+            let process_handle: HANDLE = process_info_win.hProcess;
+            let thread_handle: HANDLE = process_info_win.hThread;
+            let pid = process_info_win.dwProcessId;
+            debug!("Suspended process created with PID: {}", pid);
+
+            if let Err(e) = self.inject_dll(process_handle) {
+                let _ = CloseHandle(thread_handle);
+                let _ = CloseHandle(process_handle);
+                return Err(e);
+            }
+            info!("Successfully injected DLL into suspended process {}", pid);
+
+            let resume_ret = ResumeThread(thread_handle);
+            if resume_ret == u32::MAX {
+                let _ = CloseHandle(thread_handle);
+                let _ = CloseHandle(process_handle);
+                return Err(InjectorError::WindowsApi("ResumeThread failed".into()));
+            }
+
+            let _ = WaitForSingleObject(process_handle, INFINITE);
+            let mut exit_code = 1u32;
+            GetExitCodeProcess(process_handle, &mut exit_code)
+                .map_err(|e| InjectorError::WindowsApi(format!("GetExitCodeProcess failed: {:?}", e)))?;
+
+            let _ = CloseHandle(thread_handle);
+            let _ = CloseHandle(process_handle);
+
+            Ok(exit_code as i32)
+        }
+    }
+
     /// Internal DLL injection method (Windows)
     #[cfg(windows)]
     unsafe fn inject_dll(&self, process: windows::Win32::Foundation::HANDLE) -> Result<()> {

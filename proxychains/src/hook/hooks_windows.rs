@@ -331,6 +331,7 @@ pub unsafe extern "system" fn hook_connect_impl(
         None => return original_connect(sock, addr, len),
     };
     let target_port = get_port_from_sockaddr(addr);
+    debug!("hook_connect_impl intercepted target {}:{}", target_ip, target_port);
 
     if config.should_bypass_ip(&target_ip) {
         return original_connect(sock, addr, len);
@@ -414,6 +415,11 @@ pub unsafe extern "system" fn hook_wsa_connect_impl(
     _sqos: *const c_void,
     _gqos: *const c_void,
 ) -> i32 {
+    if !name.is_null() && namelen > 0 {
+        if let (Some(ip), port) = (get_ipaddr_from_sockaddr(name), get_port_from_sockaddr(name)) {
+            debug!("hook_wsa_connect_impl intercepted target {}:{}", ip, port);
+        }
+    }
     hook_connect_impl(sock, name, namelen)
 }
 

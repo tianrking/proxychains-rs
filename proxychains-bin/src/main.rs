@@ -66,6 +66,10 @@ struct Args {
     #[arg(long)]
     probe_json: bool,
 
+    /// In text probe output, print only failed nodes
+    #[arg(long)]
+    probe_fail_only: bool,
+
     /// The command to run
     #[arg(
         required_unless_present_any = ["list_groups", "check", "probe"],
@@ -265,7 +269,7 @@ fn run_probe(config: &Config, args: &Args) -> usize {
             serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
         );
     } else {
-        print_probe_report(&report);
+        print_probe_report(&report, args.probe_fail_only);
     }
     failed
 }
@@ -345,11 +349,14 @@ fn format_unix_ts_iso8601(ts: u64) -> String {
         .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string())
 }
 
-fn print_probe_report(report: &ProbeReport) {
+fn print_probe_report(report: &ProbeReport, fail_only: bool) {
     println!("Proxy probe:");
     println!("  timeout_ms={}", report.timeout_ms);
     println!("  group={}", report.selected_group);
     for n in &report.nodes {
+        if fail_only && n.ok {
+            continue;
+        }
         if n.ok {
             println!(
                 "  [{}] OK   {:<8} {}  {} ms",
@@ -597,19 +604,9 @@ fn execute_command(args: &Args, config: &Config) -> Result<i32, String> {
 
     debug!("Spawning and injecting: {:?}", process_info);
 
-    // Spawn the process and inject DLL
-    let mut child = injector
-        .spawn_and_inject(&process_info)
-        .map_err(|e| format!("Failed to spawn and inject: {}", e))?;
-
-    // Wait for the process to complete
-    let status = child
-        .wait()
-        .map_err(|e| format!("Failed to wait for process: {}", e))?;
-
-    let exit_code = status
-        .code()
-        .unwrap_or(1);
+    let exit_code = injector
+        .spawn_inject_wait(&process_info)
+        .map_err(|e| format!("Failed to spawn/inject/wait: {}", e))?;
 
     info!("Process exited with code: {}", exit_code);
 
@@ -684,5 +681,13 @@ mod tests {
         assert!(args.is_ok());
         let args = args.unwrap();
         assert!(args.probe_json);
+    }
+
+    #[test]
+    fn test_args_probe_fail_only() {
+        let args = Args::try_parse_from(["proxychains4", "--probe", "--probe-fail-only"]);
+        assert!(args.is_ok());
+        let args = args.unwrap();
+        assert!(args.probe_fail_only);
     }
 }
