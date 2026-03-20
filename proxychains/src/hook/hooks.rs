@@ -74,7 +74,6 @@ fn custom_alloc_map() -> &'static Mutex<HashMap<usize, CustomAddrinfoAllocation>
 
 const CONFIG_RELOAD_INTERVAL: Duration = Duration::from_secs(2);
 
-#[derive(Clone)]
 struct HookSnapshot {
     config: Config,
     dns_resolver: crate::dns::DnsResolver,
