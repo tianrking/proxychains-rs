@@ -22,6 +22,8 @@ use windows::Win32::Networking::WinSock::{
     WSASetLastError,
 };
 use windows::core::GUID;
+use windows::Win32::System::IO::OVERLAPPED;
+use windows::Win32::System::Threading::SetEvent;
 
 use crate::config::{ChainType, Config, ProxyData, ProxyState};
 use crate::dns::{is_fake_ip, DnsResolver};
@@ -32,7 +34,8 @@ use crate::ConfigParser;
 
 use super::interpose_windows::{
     init_original_functions, original_connect, original_freeaddrinfo, original_getaddrinfo,
-    original_getaddrinfow, original_gethostbyname, original_getnameinfo, original_wsa_ioctl,
+    original_getaddrinfoexw, original_getaddrinfow, original_gethostbyname, original_getnameinfo,
+    original_dns_query_a, original_dns_query_w, original_wsa_ioctl,
 };
 use super::reload::config_reload_interval;
 
@@ -461,7 +464,6 @@ const WSAID_CONNECTEX: GUID = GUID::from_u128(0x25a207b9_ddf3_4660_8ee9_76e58c74
 /// ConnectEx replacement used when applications query extension function pointers via WSAIoctl.
 ///
 /// This implementation is intentionally synchronous:
-/// - `lpOverlapped != NULL` is rejected (`WSAEOPNOTSUPP`) to avoid silent bypass.
 /// - `dwSendDataLength > 0` is rejected (`WSAEOPNOTSUPP`) because initial-send semantics are
 ///   not yet mirrored.
 #[cfg(windows)]
@@ -474,7 +476,7 @@ pub unsafe extern "system" fn hook_connect_ex_impl(
     bytes_sent: *mut u32,
     overlapped: *mut c_void,
 ) -> i32 {
-    if !overlapped.is_null() || (!send_buf.is_null() && send_len > 0) {
+    if !send_buf.is_null() && send_len > 0 {
         WSASetLastError(WSAEOPNOTSUPP.0);
         return 0;
     }
@@ -487,6 +489,12 @@ pub unsafe extern "system" fn hook_connect_ex_impl(
     if ret == SOCKET_ERROR {
         0
     } else {
+        if !overlapped.is_null() {
+            let ov = &mut *(overlapped as *mut OVERLAPPED);
+            if !ov.hEvent.is_invalid() {
+                let _ = SetEvent(ov.hEvent);
+            }
+        }
         1
     }
 }
@@ -757,6 +765,166 @@ pub unsafe extern "system" fn hook_getaddrinfow_impl(
 
     debug!("Assigned fake IP {} for {} (GetAddrInfoW)", fake_ip, hostname);
     0
+}
+
+/// Windows GetAddrInfoExW hook implementation.
+#[cfg(windows)]
+pub unsafe extern "system" fn hook_getaddrinfoexw_impl(
+    pname: *const u16,
+    pservice: *const u16,
+    namespace: u32,
+    pnspid: *mut c_void,
+    hints: *const c_void,
+    ppresult: *mut *mut c_void,
+    timeout: *mut c_void,
+    overlapped: *mut c_void,
+    completion_routine: *mut c_void,
+    pname_handle: *mut c_void,
+) -> i32 {
+    let state = match get_hook_state() {
+        Some(s) => s,
+        None => {
+            return original_getaddrinfoexw(
+                pname,
+                pservice,
+                namespace,
+                pnspid,
+                hints,
+                ppresult,
+                timeout,
+                overlapped,
+                completion_routine,
+                pname_handle,
+            )
+        }
+    };
+    maybe_reload_config(state);
+    let config = state.config.lock().clone();
+    if !config.proxy_dns {
+        return original_getaddrinfoexw(
+            pname,
+            pservice,
+            namespace,
+            pnspid,
+            hints,
+            ppresult,
+            timeout,
+            overlapped,
+            completion_routine,
+            pname_handle,
+        );
+    }
+    let dns_resolver = DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
+
+    if pname.is_null() {
+        return WSAEINVAL.0;
+    }
+
+    let hostname = match parse_wide_string(pname) {
+        Ok(s) => s,
+        Err(_) => return WSAEINVAL.0,
+    };
+
+    if hostname.parse::<IpAddr>().is_ok() || crate::dns::lookup_in_hosts(&hostname).is_some() {
+        return original_getaddrinfoexw(
+            pname,
+            pservice,
+            namespace,
+            pnspid,
+            hints,
+            ppresult,
+            timeout,
+            overlapped,
+            completion_routine,
+            pname_handle,
+        );
+    }
+
+    let fake_ip = match dns_resolver.resolve(&hostname) {
+        Ok(ip) => ip,
+        Err(_) => return WSAHOST_NOT_FOUND.0,
+    };
+
+    let fake_wide: Vec<u16> = fake_ip
+        .to_string()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    original_getaddrinfoexw(
+        fake_wide.as_ptr(),
+        pservice,
+        namespace,
+        pnspid,
+        hints,
+        ppresult,
+        timeout,
+        overlapped,
+        completion_routine,
+        pname_handle,
+    )
+}
+
+const DNS_ERROR_RCODE_NAME_ERROR: i32 = 9003;
+
+/// Windows DnsQuery_A hook implementation.
+#[cfg(windows)]
+pub unsafe extern "system" fn hook_dns_query_a_impl(
+    name: *const i8,
+    query_type: u16,
+    options: u32,
+    extra: *mut c_void,
+    result: *mut *mut c_void,
+    reserved: *mut c_void,
+) -> i32 {
+    let state = match get_hook_state() {
+        Some(s) => s,
+        None => return original_dns_query_a(name, query_type, options, extra, result, reserved),
+    };
+    maybe_reload_config(state);
+    let config = state.config.lock().clone();
+    if !config.proxy_dns || name.is_null() {
+        return original_dns_query_a(name, query_type, options, extra, result, reserved);
+    }
+
+    let hostname = match CStr::from_ptr(name).to_str() {
+        Ok(s) => s,
+        Err(_) => return DNS_ERROR_RCODE_NAME_ERROR,
+    };
+    if hostname.parse::<IpAddr>().is_ok() || crate::dns::lookup_in_hosts(hostname).is_some() {
+        return original_dns_query_a(name, query_type, options, extra, result, reserved);
+    }
+    DNS_ERROR_RCODE_NAME_ERROR
+}
+
+/// Windows DnsQuery_W hook implementation.
+#[cfg(windows)]
+pub unsafe extern "system" fn hook_dns_query_w_impl(
+    name: *const u16,
+    query_type: u16,
+    options: u32,
+    extra: *mut c_void,
+    result: *mut *mut c_void,
+    reserved: *mut c_void,
+) -> i32 {
+    let state = match get_hook_state() {
+        Some(s) => s,
+        None => return original_dns_query_w(name, query_type, options, extra, result, reserved),
+    };
+    maybe_reload_config(state);
+    let config = state.config.lock().clone();
+    if !config.proxy_dns || name.is_null() {
+        return original_dns_query_w(name, query_type, options, extra, result, reserved);
+    }
+
+    let hostname = match parse_wide_string(name) {
+        Ok(s) => s,
+        Err(_) => return DNS_ERROR_RCODE_NAME_ERROR,
+    };
+    if hostname.parse::<IpAddr>().is_ok() || crate::dns::lookup_in_hosts(&hostname).is_some() {
+        return original_dns_query_w(name, query_type, options, extra, result, reserved);
+    }
+    DNS_ERROR_RCODE_NAME_ERROR
 }
 
 /// Windows freeaddrinfo hook implementation.

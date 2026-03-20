@@ -88,6 +88,9 @@ proxychains4 curl https://ifconfig.me
 proxychains4.exe curl https://ifconfig.me
 ```
 
+Forced validation manual:
+- [docs/forced-proxy-validation.md](docs/forced-proxy-validation.md)
+
 Validate config and groups:
 
 ```bash

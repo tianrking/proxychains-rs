@@ -88,6 +88,9 @@ proxychains4 curl https://ifconfig.me
 proxychains4.exe curl https://ifconfig.me
 ```
 
+强制代理验证手册：
+- [docs/forced-proxy-validation.md](docs/forced-proxy-validation.md)
+
 查看分组/校验配置：
 
 ```bash

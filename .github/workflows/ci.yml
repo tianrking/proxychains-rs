@@ -108,6 +108,14 @@ jobs:
             cargo run -p proxychains-bin -- -f ./ci.e2e.conf --probe --probe-json > probe-report.json
             grep -q "\"summary\"" probe-report.json
 
+            DNS_V4="$(cargo run -q -p proxychains-bin -- -q -f ./ci.e2e.conf python3 -c "import socket;print(socket.getaddrinfo(\"dns-proxychains-e2e.invalid\",443,0,socket.SOCK_STREAM)[0][4][0])" | tr -d "\r\n")"
+            echo "dns v4 fake ip: ${DNS_V4}"
+            [[ "${DNS_V4}" == 224.* ]]
+
+            DNS_V6="$(cargo run -q -p proxychains-bin -- -q -f ./ci.e2e.conf python3 -c "import socket;print(socket.getaddrinfo(\"dns-proxychains-e2e.invalid\",443,socket.AF_INET6,socket.SOCK_STREAM)[0][4][0])" | tr -d "\r\n")"
+            echo "dns v6 fake ip: ${DNS_V6}"
+            [[ "${DNS_V6}" == ::ffff:224.* ]]
+
             PROXYCHAINS_TEST_SOCKS5_ADDR=127.0.0.1:19080 \
             PROXYCHAINS_TEST_HTTP_ADDR=127.0.0.1:18080 \
             cargo test -p proxychains --test real_backends -- --nocapture
