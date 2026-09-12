@@ -32,9 +32,16 @@ fn native_readiness_and_failure_cleanup() {
     let alive = child.try_wait().unwrap().is_none();
     std::fs::write(&config, "strict_chain\nproxy_dns\n[ProxyList]\nsocks5 127.0.0.1 9\n").unwrap();
     let retry = good.inject_by_pid(child.id());
+    let exact_name = std::path::Path::new(&fixture).file_name().unwrap().to_string_lossy();
+    let by_name = good.inject_by_name(&exact_name);
+    let mut second = std::process::Command::new(&fixture).arg("sleep").spawn().unwrap();
+    let ambiguous = good.inject_by_name(&exact_name);
+    second.kill().unwrap(); let _ = second.wait();
     child.kill().unwrap(); let _ = child.wait();
     assert!(result.is_err());
     assert!(alive, "failed attach must not terminate an existing process");
     assert!(retry.is_ok(), "corrected configuration must be retryable: {retry:?}");
+    assert!(by_name.is_ok(), "unique executable attachment: {by_name:?}");
+    assert!(ambiguous.is_err(), "multiple processes require explicit PID");
     std::fs::remove_dir_all(&dir).unwrap();
 }

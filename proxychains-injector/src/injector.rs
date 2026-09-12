@@ -116,8 +116,27 @@ impl ProxychainsInjector {
     /// Inject into an existing process by name (Windows)
     #[cfg(windows)]
     pub fn inject_by_name(&self, name: &str) -> Result<()> {
-        debug!("Injecting into process with name: {}", name);
-        Err(InjectorError::UnsupportedPlatform)
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Diagnostics::ToolHelp::*;
+        let mut matches = Vec::new();
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+                .map_err(|e| InjectorError::WindowsApi(e.to_string()))?;
+            let mut entry = PROCESSENTRY32W::default(); entry.dwSize = std::mem::size_of_val(&entry) as u32;
+            if Process32FirstW(snapshot, &mut entry).is_ok() {
+                loop {
+                    let n = entry.szExeFile.iter().position(|c| *c == 0).unwrap_or(entry.szExeFile.len());
+                    if String::from_utf16_lossy(&entry.szExeFile[..n]).eq_ignore_ascii_case(name) { matches.push(entry.th32ProcessID); }
+                    if Process32NextW(snapshot, &mut entry).is_err() { break; }
+                }
+            }
+            let _ = CloseHandle(snapshot);
+        }
+        match matches.as_slice() {
+            [pid] => self.inject_by_pid(*pid),
+            [] => Err(InjectorError::ProcessNotFound(name.into())),
+            _ => Err(InjectorError::InjectionFailed(format!("Multiple processes named {name}; select an explicit PID: {matches:?}"))),
+        }
     }
 
     /// Create a new process and inject DLL (Windows)

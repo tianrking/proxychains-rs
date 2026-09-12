@@ -26,7 +26,7 @@ use proxychains::{Config, ConfigParser};
 /// Proxychains4 - Run commands through proxy chains
 #[derive(Parser, Debug)]
 #[command(name = "proxychains4")]
-#[command(author = "Proxychains Rust Team")]
+#[command(author = "tianrking")]
 #[command(version)]
 #[command(about = "Run commands through a chain of proxies", long_about = None)]
 struct Args {
@@ -74,9 +74,17 @@ struct Args {
     #[arg(long)]
     tree: bool,
 
+    /// Attach to an existing Windows process. Existing connections are unaffected.
+    #[arg(long, conflicts_with_all = ["attach_name", "tree", "command"])]
+    pid: Option<u32>,
+
+    /// Attach to one exact executable name; ambiguous matches require --pid.
+    #[arg(long, conflicts_with_all = ["pid", "tree", "command"])]
+    attach_name: Option<String>,
+
     /// The command to run
     #[arg(
-        required_unless_present_any = ["list_groups", "check", "probe"],
+        required_unless_present_any = ["list_groups", "check", "probe", "pid", "attach_name"],
         trailing_var_arg = true
     )]
     command: Vec<String>,
@@ -158,6 +166,25 @@ fn main() {
     if args.probe {
         let failed = run_probe(&config, &args);
         process::exit(if failed == 0 { 0 } else { 2 });
+    }
+
+    if args.pid.is_some() || args.attach_name.is_some() {
+        set_proxychains_env(&config, &args);
+        #[cfg(windows)]
+        {
+            let result = proxychains_injector::find_library_path()
+                .and_then(|path| proxychains_injector::ProxychainsInjector::new(&path))
+                .and_then(|injector| match args.pid {
+                    Some(pid) => injector.inject_by_pid(pid),
+                    None => injector.inject_by_name(args.attach_name.as_deref().unwrap()),
+                });
+            match result {
+                Ok(()) => { println!("Hooks ready; only subsequent supported connections are affected."); process::exit(0); }
+                Err(e) => { eprintln!("proxychains: attach failed: {e}"); process::exit(1); }
+            }
+        }
+        #[cfg(not(windows))]
+        { eprintln!("proxychains: process attachment requires Windows; use launch mode on this platform"); process::exit(1); }
     }
 
     // Execute the command with platform-specific injection
@@ -662,6 +689,14 @@ fn get_binary_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attach_modes_require_unambiguous_target() {
+        assert!(Args::try_parse_from(["proxychains4", "--pid", "123"]).is_ok());
+        assert!(Args::try_parse_from(["proxychains4", "--attach-name", "app.exe"]).is_ok());
+        assert!(Args::try_parse_from(["proxychains4", "--pid", "123", "--tree"]).is_err());
+        assert!(Args::try_parse_from(["proxychains4", "--pid", "123", "app.exe"]).is_err());
+    }
 
     #[test]
     fn test_args_parsing() {
