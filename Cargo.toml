@@ -10,10 +10,10 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.70"
-authors = ["Proxychains Rust Team"]
+rust-version = "1.88"
+authors = ["tianrking"]
 license = "GPL-2.0"
-repository = "https://github.com/rofl0r/proxychains-ng"
+repository = "https://github.com/tianrking/proxychains-rs"
 
 [workspace.dependencies]
 libc = "0.2"

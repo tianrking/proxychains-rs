@@ -39,7 +39,35 @@ jobs:
         run: cargo clippy --workspace --all-targets
 
       - name: Run tests
-        run: cargo test --workspace --all-targets
+        run: cargo test --locked --workspace --all-targets
+
+      - name: Build native injection fixtures
+        run: cargo build --locked --workspace --examples
+
+      - name: Build native hook libraries
+        run: cargo build --locked --workspace
+
+      - name: Verify Windows injection and TCP routing
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PROXYCHAINS_TEST_DLL = "$pwd/target/debug/proxychains.dll"
+          $env:PROXYCHAINS_TEST_FIXTURE = "$pwd/target/debug/examples/injection_fixture.exe"
+          cargo test --locked -p proxychains-injector --test native_readiness -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify Unix preload and TCP routing
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PROXYCHAINS_TEST_FIXTURE="$PWD/target/debug/examples/injection_fixture"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            export PROXYCHAINS_TEST_DLL="$PWD/target/debug/libproxychains.dylib"
+          else
+            export PROXYCHAINS_TEST_DLL="$PWD/target/debug/libproxychains.so"
+          fi
+          cargo test --locked -p proxychains-injector --test native_preload -- --ignored
 
       - name: Build release binaries
-        run: cargo build --release --workspace
+        run: cargo build --locked --release --workspace

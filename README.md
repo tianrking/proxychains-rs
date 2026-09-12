@@ -11,9 +11,18 @@ A modern Rust implementation of classic `proxychains4`, with cross-platform proc
 
 | Platform | Runtime mechanism | Status |
 |---|---|---|
-| Linux | `LD_PRELOAD` | Stable |
-| macOS | `DYLD_INSERT_LIBRARIES` | Stable |
-| Windows | DLL injection + MinHook | Beta (production-usable, still expanding edge-case coverage) |
+| Linux | `LD_PRELOAD` | Compile-checked; native regression gate added, event-loop compatibility pending |
+| macOS | `DYLD_INSERT_LIBRARIES` | Compile-checked; native regression gate added, protected apps and event loops not certified |
+| Windows | DLL injection + MinHook | Native fixture verified; tree timing and ConnectEx/IOCP remain incomplete |
+
+Author: **tianrking**. See [implementation status](docs/implementation-status.md)
+for verified behavior, commands and unfinished work. This is not system-enforced
+network isolation. `raw` is a no-handshake mode, not an IP tunnel. Arbitrary UDP,
+ICMP, QUIC workflows and complete Agent compatibility are not certified.
+
+New interfaces: `proxychains4 --pid PID`, `proxychains4 --attach-name FILE.exe`
+(Windows), and `proxychains-udp -f FILE --listen 127.0.0.1:1053 --target 1.1.1.1:53`
+(explicit UDP forwarding through exactly one SOCKS5 node).
 
 ## Linux Compatibility (Important)
 
@@ -61,14 +70,14 @@ Recommendation:
 ## Build
 
 Prerequisites:
-- Rust 1.70+
+- Rust 1.88+
 - Cargo
 
 Build and test:
 
 ```bash
-cargo test --workspace --all-targets
-cargo build --release --workspace
+cargo test --locked --workspace --all-targets
+cargo build --locked --release --workspace
 ```
 
 ## Binaries

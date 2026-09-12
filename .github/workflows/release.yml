@@ -29,7 +29,38 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build release binaries
-        run: cargo build --release --workspace
+        run: cargo build --locked --release --workspace
+
+      - name: Run deterministic tests
+        run: cargo test --locked --workspace --all-targets
+
+      - name: Build native injection fixtures
+        run: cargo build --locked --release --workspace --examples
+
+      - name: Build native hook libraries
+        run: cargo build --locked --release --workspace
+
+      - name: Verify Windows injection and TCP routing
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PROXYCHAINS_TEST_DLL = "$pwd/target/release/proxychains.dll"
+          $env:PROXYCHAINS_TEST_FIXTURE = "$pwd/target/release/examples/injection_fixture.exe"
+          cargo test --locked -p proxychains-injector --test native_readiness -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify Unix preload and TCP routing
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PROXYCHAINS_TEST_FIXTURE="$PWD/target/release/examples/injection_fixture"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            export PROXYCHAINS_TEST_DLL="$PWD/target/release/libproxychains.dylib"
+          else
+            export PROXYCHAINS_TEST_DLL="$PWD/target/release/libproxychains.so"
+          fi
+          cargo test --locked -p proxychains-injector --test native_preload -- --ignored
 
       - name: Package Linux artifacts
         if: runner.os == 'Linux'
@@ -38,6 +69,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cp target/release/proxychains4 dist/
+          cp target/release/proxychains-udp dist/
           cp target/release/libproxychains.so dist/
           cp proxychains.conf dist/
           cp README.md dist/
@@ -53,9 +85,10 @@ jobs:
           rm -rf "${PKG_ROOT}"
           mkdir -p "${PKG_ROOT}/DEBIAN" "${PKG_ROOT}/usr/bin" "${PKG_ROOT}/usr/lib" "${PKG_ROOT}/etc"
           cp target/release/proxychains4 "${PKG_ROOT}/usr/bin/proxychains4"
+          cp target/release/proxychains-udp "${PKG_ROOT}/usr/bin/proxychains-udp"
           cp target/release/libproxychains.so "${PKG_ROOT}/usr/lib/libproxychains.so"
           cp proxychains.conf "${PKG_ROOT}/etc/proxychains.conf"
-          printf "Package: proxychains-rs\nVersion: %s\nSection: net\nPriority: optional\nArchitecture: amd64\nMaintainer: Proxychains Rust Team\nDescription: Cross-platform proxychains implementation in Rust\n" "${VERSION}" > "${PKG_ROOT}/DEBIAN/control"
+          printf "Package: proxychains-rs\nVersion: %s\nSection: net\nPriority: optional\nArchitecture: amd64\nMaintainer: tianrking\nDescription: Cross-platform proxychains implementation in Rust\n" "${VERSION}" > "${PKG_ROOT}/DEBIAN/control"
           dpkg-deb --build "${PKG_ROOT}" "proxychains-rs-${GITHUB_REF_NAME}-linux-amd64.deb"
 
       - name: Package macOS artifacts
@@ -71,6 +104,7 @@ jobs:
           fi
           mkdir -p dist
           cp target/release/proxychains4 dist/
+          cp target/release/proxychains-udp dist/
           cp target/release/libproxychains.dylib dist/
           cp proxychains.conf dist/
           cp README.md dist/
@@ -93,6 +127,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           Copy-Item target\release\proxychains4.exe dist\
+          Copy-Item target\release\proxychains-udp.exe dist\
           Copy-Item target\release\proxychains.dll dist\
           Copy-Item proxychains.conf dist\
           Copy-Item README.md dist\
@@ -136,7 +171,7 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: |
           set -euo pipefail
-          cargo build --release --workspace --target aarch64-unknown-linux-gnu
+          cargo build --locked --release --workspace --target aarch64-unknown-linux-gnu
 
       - name: Package Linux arm64 artifacts
         shell: bash
@@ -144,6 +179,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cp target/aarch64-unknown-linux-gnu/release/proxychains4 dist/
+          cp target/aarch64-unknown-linux-gnu/release/proxychains-udp dist/
           cp target/aarch64-unknown-linux-gnu/release/libproxychains.so dist/
           cp proxychains.conf dist/
           cp README.md dist/
@@ -158,9 +194,10 @@ jobs:
           rm -rf "${PKG_ROOT}"
           mkdir -p "${PKG_ROOT}/DEBIAN" "${PKG_ROOT}/usr/bin" "${PKG_ROOT}/usr/lib" "${PKG_ROOT}/etc"
           cp target/aarch64-unknown-linux-gnu/release/proxychains4 "${PKG_ROOT}/usr/bin/proxychains4"
+          cp target/aarch64-unknown-linux-gnu/release/proxychains-udp "${PKG_ROOT}/usr/bin/proxychains-udp"
           cp target/aarch64-unknown-linux-gnu/release/libproxychains.so "${PKG_ROOT}/usr/lib/libproxychains.so"
           cp proxychains.conf "${PKG_ROOT}/etc/proxychains.conf"
-          printf "Package: proxychains-rs\nVersion: %s\nSection: net\nPriority: optional\nArchitecture: arm64\nMaintainer: Proxychains Rust Team\nDescription: Cross-platform proxychains implementation in Rust\n" "${VERSION}" > "${PKG_ROOT}/DEBIAN/control"
+          printf "Package: proxychains-rs\nVersion: %s\nSection: net\nPriority: optional\nArchitecture: arm64\nMaintainer: tianrking\nDescription: Cross-platform proxychains implementation in Rust\n" "${VERSION}" > "${PKG_ROOT}/DEBIAN/control"
           dpkg-deb --build "${PKG_ROOT}" "proxychains-rs-${GITHUB_REF_NAME}-linux-arm64.deb"
 
       - name: Upload packaged artifact

@@ -11,9 +11,18 @@
 
 | 平台 | 运行机制 | 状态 |
 |---|---|---|
-| Linux | `LD_PRELOAD` | 稳定 |
-| macOS | `DYLD_INSERT_LIBRARIES` | 稳定 |
-| Windows | DLL 注入 + MinHook | Beta（已可实用，持续补齐边缘场景） |
+| Linux | `LD_PRELOAD` | 交叉编译检查通过；已加入原生回归门禁，事件循环兼容性待完善 |
+| macOS | `DYLD_INSERT_LIBRARIES` | 交叉编译检查通过；受保护应用和事件循环尚未认证 |
+| Windows | DLL 注入 + MinHook | 原生测试程序通过；子进程注入时序、ConnectEx/IOCP 尚未完整实现 |
+
+作者：**tianrking**。已验证的能力、使用方法和未完成事项见
+[实施状态](docs/implementation-status.md)。当前不是系统级网络隔离工具，
+`raw` 不是原始 IP 隧道；任意应用 UDP、ICMP、QUIC 工作流和完整 Agent 兼容性尚未认证。
+
+新增 Windows 附加入口：`proxychains4 --pid PID`、
+`proxychains4 --attach-name FILE.exe`。新增显式 UDP 转发入口：
+`proxychains-udp -f FILE --listen 127.0.0.1:1053 --target 1.1.1.1:53`，
+配置必须只有一个 SOCKS5 节点，应用需主动使用本地 UDP 端口。
 
 ## Linux 支持范围（重要）
 
@@ -61,14 +70,14 @@
 ## 编译
 
 前置条件：
-- Rust 1.70+
+- Rust 1.88+
 - Cargo
 
 构建与测试：
 
 ```bash
-cargo test --workspace --all-targets
-cargo build --release --workspace
+cargo test --locked --workspace --all-targets
+cargo build --locked --release --workspace
 ```
 
 ## 产物

@@ -17,10 +17,10 @@ fn proxy_from_env(var: &str, proxy_type: ProxyType) -> Option<ProxyData> {
 }
 
 #[test]
+#[ignore = "requires PROXYCHAINS_TEST_SOCKS5_ADDR and external target access"]
 fn socks5_backend_handshake_works() {
     let Some(proxy) = proxy_from_env("PROXYCHAINS_TEST_SOCKS5_ADDR", ProxyType::Socks5) else {
-        eprintln!("skip: PROXYCHAINS_TEST_SOCKS5_ADDR not set");
-        return;
+        panic!("valid PROXYCHAINS_TEST_SOCKS5_ADDR required");
     };
 
     let mut stream = TcpStream::connect_timeout(
@@ -35,10 +35,10 @@ fn socks5_backend_handshake_works() {
 }
 
 #[test]
+#[ignore = "requires PROXYCHAINS_TEST_HTTP_ADDR and external target access"]
 fn http_connect_backend_handshake_works() {
     let Some(proxy) = proxy_from_env("PROXYCHAINS_TEST_HTTP_ADDR", ProxyType::Http) else {
-        eprintln!("skip: PROXYCHAINS_TEST_HTTP_ADDR not set");
-        return;
+        panic!("valid PROXYCHAINS_TEST_HTTP_ADDR required");
     };
 
     let mut stream = TcpStream::connect_timeout(
@@ -58,10 +58,10 @@ fn http_connect_backend_handshake_works() {
 }
 
 #[test]
+#[ignore = "requires PROXYCHAINS_TEST_SOCKS5_ADDR and external target access"]
 fn establish_chain_with_real_socks5_works() {
     let Some(proxy) = proxy_from_env("PROXYCHAINS_TEST_SOCKS5_ADDR", ProxyType::Socks5) else {
-        eprintln!("skip: PROXYCHAINS_TEST_SOCKS5_ADDR not set");
-        return;
+        panic!("valid PROXYCHAINS_TEST_SOCKS5_ADDR required");
     };
 
     let target = TargetAddress::from_domain("example.com");
