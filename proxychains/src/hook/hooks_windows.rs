@@ -191,8 +191,20 @@ unsafe fn connect_chain_on_socket(
     // The application owns this socket. We must not close it from the hook.
     let mut stream = ManuallyDrop::new(std::net::TcpStream::from_raw_socket(sock as u64));
     let stream_ref: &mut std::net::TcpStream = &mut *stream;
-    let _ = stream_ref.set_read_timeout(Some(timeout));
-    let _ = stream_ref.set_write_timeout(Some(timeout));
+    let old_read = stream_ref.read_timeout().map_err(|e| (Error::Io(e), 0))?;
+    let old_write = stream_ref.write_timeout().map_err(|e| (Error::Io(e), 0))?;
+    struct RestoreTimeouts(ManuallyDrop<std::net::TcpStream>, Option<std::time::Duration>, Option<std::time::Duration>);
+    impl Drop for RestoreTimeouts {
+        fn drop(&mut self) {
+            let _ = self.0.set_read_timeout(self.1);
+            let _ = self.0.set_write_timeout(self.2);
+        }
+    }
+    // Restore the exact handle: Winsock duplicated handles can have separate
+    // timeout values. ManuallyDrop borrows ownership without closing the socket.
+    let _restore = RestoreTimeouts(ManuallyDrop::new(std::net::TcpStream::from_raw_socket(sock as u64)), old_read, old_write);
+    stream_ref.set_read_timeout(Some(timeout)).map_err(|e| (Error::Io(e), 0))?;
+    stream_ref.set_write_timeout(Some(timeout)).map_err(|e| (Error::Io(e), 0))?;
 
     if selected.len() == 1 {
         if let Err(e) =
@@ -375,7 +387,10 @@ pub unsafe extern "system" fn hook_connect_impl(
         TargetAddress::from_ip(final_ip)
     };
 
-    let max_attempts = config.max_chain_retries.max(1);
+    // A failed handshake has already connected this application-owned socket.
+    // It cannot safely be reconnected to another proxy; let the application retry
+    // using a fresh socket, with failed-node state retained for selection.
+    let max_attempts = 1;
     for attempt in 1..=max_attempts {
         let (selected_indices, selected_proxies) = {
             let proxies = state.proxy_states.lock();

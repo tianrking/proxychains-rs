@@ -75,13 +75,17 @@ impl ChainManager {
             TargetAddress::from_ip(target_ip)
         };
 
-        match self.config.chain_type {
+        let stream = match self.config.chain_type {
             ChainType::Strict => self.strict_chain(&mut proxy_states, &target, target_port),
             ChainType::Dynamic => self.dynamic_chain(&mut proxy_states, &target, target_port),
             ChainType::Random => self.random_chain(&mut proxy_states, &target, target_port),
             ChainType::LoadBalance => self.load_balance_chain(&mut proxy_states, &target, target_port),
             ChainType::Failover => self.failover_chain(&mut proxy_states, &target, target_port),
-        }
+        }?;
+        // Handshake deadlines must not become application stream deadlines.
+        stream.set_read_timeout(None)?;
+        stream.set_write_timeout(None)?;
+        Ok(stream)
     }
 
     /// Strict chain - all proxies must work

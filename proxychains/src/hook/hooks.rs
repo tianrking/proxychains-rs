@@ -337,8 +337,12 @@ pub unsafe fn hook_connect(
         );
     }
 
-    // Close the original socket (we'll create a new one through the proxy)
-    libc::close(sock);
+    // Keep the application descriptor alive until the replacement is ready.
+    // Closing it first lets another thread reuse the number (or makes dup2(fd, fd)
+    // followed by close close the successful tunnel itself).
+    let descriptor_flags = libc::fcntl(sock, libc::F_GETFD);
+    let status_flags = libc::fcntl(sock, libc::F_GETFL);
+    if descriptor_flags < 0 || status_flags < 0 { return -1; }
 
     // Connect through proxy chain
     let chain_manager = ChainManager::new(state.config.clone());
@@ -351,14 +355,20 @@ pub unsafe fn hook_connect(
             // Get the file descriptor from the proxy stream
             let proxy_fd = proxy_stream.into_raw_fd();
 
+            if libc::fcntl(proxy_fd, libc::F_SETFL, status_flags) < 0 {
+                libc::close(proxy_fd);
+                return -1;
+            }
+
             // Use dup2 to make it the same fd as the original socket
             let result = libc::dup2(proxy_fd, sock);
-            libc::close(proxy_fd);
+            if proxy_fd != sock { libc::close(proxy_fd); }
 
             if result < 0 {
                 error!("Failed to duplicate socket fd");
                 return -1;
             }
+            if libc::fcntl(sock, libc::F_SETFD, descriptor_flags) < 0 { return -1; }
 
             info!("Proxy connection established");
             0
