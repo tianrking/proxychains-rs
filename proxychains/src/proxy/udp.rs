@@ -58,6 +58,11 @@ pub fn decode_udp_datagram(packet: &[u8]) -> Result<(TargetAddress,u16,&[u8])> {
 /// A single SOCKS5 UDP association. Dropping it closes its TCP control channel.
 pub struct UdpAssociation { control: TcpStream, socket: UdpSocket }
 impl UdpAssociation {
+    /// Adjust relay receive timeout after the control handshake completes.
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> Result<()> {
+        self.socket.set_read_timeout(timeout)?;
+        Ok(())
+    }
     pub fn connect(proxy: &ProxyData, connect_timeout: Duration, io_timeout: Duration) -> Result<Self> {
         if proxy.proxy_type != ProxyType::Socks5 { return Err(invalid("UDP requires a SOCKS5 proxy")); }
         let mut control=connect_to_proxy(proxy,connect_timeout)?;
