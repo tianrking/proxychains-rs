@@ -7,8 +7,8 @@ does not imply verification on an unavailable operating system or application.
 
 | Milestone | Status | Validation required |
 | --- | --- | --- |
-| TCP protocol correctness | In progress | Authentication, payload preservation, every proxy hop |
-| DNS mapping and configuration lifecycle | Pending | Subnets, concurrent allocation, stale mappings |
+| TCP protocol correctness | Core regressions fixed | Windows local protocol tests pass; Agent workflows pending |
+| DNS mapping and configuration lifecycle | Core fixes implemented | Custom subnet, concurrency, exhaustion and explicit missing path tests |
 | Injection readiness and process attachment | Pending | Native Windows failure and success fixtures |
 | Unix socket lifecycle and event-loop compatibility | Pending | Linux/macOS native preload tests |
 | UDP and IPv6 transport | Pending | Datagram association, IPv6 proxy and target fixtures |
@@ -20,3 +20,8 @@ Existing hook mode must not be described as universal or system-enforced fail-cl
 network isolation. Attaching to a running process cannot retroactively proxy its
 existing connections. UDP tunneling is distinct from interception of arbitrary UDP
 applications; neither implies ICMP/raw-IP forwarding.
+
+The pre-1.0 Rust API now returns Result from DnsCache::get_or_create and
+resolve_to_fake_ip. Callers must handle capacity exhaustion instead of assuming
+that old fake addresses can be recycled. DNS mappings are process-local, not a
+cross-process DNS service.

@@ -49,26 +49,25 @@ impl DnsCache {
     }
 
     /// Get or create a fake IP for a hostname
-    pub fn get_or_create(&self, hostname: &str) -> Ipv4Addr {
+    pub fn get_or_create(&self, hostname: &str) -> crate::error::Result<Ipv4Addr> {
         // Check if already cached
         {
             let host_to_ip = self.host_to_ip.read();
             if let Some(&ip) = host_to_ip.get(hostname) {
-                return ip;
+                return Ok(ip);
             }
         }
 
         // Create new entry
         let mut counter = self.counter.write();
-        *counter += 1;
-
-        // Check for overflow
-        if *counter >= self.max_entries as u32 {
-            // Reset counter and clear cache
-            *counter = 1;
-            self.ip_to_host.write().clear();
-            self.host_to_ip.write().clear();
+        // Recheck after acquiring the allocation lock: another caller may have won.
+        if let Some(&ip) = self.host_to_ip.read().get(hostname) {
+            return Ok(ip);
         }
+        if *counter >= self.max_entries as u32 {
+            return Err(crate::error::Error::Dns("Fake IP cache exhausted; refusing address reuse".into()));
+        }
+        *counter += 1;
 
         let fake_ip = self.make_internal_ip(*counter);
 
@@ -82,7 +81,7 @@ impl DnsCache {
         self.ip_to_host.write().insert(fake_ip, entry);
         self.host_to_ip.write().insert(hostname.to_string(), fake_ip);
 
-        fake_ip
+        Ok(fake_ip)
     }
 
     /// Get hostname from fake IP
@@ -105,7 +104,6 @@ impl DnsCache {
     /// Generate an internal/fake IP address
     fn make_internal_ip(&self, index: u32) -> Ipv4Addr {
         // Format: subnet.(index>>16).(index>>8).(index)
-        let index = index + 1; // Start at .0.0.1
         Ipv4Addr::new(
             self.subnet,
             ((index >> 16) & 0xFF) as u8,
@@ -124,9 +122,10 @@ impl DnsCache {
 
     /// Clear the cache
     pub fn clear(&self) {
+        let _allocation = self.counter.write();
         self.ip_to_host.write().clear();
         self.host_to_ip.write().clear();
-        *self.counter.write() = 0;
+        // Retired addresses are never reused while this cache is alive.
     }
 
     /// Get cache size
@@ -165,10 +164,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn exhaustion_and_clear_never_reassign_old_addresses() {
+        let mut cache = DnsCache::new(198);
+        cache.max_entries = 2;
+        let first = cache.get_or_create("first.invalid").unwrap();
+        assert_eq!(first, Ipv4Addr::new(198, 0, 0, 1));
+        cache.clear();
+        let second = cache.get_or_create("second.invalid").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(cache.get_hostname(&first), None);
+        assert!(cache.get_or_create("third.invalid").is_err());
+        assert_eq!(cache.get_hostname(&second).as_deref(), Some("second.invalid"));
+    }
+
+    #[test]
+    fn concurrent_resolution_has_one_stable_mapping() {
+        let cache = std::sync::Arc::new(DnsCache::new(198));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let workers: Vec<_> = (0..16).map(|_| {
+            let cache = cache.clone(); let barrier = barrier.clone();
+            std::thread::spawn(move || { barrier.wait(); cache.get_or_create("same.invalid").unwrap() })
+        }).collect();
+        let ips: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+        assert!(ips.iter().all(|ip| *ip == ips[0]));
+        assert_eq!(cache.size(), 1);
+    }
+
+    #[test]
     fn test_dns_cache() {
         let cache = DnsCache::default();
 
-        let ip1 = cache.get_or_create("example.com");
+        let ip1 = cache.get_or_create("example.com").unwrap();
         assert!(cache.is_fake_ip(&ip1));
         assert!(cache.contains("example.com"));
 
@@ -176,11 +202,11 @@ mod tests {
         assert_eq!(hostname, Some("example.com".to_string()));
 
         // Same hostname should return same IP
-        let ip2 = cache.get_or_create("example.com");
+        let ip2 = cache.get_or_create("example.com").unwrap();
         assert_eq!(ip1, ip2);
 
         // Different hostname should return different IP
-        let ip3 = cache.get_or_create("test.com");
+        let ip3 = cache.get_or_create("test.com").unwrap();
         assert_ne!(ip1, ip3);
     }
 
@@ -189,7 +215,7 @@ mod tests {
         let cache = DnsCache::new(224);
 
         // First IP should be 224.0.0.1
-        let ip1 = cache.get_or_create("test1.com");
+        let ip1 = cache.get_or_create("test1.com").unwrap();
         assert_eq!(ip1.octets()[0], 224);
 
         // Check it's recognized as fake
@@ -200,7 +226,7 @@ mod tests {
     fn test_clear_cache() {
         let cache = DnsCache::default();
 
-        cache.get_or_create("example.com");
+        cache.get_or_create("example.com").unwrap();
         assert!(cache.size() > 0);
 
         cache.clear();

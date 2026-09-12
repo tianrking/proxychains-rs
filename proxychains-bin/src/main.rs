@@ -83,7 +83,14 @@ struct Args {
 }
 
 fn main() {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    // Freeze the selected path before children change their working directory.
+    if let Some(path) = build_parser(&args).find_config_file() {
+        match std::fs::canonicalize(&path) {
+            Ok(path) => args.config = Some(path),
+            Err(e) => { eprintln!("proxychains: cannot open config {}: {}", path.display(), e); process::exit(1); }
+        }
+    }
 
     // Initialize logging
     let log_level = if args.verbose {

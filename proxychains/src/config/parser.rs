@@ -58,17 +58,13 @@ impl ConfigParser {
     pub fn find_config_file(&self) -> Option<PathBuf> {
         // If path was explicitly set, use it
         if let Some(ref path) = self.config_path {
-            if path.exists() {
-                return Some(path.clone());
-            }
+            return Some(path.clone());
         }
 
         // Check environment variable
         if let Ok(path) = env::var(ENV_CONF_FILE) {
             let path = PathBuf::from(path);
-            if path.exists() {
-                return Some(path);
-            }
+            return Some(path);
         }
 
         // Check standard locations
@@ -269,9 +265,11 @@ impl ConfigParser {
             "proxy_dns_old" => config.proxy_dns = true,
             "proxy_dns_daemon" => config.proxy_dns = true,
             "remote_dns_subnet" => {
-                if let Ok(subnet) = value.parse() {
-                    config.remote_dns_subnet = subnet;
+                let subnet: u8 = value.parse().map_err(|_| crate::error::Error::Config("Invalid remote_dns_subnet".into()))?;
+                if subnet == 0 || subnet == 127 || subnet == 255 {
+                    return Err(crate::error::Error::Config("remote_dns_subnet cannot be unspecified, loopback, or broadcast".into()));
                 }
+                config.remote_dns_subnet = subnet;
             }
             "tcp_read_time_out" => {
                 if let Ok(timeout) = value.parse::<u64>() {

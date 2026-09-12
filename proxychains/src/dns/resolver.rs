@@ -9,8 +9,8 @@ use crate::dns::hosts::lookup_in_hosts as hosts_lookup;
 use crate::error::{Error, Result};
 
 /// Global DNS cache instance
-static DNS_CACHE: once_cell::sync::Lazy<DnsCache> =
-    once_cell::sync::Lazy::new(|| DnsCache::default_subnet());
+static DNS_CACHES: once_cell::sync::Lazy<Vec<DnsCache>> =
+    once_cell::sync::Lazy::new(|| (0..=255).map(DnsCache::new).collect());
 
 /// DNS resolver
 pub struct DnsResolver {
@@ -20,9 +20,9 @@ pub struct DnsResolver {
 
 impl DnsResolver {
     /// Create a new DNS resolver
-    pub fn new(proxy_dns: bool, _subnet: u8) -> Self {
+    pub fn new(proxy_dns: bool, subnet: u8) -> Self {
         Self {
-            cache: &DNS_CACHE,
+            cache: &DNS_CACHES[subnet as usize],
             proxy_dns,
         }
     }
@@ -45,8 +45,7 @@ impl DnsResolver {
 
         // If proxy DNS is enabled, return fake IP
         if self.proxy_dns {
-            let fake_ip = self.cache.get_or_create(hostname);
-            return Ok(fake_ip);
+            return self.cache.get_or_create(hostname);
         }
 
         // Use system resolver
@@ -55,11 +54,7 @@ impl DnsResolver {
 
     /// Get hostname from fake IP
     pub fn get_hostname(&self, ip: &Ipv4Addr) -> Option<String> {
-        if self.cache.is_fake_ip(ip) {
-            self.cache.get_hostname(ip)
-        } else {
-            None
-        }
+        get_hostname_from_ip(ip)
     }
 
     /// Check if IP is a fake IP (needs remote resolution)
@@ -140,21 +135,18 @@ impl DnsResolver {
 
 /// Check if an IP is a fake IP
 pub fn is_fake_ip(ip: &Ipv4Addr) -> bool {
-    DNS_CACHE.is_fake_ip(ip)
+    let cache = &DNS_CACHES[ip.octets()[0] as usize];
+    cache.size() > 0 && cache.is_fake_ip(ip)
 }
 
 /// Get hostname from fake IP
 pub fn get_hostname_from_ip(ip: &Ipv4Addr) -> Option<String> {
-    if DNS_CACHE.is_fake_ip(ip) {
-        DNS_CACHE.get_hostname(ip)
-    } else {
-        None
-    }
+    DNS_CACHES[ip.octets()[0] as usize].get_hostname(ip)
 }
 
 /// Resolve hostname to fake IP (for proxy DNS)
-pub fn resolve_to_fake_ip(hostname: &str, _subnet: u8) -> Ipv4Addr {
-    DNS_CACHE.get_or_create(hostname)
+pub fn resolve_to_fake_ip(hostname: &str, subnet: u8) -> Result<Ipv4Addr> {
+    DNS_CACHES[subnet as usize].get_or_create(hostname)
 }
 
 /// Parse hosts file and lookup hostname
@@ -165,6 +157,16 @@ pub fn lookup_in_hosts(hostname: &str) -> Option<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_subnet_survives_resolver_reconfiguration() {
+        let old = DnsResolver::new(true, 198);
+        let ip = old.resolve("old-subnet.invalid").unwrap();
+        assert_eq!(ip.octets()[0], 198);
+        let new = DnsResolver::new(true, 224);
+        assert_eq!(new.get_hostname(&ip).as_deref(), Some("old-subnet.invalid"));
+        assert_eq!(resolve_to_fake_ip("other.invalid", 198).unwrap().octets()[0], 198);
+    }
 
     #[test]
     fn test_dns_resolver() {
