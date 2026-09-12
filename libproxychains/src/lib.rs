@@ -13,7 +13,7 @@ use tracing_subscriber::FmtSubscriber;
 use proxychains::{ConfigParser, hook::init_hooks};
 
 /// Initialize the library (common code for all platforms)
-fn init_library() {
+fn init_library() -> bool {
     // Initialize logging
     let log_level = if std::env::var("PROXYCHAINS_QUIET_MODE").is_ok() {
         Level::ERROR
@@ -38,7 +38,7 @@ fn init_library() {
         Ok(c) => c,
         Err(e) => {
             error!("Failed to parse configuration: {}", e);
-            return;
+            return false;
         }
     };
 
@@ -49,10 +49,16 @@ fn init_library() {
     );
 
     // Initialize hooks
+    if !config.has_proxies() {
+        error!("No proxies configured");
+        return false;
+    }
     if let Err(e) = init_hooks(config) {
         error!("Failed to initialize hooks: {}", e);
+        false
     } else {
         info!("libproxychains initialized successfully");
+        true
     }
 }
 
@@ -69,7 +75,7 @@ mod unix_impl {
     /// Library initialization using #[ctor] attribute
     #[ctor]
     fn init() {
-        init_library();
+        if !init_library() { unsafe { libc::_exit(127); } }
     }
 
     /// Hook for connect() system call
@@ -145,6 +151,47 @@ mod windows_impl {
     use std::ffi::c_void;
     use windows::Win32::Foundation::*;
 
+    /// Called by the launcher after LoadLibrary completes, outside the loader lock.
+    /// The argument contains two NUL-terminated UTF-16 strings: config and group.
+    #[no_mangle]
+    pub unsafe extern "system" fn proxychains_initialize_v1(argument: *mut c_void) -> u32 {
+        use std::os::windows::ffi::OsStringExt;
+        static INITIALIZED: std::sync::OnceLock<(Vec<u16>, u32)> = std::sync::OnceLock::new();
+        if argument.is_null() { return 1; }
+        let ptr = argument as *const u16;
+        let mut payload = Vec::new();
+        let mut separators = Vec::new();
+        for i in 0..32768 {
+            let ch = *ptr.add(i); payload.push(ch);
+            if ch == 0 { separators.push(i); if separators.len() == 2 { break; } }
+        }
+        if separators.len() != 2 { return 2; }
+        // Configuration failures before installing hooks are retryable for attachment.
+        // Once hook installation begins, retain failure state rather than retrying a
+        // potentially partial installation.
+        if INITIALIZED.get().is_none() {
+            let config = std::ffi::OsString::from_wide(&payload[..separators[0]]);
+            let group = std::ffi::OsString::from_wide(&payload[separators[0]+1..separators[1]]);
+            let mut parser = ConfigParser::new();
+            if !config.is_empty() { parser = parser.with_path(std::path::PathBuf::from(config)); }
+            if !group.is_empty() { parser = parser.with_group(group.to_string_lossy()); }
+            if !matches!(parser.parse(), Ok(config) if config.has_proxies()) { return 3; }
+        }
+        let (saved, status) = INITIALIZED.get_or_init(|| {
+            let result = std::panic::catch_unwind(|| {
+                let config = std::ffi::OsString::from_wide(&payload[..separators[0]]);
+                let group = std::ffi::OsString::from_wide(&payload[separators[0]+1..separators[1]]);
+                if !config.is_empty() { std::env::set_var("PROXYCHAINS_CONF_FILE", config); }
+                if group.is_empty() { std::env::remove_var("PROXYCHAINS_PROXY_GROUP"); }
+                else { std::env::set_var("PROXYCHAINS_PROXY_GROUP", group); }
+                init_library()
+            });
+            (payload.clone(), if matches!(result, Ok(true)) { 0x50435231 } else { 3 })
+        });
+        if saved != &payload { return 4; }
+        *status
+    }
+
     /// Windows DLL entry point
     ///
     /// This is called when the DLL is loaded/unloaded.
@@ -162,8 +209,7 @@ mod windows_impl {
 
         match reason {
             DLL_PROCESS_ATTACH => {
-                // Initialize the library when loaded into a process
-                init_library();
+                // Initialization is explicitly acknowledged by proxychains_initialize_v1.
                 BOOL(1)
             }
             DLL_PROCESS_DETACH => {

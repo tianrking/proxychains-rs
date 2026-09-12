@@ -5,5 +5,7 @@
 //! - Unix: Stub implementation (not needed, uses LD_PRELOAD)
 
 mod injector;
+#[cfg(windows)]
+mod windows_injection;
 
 pub use injector::*;

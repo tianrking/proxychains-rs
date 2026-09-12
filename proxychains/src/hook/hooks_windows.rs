@@ -107,12 +107,11 @@ fn maybe_reload_config(state: &HookState) {
 
 /// Initialize the hook library.
 pub fn init_hooks(config: Config) -> Result<()> {
-    init_original_functions()?;
-
     let state = HookState::new(config);
     if HOOK_STATE.set(state).is_err() {
         warn!("Hook state already initialized");
     }
+    init_original_functions()?;
 
     info!("Proxychains Windows hooks initialized");
     Ok(())

@@ -34,6 +34,21 @@ pub enum InjectorError {
 
 pub type Result<T> = std::result::Result<T, InjectorError>;
 
+#[cfg(windows)]
+fn quote_arg(arg: &str) -> String {
+    if !arg.is_empty() && !arg.chars().any(|c| c == ' ' || c == '\t' || c == '"') { return arg.to_owned(); }
+    let mut result = String::from("\"");
+    let mut slashes = 0;
+    for ch in arg.chars() {
+        if ch == '\\' { slashes += 1; continue; }
+        if ch == '"' { result.extend(std::iter::repeat('\\').take(slashes * 2 + 1)); }
+        else { result.extend(std::iter::repeat('\\').take(slashes)); }
+        slashes = 0; result.push(ch);
+    }
+    result.extend(std::iter::repeat('\\').take(slashes * 2));
+    result.push('"'); result
+}
+
 /// Process information for injection
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
@@ -56,7 +71,7 @@ impl ProxychainsInjector {
         }
 
         Ok(Self {
-            dll_path: dll_path.to_path_buf(),
+            dll_path: dll_path.canonicalize()?,
         })
     }
 
@@ -88,7 +103,9 @@ impl ProxychainsInjector {
             }
 
             // Inject DLL
-            self.inject_dll(process)?;
+            let result = self.inject_dll(process);
+            let _ = windows::Win32::Foundation::CloseHandle(process);
+            result?;
 
             info!("Successfully injected DLL into process {}", pid);
         }
@@ -144,19 +161,6 @@ impl ProxychainsInjector {
             CREATE_SUSPENDED, INFINITE, PROCESS_INFORMATION, STARTUPINFOW,
         };
 
-        fn quote_arg(arg: &str) -> String {
-            if arg.is_empty()
-                || arg.contains(' ')
-                || arg.contains('\t')
-                || arg.contains('"')
-                || arg.contains('\\')
-            {
-                let escaped = arg.replace('\\', "\\\\").replace('"', "\\\"");
-                format!("\"{}\"", escaped)
-            } else {
-                arg.to_string()
-            }
-        }
 
         let mut command_line = quote_arg(&process_info.command);
         for arg in &process_info.args {
@@ -196,6 +200,7 @@ impl ProxychainsInjector {
             debug!("Suspended process created with PID: {}", pid);
 
             if let Err(e) = self.inject_dll(process_handle) {
+                let _ = windows::Win32::System::Threading::TerminateProcess(process_handle, 1);
                 let _ = CloseHandle(thread_handle);
                 let _ = CloseHandle(process_handle);
                 return Err(e);
@@ -204,6 +209,7 @@ impl ProxychainsInjector {
 
             let resume_ret = ResumeThread(thread_handle);
             if resume_ret == u32::MAX {
+                let _ = windows::Win32::System::Threading::TerminateProcess(process_handle, 1);
                 let _ = CloseHandle(thread_handle);
                 let _ = CloseHandle(process_handle);
                 return Err(InjectorError::WindowsApi("ResumeThread failed".into()));
@@ -234,19 +240,6 @@ impl ProxychainsInjector {
             CREATE_SUSPENDED, PROCESS_INFORMATION, STARTUPINFOW,
         };
 
-        fn quote_arg(arg: &str) -> String {
-            if arg.is_empty()
-                || arg.contains(' ')
-                || arg.contains('\t')
-                || arg.contains('"')
-                || arg.contains('\\')
-            {
-                let escaped = arg.replace('\\', "\\\\").replace('"', "\\\"");
-                format!("\"{}\"", escaped)
-            } else {
-                arg.to_string()
-            }
-        }
 
         let mut command_line = quote_arg(&process_info.command);
         for arg in &process_info.args {
@@ -286,6 +279,7 @@ impl ProxychainsInjector {
             debug!("Suspended root process created with PID: {}", root_pid);
 
             if let Err(e) = self.inject_dll(process_handle) {
+                let _ = windows::Win32::System::Threading::TerminateProcess(process_handle, 1);
                 let _ = CloseHandle(thread_handle);
                 let _ = CloseHandle(process_handle);
                 return Err(e);
@@ -294,6 +288,7 @@ impl ProxychainsInjector {
 
             let resume_ret = ResumeThread(thread_handle);
             if resume_ret == u32::MAX {
+                let _ = windows::Win32::System::Threading::TerminateProcess(process_handle, 1);
                 let _ = CloseHandle(thread_handle);
                 let _ = CloseHandle(process_handle);
                 return Err(InjectorError::WindowsApi("ResumeThread failed".into()));
@@ -339,83 +334,7 @@ impl ProxychainsInjector {
     /// Internal DLL injection method (Windows)
     #[cfg(windows)]
     unsafe fn inject_dll(&self, process: windows::Win32::Foundation::HANDLE) -> Result<()> {
-        use windows::Win32::Foundation::*;
-        use windows::Win32::System::Memory::*;
-        use windows::Win32::System::LibraryLoader::*;
-        use windows::Win32::System::Diagnostics::Debug::WriteProcessMemory;
-        use windows::Win32::System::Threading::CreateRemoteThread;
-        use windows::Win32::System::Threading::WaitForSingleObject;
-        use windows::Win32::System::Threading::LPTHREAD_START_ROUTINE;
-
-        let dll_path = self.dll_path.to_string_lossy();
-        let dll_path_wide: Vec<u16> = dll_path.encode_utf16().chain(std::iter::once(0)).collect();
-
-        // Get the address of LoadLibraryW
-        let load_library = GetProcAddress(
-            GetModuleHandleA(windows::core::s!("kernel32.dll"))
-                .map_err(|e| InjectorError::WindowsApi(format!("GetModuleHandle failed: {:?}", e)))?,
-            windows::core::s!("LoadLibraryW"),
-        )
-        .ok_or_else(|| InjectorError::WindowsApi("GetProcAddress failed".into()))?;
-
-        // Allocate memory in the target process for the DLL path
-        let path_size = dll_path_wide.len() * std::mem::size_of::<u16>();
-        let remote_memory = VirtualAllocEx(
-            process,
-            None,
-            path_size,
-            MEM_COMMIT | MEM_RESERVE,
-            PAGE_READWRITE,
-        );
-
-        if remote_memory.is_null() {
-            return Err(InjectorError::WindowsApi("VirtualAllocEx returned null".into()));
-        }
-
-        // Write the DLL path to the allocated memory
-        let mut bytes_written: usize = 0;
-        let write_result = WriteProcessMemory(
-            process,
-            remote_memory,
-            dll_path_wide.as_ptr() as *const _,
-            path_size,
-            Some(&mut bytes_written),
-        );
-
-        if write_result.is_err() || bytes_written != path_size {
-            let _ = VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
-            return Err(InjectorError::WindowsApi("WriteProcessMemory failed".into()));
-        }
-
-        // Create a remote thread that calls LoadLibraryW with the DLL path
-        let start_routine: LPTHREAD_START_ROUTINE = std::mem::transmute(load_library);
-
-        let thread = CreateRemoteThread(
-            process,
-            None,
-            0,
-            start_routine,
-            Some(remote_memory),
-            0,
-            None,
-        )
-        .map_err(|e| InjectorError::WindowsApi(format!("CreateRemoteThread failed: {:?}", e)))?;
-
-        if thread.is_invalid() {
-            let _ = VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
-            return Err(InjectorError::WindowsApi(
-                "CreateRemoteThread returned invalid handle".into(),
-            ));
-        }
-
-        // Wait for the thread to complete
-        let _ = WaitForSingleObject(thread, 5000);
-
-        // Clean up
-        let _ = VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
-        let _ = CloseHandle(thread);
-
-        Ok(())
+        super::windows_injection::inject(process, &self.dll_path)
     }
 
     /// Unix stub - not implemented (uses LD_PRELOAD instead)
