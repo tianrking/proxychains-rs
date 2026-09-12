@@ -1,6 +1,6 @@
 //! HTTP CONNECT protocol implementation
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::time::Duration;
 
 use crate::config::ProxyData;
@@ -32,10 +32,14 @@ impl<'a> HttpConnector<'a> {
         target_port: u16,
     ) -> Result<()> {
         // Build CONNECT request
-        let mut request = format!(
-            "CONNECT {}:{} HTTP/1.0\r\n",
-            target_host, target_port
-        );
+        if target_host.is_empty() || target_host.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(Error::InvalidAddress);
+        }
+        let host = match target_host.parse::<std::net::IpAddr>() {
+            Ok(std::net::IpAddr::V6(ip)) => format!("[{}]", ip),
+            _ => target_host.to_owned(),
+        };
+        let mut request = format!("CONNECT {}:{} HTTP/1.0\r\n", host, target_port);
 
         // Add authentication if credentials are provided
         if let (Some(user), Some(pass)) = (&self.proxy.user, &self.proxy.pass) {
@@ -64,31 +68,18 @@ impl<'a> HttpConnector<'a> {
 
     /// Read HTTP response from stream
     fn read_response<T: Read>(&self, stream: &mut T) -> Result<String> {
-        let mut reader = BufReader::new(stream);
-        let mut response = String::new();
-
-        // Read until we get \r\n\r\n (end of headers)
-        loop {
-            let mut line = String::new();
-            let bytes_read = reader.read_line(&mut line)?;
-            if bytes_read == 0 {
-                break; // EOF
-            }
-
-            response.push_str(&line);
-
-            // Check for end of headers (empty line)
-            if line == "\r\n" || line == "\n" {
-                break;
-            }
-
-            // Safety check for response size
-            if response.len() > 65536 {
-                return Err(Error::Protocol("HTTP response too large".to_string()));
+        // Never read past the header: callers continue using the original stream.
+        let start = std::time::Instant::now();
+        let mut response = Vec::new();
+        while response.len() < 65536 {
+            let remaining = self.timeout.saturating_sub(start.elapsed());
+            response.extend(crate::net::read_bytes_timeout(stream, 1, remaining)?);
+            if response.ends_with(b"\r\n\r\n") || response.ends_with(b"\n\n") {
+                return String::from_utf8(response)
+                    .map_err(|_| Error::Protocol("Invalid HTTP response encoding".into()));
             }
         }
-
-        Ok(response)
+        Err(Error::Protocol("HTTP response too large".into()))
     }
 
     /// Validate HTTP response
@@ -102,7 +93,7 @@ impl<'a> HttpConnector<'a> {
         // Parse status code
         // Format: HTTP/1.x <status_code> <reason>
         let parts: Vec<&str> = status_line.split_whitespace().collect();
-        if parts.len() < 2 {
+        if parts.len() < 2 || !matches!(parts[0], "HTTP/1.0" | "HTTP/1.1") {
             return Err(Error::Protocol(format!(
                 "Invalid HTTP response: {}",
                 status_line

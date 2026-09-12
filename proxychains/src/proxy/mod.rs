@@ -156,38 +156,13 @@ pub fn establish_proxy_chain(
     stream.set_read_timeout(Some(read_timeout))?;
     stream.set_write_timeout(Some(read_timeout))?;
 
-    // If only one proxy, tunnel directly to target
-    if proxies.len() == 1 {
-        tunnel_through_proxy(&mut stream, first_proxy, target, target_port, read_timeout)?;
-        return Ok(stream);
+    for pair in proxies.windows(2) {
+        let next = TargetAddress::from_domain(pair[1].host.clone());
+        tunnel_through_proxy(&mut stream, &pair[0], &next, pair[1].port, read_timeout)?;
     }
-
-    // Chain through multiple proxies
-    for i in 1..proxies.len() {
-        // Tunnel to next proxy (or final target)
-        if i == proxies.len() - 1 {
-            // Last hop - connect to target
-            tunnel_through_proxy(
-                &mut stream,
-                &proxies[i - 1],
-                target,
-                target_port,
-                read_timeout,
-            )?;
-        } else {
-            // Intermediate hop - connect to next proxy
-            let next_proxy = &proxies[i];
-            let next_target = TargetAddress::from_domain(next_proxy.host.clone());
-            tunnel_through_proxy(
-                &mut stream,
-                &proxies[i - 1],
-                &next_target,
-                next_proxy.port,
-                read_timeout,
-            )?;
-        }
-    }
-
+    tunnel_through_proxy(&mut stream, proxies.last().unwrap(), target, target_port, read_timeout)?;
+    stream.set_read_timeout(None)?;
+    stream.set_write_timeout(None)?;
     Ok(stream)
 }
 

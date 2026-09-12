@@ -136,10 +136,10 @@ impl<'a> Socks5Connector<'a> {
         target_port: u16,
     ) -> Result<()> {
         // Step 1: Negotiate authentication method
-        self.negotiate_auth(stream)?;
+        let method = self.negotiate_auth(stream)?;
 
         // Step 2: Authenticate if required
-        if self.proxy.user.is_some() {
+        if matches!(method, AuthMethod::UserPass) {
             self.authenticate(stream)?;
         }
 
@@ -153,7 +153,10 @@ impl<'a> Socks5Connector<'a> {
     }
 
     /// Negotiate authentication method
-    fn negotiate_auth<T: Read + Write>(&self, stream: &mut T) -> Result<()> {
+    fn negotiate_auth<T: Read + Write>(&self, stream: &mut T) -> Result<AuthMethod> {
+        if self.proxy.user.is_some() != self.proxy.pass.is_some() {
+            return Err(Error::AuthFailed("Both username and password are required".into()));
+        }
         // Build greeting message
         let mut greeting = vec![SOCKS5_VERSION];
 
@@ -191,14 +194,14 @@ impl<'a> Socks5Connector<'a> {
         // Check if the server selected a method we offered
         if method == AuthMethod::NoAuth as u8 {
             // No authentication required, we're done
-            Ok(())
+            Ok(AuthMethod::NoAuth)
         } else if method == AuthMethod::UserPass as u8 {
             if self.proxy.user.is_none() {
                 return Err(Error::AuthFailed(
                     "Server requires authentication but no credentials provided".to_string(),
                 ));
             }
-            Ok(())
+            Ok(AuthMethod::UserPass)
         } else {
             Err(Error::Protocol(format!(
                 "Server selected unsupported auth method: {}",
@@ -213,7 +216,7 @@ impl<'a> Socks5Connector<'a> {
         let pass = self.proxy.pass.as_ref().unwrap();
 
         // Validate lengths
-        if user.len() > 255 || pass.len() > 255 {
+        if user.is_empty() || pass.is_empty() || user.len() > 255 || pass.len() > 255 {
             return Err(Error::AuthFailed("Username or password too long".to_string()));
         }
 
@@ -231,7 +234,7 @@ impl<'a> Socks5Connector<'a> {
         // Read auth response
         let response = read_bytes_timeout(stream, 2, self.timeout)?;
 
-        if response[1] != 0x00 {
+        if response[0] != 0x01 || response[1] != 0x00 {
             return Err(Error::AuthFailed("Authentication failed".to_string()));
         }
 
