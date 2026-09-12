@@ -10,6 +10,7 @@ mod http;
 mod raw;
 mod socks4;
 mod socks5;
+mod udp;
 
 use std::io::{Read, Write};
 use std::net::IpAddr;
@@ -23,6 +24,7 @@ pub use http::*;
 pub use raw::*;
 pub use socks4::*;
 pub use socks5::*;
+pub use udp::*;
 
 /// Target address for proxy connection
 #[derive(Debug, Clone)]

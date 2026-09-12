@@ -16,7 +16,7 @@ const SOCKS5_VERSION: u8 = 0x05;
 /// SOCKS5 authentication methods
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AuthMethod {
+pub(crate) enum AuthMethod {
     /// No authentication required
     NoAuth = 0x00,
     /// GSSAPI
@@ -153,7 +153,7 @@ impl<'a> Socks5Connector<'a> {
     }
 
     /// Negotiate authentication method
-    fn negotiate_auth<T: Read + Write>(&self, stream: &mut T) -> Result<AuthMethod> {
+    pub(crate) fn negotiate_auth<T: Read + Write>(&self, stream: &mut T) -> Result<AuthMethod> {
         if self.proxy.user.is_some() != self.proxy.pass.is_some() {
             return Err(Error::AuthFailed("Both username and password are required".into()));
         }
@@ -211,7 +211,7 @@ impl<'a> Socks5Connector<'a> {
     }
 
     /// Perform username/password authentication (RFC 1929)
-    fn authenticate<T: Read + Write>(&self, stream: &mut T) -> Result<()> {
+    pub(crate) fn authenticate<T: Read + Write>(&self, stream: &mut T) -> Result<()> {
         let user = self.proxy.user.as_ref().unwrap();
         let pass = self.proxy.pass.as_ref().unwrap();
 
