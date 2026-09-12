@@ -75,83 +75,8 @@ pub fn write_bytes_timeout<T: Write>(stream: &mut T, data: &[u8], timeout: Durat
 }
 
 /// Connect to an address with timeout
-pub fn connect_with_timeout(
-    addr: &std::net::SocketAddrV4,
-    timeout: Duration,
-) -> Result<std::net::TcpStream> {
-    let socket = socket2::Socket::new(
-        socket2::Domain::IPV4,
-        socket2::Type::STREAM,
-        Some(socket2::Protocol::TCP),
-    )?;
-
-    // Set non-blocking
-    socket.set_nonblocking(true)?;
-
-    // Attempt to connect
-    let connect_result = socket.connect(&(*addr).into());
-
-    match connect_result {
-        Ok(()) => {
-            socket.set_nonblocking(false)?;
-            return Ok(socket.into());
-        }
-        Err(e) => {
-            // Check if it's in progress
-            if e.raw_os_error() != Some(libc::EINPROGRESS) {
-                return Err(Error::Io(std::io::Error::from(e)));
-            }
-        }
-    }
-
-    // Wait for connection with poll
-    let mut poll_fd = libc::pollfd {
-        fd: socket.as_raw_fd(),
-        events: libc::POLLOUT,
-        revents: 0,
-    };
-
-    let result = unsafe {
-        libc::poll(
-            &mut poll_fd,
-            1,
-            timeout.as_millis() as libc::c_int,
-        )
-    };
-
-    if result == 0 {
-        return Err(Error::Timeout(format!(
-            "Connection to {} timed out",
-            addr
-        )));
-    }
-
-    // Check for errors
-    let mut err: libc::c_int = 0;
-    let mut err_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-
-    let ret = unsafe {
-        libc::getsockopt(
-            socket.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_ERROR,
-            &mut err as *mut libc::c_int as *mut libc::c_void,
-            &mut err_len,
-        )
-    };
-
-    if ret < 0 {
-        return Err(Error::Io(std::io::Error::last_os_error()));
-    }
-
-    if err != 0 {
-        return Err(Error::Io(std::io::Error::from_raw_os_error(err)));
-    }
-
-    // Restore blocking mode
-    socket.set_nonblocking(false)?;
-
-    Ok(socket.into())
+pub fn connect_with_timeout(addr: &std::net::SocketAddr, timeout: Duration) -> Result<std::net::TcpStream> {
+    Ok(std::net::TcpStream::connect_timeout(addr, timeout)?)
 }
 
 /// Check if a socket is connected and writable

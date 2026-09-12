@@ -278,6 +278,7 @@ pub unsafe fn hook_connect(
     len: socklen_t,
 ) -> c_int {
     trace!("hook_connect called: sock={}", sock);
+    if crate::net::is_internal_network() { return original_connect(sock, addr, len); }
 
     // Check if initialized
     let state = match get_hook_state() {
@@ -392,6 +393,7 @@ pub unsafe fn hook_getaddrinfo(
     res: *mut *mut libc::addrinfo,
 ) -> c_int {
     trace!("hook_getaddrinfo called");
+    if crate::net::is_internal_network() { return original_getaddrinfo(node, service, hints, res); }
 
     // Check if initialized and proxy_dns is enabled
     let state = match get_hook_state() {

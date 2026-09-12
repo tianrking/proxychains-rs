@@ -166,8 +166,13 @@ impl ProxyData {
     }
 
     /// Resolve proxy host and build socket address.
-    pub fn resolved_socket_addr(&self) -> Result<SocketAddrV4> {
-        Ok(SocketAddrV4::new(self.resolve_ipv4()?, self.port))
+    pub fn resolved_socket_addr(&self) -> Result<std::net::SocketAddr> {
+        let host = self.host.trim_start_matches('[').trim_end_matches(']');
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            return Ok(std::net::SocketAddr::new(ip, self.port));
+        }
+        (host, self.port).to_socket_addrs()?.next()
+            .ok_or_else(|| Error::Dns(format!("No address for proxy host {}", self.host)))
     }
 }
 

@@ -267,7 +267,7 @@ fn run_probe(config: &Config, args: &Args) -> usize {
 
     for (idx, proxy) in config.proxies.iter().enumerate() {
         let target = match proxy.resolved_socket_addr() {
-            Ok(v4) => SocketAddr::V4(v4),
+            Ok(addr) => addr,
             Err(e) => {
                 failed += 1;
                 results.push(ProbeNode {

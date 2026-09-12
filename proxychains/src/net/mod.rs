@@ -5,6 +5,14 @@
 //! - Timeout handling
 //! - IP address utilities
 
+thread_local! { static INTERNAL_NETWORK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+pub(crate) struct InternalNetwork;
+impl InternalNetwork {
+    pub(crate) fn enter() -> Self { INTERNAL_NETWORK.with(|n| n.set(n.get()+1)); Self }
+}
+impl Drop for InternalNetwork { fn drop(&mut self) { INTERNAL_NETWORK.with(|n| n.set(n.get()-1)); } }
+pub(crate) fn is_internal_network() -> bool { INTERNAL_NETWORK.with(|n| n.get()!=0) }
+
 #[cfg(unix)]
 mod socket;
 

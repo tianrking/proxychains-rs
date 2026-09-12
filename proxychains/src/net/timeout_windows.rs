@@ -75,76 +75,23 @@ pub fn write_bytes_timeout<T: Write>(stream: &mut T, data: &[u8], timeout: Durat
 }
 
 /// Connect to an address with timeout (Windows-specific)
-pub fn connect_with_timeout(
-    addr: &std::net::SocketAddrV4,
-    timeout: Duration,
-) -> Result<std::net::TcpStream> {
-    let socket = socket2::Socket::new(
-        socket2::Domain::IPV4,
-        socket2::Type::STREAM,
-        Some(socket2::Protocol::TCP),
-    )?;
-
-    // Set non-blocking
-    socket.set_nonblocking(true)?;
-
-    // Attempt to connect
-    let connect_result = socket.connect(&(*addr).into());
-
-    match connect_result {
-        Ok(()) => {
-            socket.set_nonblocking(false)?;
-            return Ok(socket.into());
-        }
-        Err(e) => {
-            // Windows uses WSAEWOULDBLOCK (10035) instead of EINPROGRESS
-            let would_block = e.raw_os_error()
-                .map(|code| code == 10035)  // WSAEWOULDBLOCK
-                .unwrap_or(false);
-
-            if !would_block {
-                return Err(Error::Io(e));
-            }
-        }
-    }
-
-    // Wait for connection using polling
-    let start = std::time::Instant::now();
-    loop {
-        if start.elapsed() >= timeout {
-            return Err(Error::Timeout(format!("Connection to {} timed out", addr)));
-        }
-
-        // Use std::net::TcpStream::connect_timeout as fallback
-        // This is simpler and more reliable
-        std::thread::sleep(Duration::from_millis(10));
-
-        // Try to check if writable
-        match socket.set_nonblocking(false) {
-            Ok(()) => {
-                // Connection successful
-                return Ok(socket.into());
-            }
-            Err(_) => {
-                // Continue waiting
-                if start.elapsed() >= timeout {
-                    return Err(Error::Timeout(format!("Connection to {} timed out", addr)));
-                }
-                socket.set_nonblocking(true)?;
-            }
-        }
-    }
+pub fn connect_with_timeout(addr: &std::net::SocketAddr, timeout: Duration) -> Result<std::net::TcpStream> {
+    Ok(std::net::TcpStream::connect_timeout(addr, timeout)?)
 }
 
 /// Check if a socket is connected and writable (Windows-specific)
-pub fn is_connected(_raw_socket: usize) -> Result<bool> {
-    // Simplified implementation
-    Ok(true)
+pub fn is_connected(raw_socket: usize) -> Result<bool> {
+    let socket = unsafe { std::os::windows::io::BorrowedSocket::borrow_raw(raw_socket as _) };
+    let socket = socket2::SockRef::from(&socket);
+    Ok(socket.take_error()?.is_none() && socket.peer_addr().is_ok())
 }
 
 /// Set socket timeout options (Windows-specific)
-pub fn set_socket_timeout(_raw_socket: usize, _timeout: Duration) -> Result<()> {
-    // Placeholder
+pub fn set_socket_timeout(raw_socket: usize, timeout: Duration) -> Result<()> {
+    let socket = unsafe { std::os::windows::io::BorrowedSocket::borrow_raw(raw_socket as _) };
+    let socket = socket2::SockRef::from(&socket);
+    socket.set_read_timeout(Some(timeout))?;
+    socket.set_write_timeout(Some(timeout))?;
     Ok(())
 }
 

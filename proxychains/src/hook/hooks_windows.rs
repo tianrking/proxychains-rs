@@ -152,44 +152,23 @@ fn make_sockaddr_in6_mapped_bytes(ip: Ipv4Addr, port: u16) -> [u8; 28] {
 }
 
 unsafe fn connect_socket_to_proxy(sock: usize, proxy: &ProxyData) -> Result<()> {
-    let resolved_ip = proxy.resolve_ipv4()?;
-    let sockaddr = make_sockaddr_in(resolved_ip, proxy.port);
-    let ret = original_connect(
-        sock,
-        &sockaddr as *const SOCKADDR_IN as *const c_void,
-        mem::size_of::<SOCKADDR_IN>() as i32,
-    );
+    let _internal = crate::net::InternalNetwork::enter();
+    let addr = proxy.resolved_socket_addr()?;
+    let sockaddr = socket2::SockAddr::from(addr);
+    let ret = original_connect(sock, sockaddr.as_ptr().cast(), sockaddr.len() as i32);
     if ret == SOCKET_ERROR {
-        let wsa_error = WSAGetLastError().0;
-        if wsa_error == WSAEWOULDBLOCK.0
-            || wsa_error == WSAEINPROGRESS.0
-            || wsa_error == WSAEALREADY.0
-        {
-            // Non-blocking sockets can report in-progress; let handshake IO complete it.
-            return Ok(());
-        }
-
-        // IPv6 sockets cannot use IPv4 sockaddr directly. Retry using an IPv4-mapped
-        // IPv6 destination (::ffff:a.b.c.d).
-        let mapped = make_sockaddr_in6_mapped_bytes(resolved_ip, proxy.port);
-        let mapped_ret = original_connect(
-            sock,
-            mapped.as_ptr() as *const c_void,
-            mapped.len() as i32,
-        );
-        if mapped_ret == SOCKET_ERROR {
-            let mapped_err = WSAGetLastError().0;
-            if mapped_err == WSAEWOULDBLOCK.0
-                || mapped_err == WSAEINPROGRESS.0
-                || mapped_err == WSAEALREADY.0
-            {
-                return Ok(());
+        let error = WSAGetLastError().0;
+        if error == WSAEWOULDBLOCK.0 || error == WSAEINPROGRESS.0 || error == WSAEALREADY.0 { return Ok(()); }
+        if let std::net::SocketAddr::V4(v4) = addr {
+            if error == 10047 || error == WSAEINVAL.0 || error == WSAEFAULT.0 {
+                let mapped = socket2::SockAddr::from(std::net::SocketAddr::new(v4.ip().to_ipv6_mapped().into(), v4.port()));
+                if original_connect(sock, mapped.as_ptr().cast(), mapped.len() as i32) == 0 { return Ok(()); }
+                let retry = WSAGetLastError().0;
+                if retry == WSAEWOULDBLOCK.0 || retry == WSAEINPROGRESS.0 || retry == WSAEALREADY.0 { return Ok(()); }
+                return Err(Error::Io(std::io::Error::from_raw_os_error(retry)));
             }
-            return Err(Error::ProxyConnection(format!(
-                "Failed to connect to proxy {}:{} (WSA {}, retry WSA {})",
-                proxy.host, proxy.port, wsa_error, mapped_err
-            )));
         }
+        return Err(Error::Io(std::io::Error::from_raw_os_error(error)));
     }
     Ok(())
 }
@@ -226,7 +205,7 @@ unsafe fn connect_chain_on_socket(
 
     let mut current = 0usize;
     for next in 1..selected.len() {
-        let next_target = TargetAddress::from_ip(IpAddr::V4(selected[next].ip));
+        let next_target = TargetAddress::from_domain(selected[next].host.clone());
         if let Err(e) = tunnel_through_proxy(
             stream_ref,
             &selected[current],
@@ -349,6 +328,7 @@ pub unsafe extern "system" fn hook_connect_impl(
     addr: *const c_void,
     len: i32,
 ) -> i32 {
+    if crate::net::is_internal_network() { return original_connect(sock, addr, len); }
     let state = match get_hook_state() {
         Some(s) => s,
         None => return original_connect(sock, addr, len),
@@ -579,6 +559,7 @@ pub unsafe extern "system" fn hook_getaddrinfo_impl(
     phints: *const c_void,
     ppresult: *mut *mut c_void,
 ) -> i32 {
+    if crate::net::is_internal_network() { return original_getaddrinfo(pnode, pservice, phints, ppresult); }
     let state = match get_hook_state() {
         Some(s) => s,
         None => return original_getaddrinfo(pnode, pservice, phints, ppresult),
@@ -682,6 +663,7 @@ pub unsafe extern "system" fn hook_getaddrinfow_impl(
     phints: *const c_void,
     ppresult: *mut *mut c_void,
 ) -> i32 {
+    if crate::net::is_internal_network() { return original_getaddrinfow(pnode, pservice, phints, ppresult); }
     let state = match get_hook_state() {
         Some(s) => s,
         None => return original_getaddrinfow(pnode, pservice, phints, ppresult),

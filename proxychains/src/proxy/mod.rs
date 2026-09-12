@@ -86,6 +86,7 @@ impl TargetAddress {
 
 /// Connect to a proxy server
 pub fn connect_to_proxy(proxy: &ProxyData, timeout: Duration) -> Result<std::net::TcpStream> {
+    let _internal = crate::net::InternalNetwork::enter();
     let addr = proxy.resolved_socket_addr()?;
     connect_with_timeout(&addr, timeout)
 }
