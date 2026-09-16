@@ -20,6 +20,7 @@ use super::hooks_windows::{
     hook_dns_query_a_impl, hook_dns_query_w_impl, hook_wsa_connect_impl, hook_wsa_ioctl_impl,
     hook_create_io_completion_port_impl,
     hook_getaddrinfoex_overlapped_result_impl,
+    hook_dns_query_ex_impl,
 };
 
 type ConnectFn = unsafe extern "system" fn(usize, *const c_void, i32) -> i32;
@@ -93,6 +94,7 @@ type DnsQueryWFn = unsafe extern "system" fn(
     *mut *mut c_void,
     *mut c_void,
 ) -> i32;
+type DnsQueryExFn = unsafe extern "system" fn(*const c_void, *mut c_void, *mut c_void) -> i32;
 
 static ORIGINAL_CONNECT: OnceLock<ConnectFn> = OnceLock::new();
 static ORIGINAL_WSA_CONNECT: OnceLock<WsaConnectFn> = OnceLock::new();
@@ -108,6 +110,7 @@ static ORIGINAL_WSA_IOCTL: OnceLock<WsaIoctlFn> = OnceLock::new();
 static ORIGINAL_CREATE_IOCP: OnceLock<CreateIoCompletionPortFn> = OnceLock::new();
 static ORIGINAL_DNS_QUERY_A: OnceLock<DnsQueryAFn> = OnceLock::new();
 static ORIGINAL_DNS_QUERY_W: OnceLock<DnsQueryWFn> = OnceLock::new();
+static ORIGINAL_DNS_QUERY_EX: OnceLock<DnsQueryExFn> = OnceLock::new();
 
 static HOOKS_READY: AtomicBool = AtomicBool::new(false);
 
@@ -223,6 +226,15 @@ impl OriginalFunctions {
                 let _ = ORIGINAL_DNS_QUERY_W.set(dns_query_w_fn);
             } else {
                 debug!("DnsQuery_W hook not installed (dnsapi.dll unavailable)");
+            }
+            if let Ok(dns_query_ex_fn) = install_api_hook_from_module(
+                "dnsapi.dll",
+                "DnsQueryEx",
+                hook_dns_query_ex_impl as *const () as *mut c_void,
+            ) {
+                let _ = ORIGINAL_DNS_QUERY_EX.set(dns_query_ex_fn);
+            } else {
+                debug!("DnsQueryEx hook not installed (dnsapi.dll unavailable)");
             }
 
             super::udp_windows::install()?;
@@ -494,6 +506,18 @@ pub unsafe fn original_dns_query_w(
 ) -> i32 {
     if let Some(f) = ORIGINAL_DNS_QUERY_W.get() {
         f(name, query_type, options, extra, result, reserved)
+    } else {
+        9003
+    }
+}
+
+pub unsafe fn original_dns_query_ex(
+    request: *const c_void,
+    results: *mut c_void,
+    cancel: *mut c_void,
+) -> i32 {
+    if let Some(f) = ORIGINAL_DNS_QUERY_EX.get() {
+        f(request, results, cancel)
     } else {
         9003
     }

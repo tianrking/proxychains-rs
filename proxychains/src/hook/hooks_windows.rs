@@ -16,7 +16,10 @@ use std::time::Instant;
 use parking_lot::Mutex;
 use rand::seq::SliceRandom;
 use tracing::{debug, error, info, warn};
-use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::{HANDLE, DNS_REQUEST_PENDING};
+use windows::Win32::NetworkManagement::Dns::{
+    DNS_QUERY_REQUEST, DNS_QUERY_RESULT,
+};
 use windows::Win32::Networking::WinSock::{
     ADDRINFOA, ADDRINFOW, AF_INET, AF_INET6, IN_ADDR, IN_ADDR_0, IPPROTO_TCP, SOCKADDR,
     SOCKADDR_IN, SOCK_STREAM, SOCKET_ERROR, WSAEALREADY, WSAECONNREFUSED, WSAEFAULT,
@@ -40,6 +43,7 @@ use super::interpose_windows::{
     original_getaddrinfoexa, original_getaddrinfoexw, original_getaddrinfow, original_gethostbyname, original_getnameinfo,
     original_dns_query_a, original_dns_query_w, original_wsa_ioctl,
     original_getaddrinfoex_overlapped_result,
+    original_dns_query_ex,
 };
 use super::reload::config_reload_interval;
 
@@ -55,8 +59,19 @@ struct AsyncDnsAContext {
     callback: Option<LookupCompletionRoutine>,
 }
 
+struct AsyncDnsExContext {
+    _token: Box<u8>,
+    _fake_name: Vec<u16>,
+    original_context: *const c_void,
+    callback: unsafe extern "system" fn(*const c_void, *mut DNS_QUERY_RESULT),
+}
+
+unsafe impl Send for AsyncDnsExContext {}
+unsafe impl Sync for AsyncDnsExContext {}
+
 static ASYNC_DNS_W: OnceLock<Mutex<HashMap<usize, AsyncDnsWContext>>> = OnceLock::new();
 static ASYNC_DNS_A: OnceLock<Mutex<HashMap<usize, AsyncDnsAContext>>> = OnceLock::new();
+static ASYNC_DNS_EX: OnceLock<Mutex<HashMap<usize, AsyncDnsExContext>>> = OnceLock::new();
 
 fn async_dns_w() -> &'static Mutex<HashMap<usize, AsyncDnsWContext>> {
     ASYNC_DNS_W.get_or_init(|| Mutex::new(HashMap::new()))
@@ -64,6 +79,10 @@ fn async_dns_w() -> &'static Mutex<HashMap<usize, AsyncDnsWContext>> {
 
 fn async_dns_a() -> &'static Mutex<HashMap<usize, AsyncDnsAContext>> {
     ASYNC_DNS_A.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn async_dns_ex() -> &'static Mutex<HashMap<usize, AsyncDnsExContext>> {
+    ASYNC_DNS_EX.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 unsafe extern "system" fn async_dns_w_complete(error: u32, bytes: u32, overlapped: *mut c_void) {
@@ -79,6 +98,15 @@ unsafe extern "system" fn async_dns_a_complete(error: u32, bytes: u32, overlappe
         if let Some(callback) = context.callback {
             (callback)(error, bytes, overlapped);
         }
+    }
+}
+
+unsafe extern "system" fn async_dns_ex_complete(
+    context: *const c_void,
+    results: *mut DNS_QUERY_RESULT,
+) {
+    if let Some(context) = async_dns_ex().lock().remove(&(context as usize)) {
+        (context.callback)(context.original_context, results);
     }
 }
 
@@ -1164,6 +1192,62 @@ pub unsafe extern "system" fn hook_getaddrinfoex_overlapped_result_impl(
     result
 }
 
+/// Windows DnsQueryEx hook implementation.
+#[cfg(windows)]
+pub unsafe extern "system" fn hook_dns_query_ex_impl(
+    request: *const c_void,
+    results: *mut c_void,
+    cancel: *mut c_void,
+) -> i32 {
+    let Some(state) = get_hook_state() else {
+        return original_dns_query_ex(request as *const _ as *const c_void, results, cancel);
+    };
+    maybe_reload_config(state);
+    let config = state.config.lock().clone();
+    if !config.proxy_dns || request.is_null() || results.is_null() {
+        return original_dns_query_ex(request, results, cancel);
+    }
+    let request = &*(request as *const DNS_QUERY_REQUEST);
+    if request.QueryName.0.is_null() {
+        return original_dns_query_ex(request as *const _ as *const c_void, results, cancel);
+    }
+    let hostname = match parse_wide_string(request.QueryName.0) {
+        Ok(value) => value,
+        Err(_) => return original_dns_query_ex(request as *const _ as *const c_void, results, cancel),
+    };
+    if hostname.parse::<IpAddr>().is_ok() || crate::dns::lookup_in_hosts(&hostname).is_some() {
+        return original_dns_query_ex(request as *const _ as *const c_void, results, cancel);
+    }
+    let fake_ip = match DnsResolver::new(config.proxy_dns, config.remote_dns_subnet).resolve(&hostname) {
+        Ok(ip) => ip,
+        Err(_) => return WSAHOST_NOT_FOUND.0,
+    };
+    let fake_name: Vec<u16> = fake_ip.to_string().encode_utf16().chain(std::iter::once(0)).collect();
+    let mut forwarded = *request;
+    forwarded.QueryName = windows::core::PCWSTR(fake_name.as_ptr());
+    let Some(callback) = request.pQueryCompletionCallback else {
+        return original_dns_query_ex(&forwarded as *const _ as *const c_void, results, cancel);
+    };
+    let mut token = Box::new(0u8);
+    let token_ptr = (&mut *token) as *mut u8 as *const c_void;
+    forwarded.pQueryContext = token_ptr as *mut c_void;
+    forwarded.pQueryCompletionCallback = Some(async_dns_ex_complete);
+    async_dns_ex().lock().insert(
+        token_ptr as usize,
+        AsyncDnsExContext {
+            _token: token,
+            _fake_name: fake_name,
+            original_context: request.pQueryContext,
+            callback,
+        },
+    );
+    let result = original_dns_query_ex(&forwarded as *const _ as *const c_void, results, cancel);
+    if result != DNS_REQUEST_PENDING {
+        async_dns_ex().lock().remove(&(token_ptr as usize));
+    }
+    result
+}
+
 /// Windows GetAddrInfoExW hook implementation.
 #[cfg(windows)]
 pub unsafe extern "system" fn hook_getaddrinfoexw_impl(
@@ -1661,6 +1745,31 @@ mod tests {
         unsafe { async_dns_w_complete(0, 0, key as *mut c_void) };
         assert!(CALLED.load(Ordering::Acquire));
         assert!(!async_dns_w().lock().contains_key(&key));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_dns_query_ex_callback_restores_context_and_releases_owned_name() {
+        static CALLED: AtomicBool = AtomicBool::new(false);
+        unsafe extern "system" fn callback(context: *const c_void, _results: *mut DNS_QUERY_RESULT) {
+            assert_eq!(context as usize, 0x1234);
+            CALLED.store(true, Ordering::Release);
+        }
+        CALLED.store(false, Ordering::Release);
+        let mut token = Box::new(0u8);
+        let key = (&mut *token) as *mut u8 as usize;
+        async_dns_ex().lock().insert(
+            key,
+            AsyncDnsExContext {
+                _token: token,
+                _fake_name: vec![b'1' as u16, 0],
+                original_context: 0x1234usize as *const c_void,
+                callback,
+            },
+        );
+        unsafe { async_dns_ex_complete(key as *const c_void, std::ptr::null_mut()) };
+        assert!(CALLED.load(Ordering::Acquire));
+        assert!(!async_dns_ex().lock().contains_key(&key));
     }
 
     #[cfg(windows)]
