@@ -2,7 +2,8 @@
 use libc::{c_int, c_void, size_t, sockaddr, socklen_t, ssize_t};
 macro_rules! export {
     ($name:ident($($arg:ident: $ty:ty),*) -> $ret:ty) => {
-        #[no_mangle]
+        #[cfg_attr(not(target_os = "macos"), no_mangle)]
+        #[cfg_attr(target_os = "macos", export_name = concat!("proxychains_", stringify!($name)))]
         pub unsafe extern "C" fn $name($($arg: $ty),*) -> $ret {
             proxychains::hook::udp_unix::$name($($arg),*)
         }

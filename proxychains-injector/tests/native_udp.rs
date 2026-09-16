@@ -3,6 +3,9 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, UdpSocket};
 use std::time::{Duration, Instant};
+#[cfg(unix)]
+#[path = "support/process.rs"]
+mod process;
 
 #[test]
 #[ignore = "requires built library and fixture via PROXYCHAINS_TEST_DLL / PROXYCHAINS_TEST_FIXTURE"]
@@ -234,6 +237,6 @@ fn run(library: &str, fixture: &str, config: &std::path::Path, mode: &str) -> i3
         command
             .env("DYLD_INSERT_LIBRARIES", library)
             .env("DYLD_FORCE_FLAT_NAMESPACE", "1");
-        command.status().unwrap().code().unwrap()
+        process::status(&mut command).code().unwrap()
     }
 }

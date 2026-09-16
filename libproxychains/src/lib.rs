@@ -16,6 +16,8 @@ use proxychains::{ConfigParser, hook::init_hooks};
 // preload constructor. Native integration tests exercise the actual cdylib.
 #[cfg(all(unix, not(test)))]
 mod udp_exports;
+#[cfg(all(target_os = "macos", not(test)))]
+mod macos_interpose;
 
 /// Initialize the library (common code for all platforms)
 fn init_library() -> bool {
@@ -87,7 +89,8 @@ mod unix_impl {
     ///
     /// # Safety
     /// This is a C FFI function that makes unsafe operations
-    #[no_mangle]
+    #[cfg_attr(not(target_os = "macos"), no_mangle)]
+    #[cfg_attr(target_os = "macos", export_name = "proxychains_connect")]
     pub unsafe extern "C" fn connect(
         sock: c_int,
         addr: *const libc::sockaddr,
@@ -100,7 +103,8 @@ mod unix_impl {
     ///
     /// # Safety
     /// This is a C FFI function that makes unsafe operations
-    #[no_mangle]
+    #[cfg_attr(not(target_os = "macos"), no_mangle)]
+    #[cfg_attr(target_os = "macos", export_name = "proxychains_getaddrinfo")]
     pub unsafe extern "C" fn getaddrinfo(
         node: *const c_char,
         service: *const c_char,
@@ -114,7 +118,8 @@ mod unix_impl {
     ///
     /// # Safety
     /// This is a C FFI function that makes unsafe operations
-    #[no_mangle]
+    #[cfg_attr(not(target_os = "macos"), no_mangle)]
+    #[cfg_attr(target_os = "macos", export_name = "proxychains_freeaddrinfo")]
     pub unsafe extern "C" fn freeaddrinfo(res: *mut libc::addrinfo) {
         proxychains::hook::hook_freeaddrinfo(res)
     }
@@ -123,7 +128,8 @@ mod unix_impl {
     ///
     /// # Safety
     /// This is a C FFI function that makes unsafe operations
-    #[no_mangle]
+    #[cfg_attr(not(target_os = "macos"), no_mangle)]
+    #[cfg_attr(target_os = "macos", export_name = "proxychains_gethostbyname")]
     pub unsafe extern "C" fn gethostbyname(name: *const c_char) -> *mut libc::hostent {
         proxychains::hook::hook_gethostbyname(name)
     }
@@ -132,7 +138,8 @@ mod unix_impl {
     ///
     /// # Safety
     /// This is a C FFI function that makes unsafe operations
-    #[no_mangle]
+    #[cfg_attr(not(target_os = "macos"), no_mangle)]
+    #[cfg_attr(target_os = "macos", export_name = "proxychains_getnameinfo")]
     pub unsafe extern "C" fn getnameinfo(
         sa: *const libc::sockaddr,
         salen: libc::socklen_t,

@@ -1,4 +1,6 @@
 #![cfg(unix)]
+#[path = "support/process.rs"]
+mod process;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
@@ -42,12 +44,12 @@ fn native_preload_tcp_and_invalid_config() {
         cmd.env("DYLD_INSERT_LIBRARIES", &library).env("DYLD_FORCE_FLAT_NAMESPACE", "1");
         cmd
     };
-    let status = command().args(["tcp", "192.0.2.123:443"]).status().unwrap();
+    let status = process::status(command().args(["tcp", "192.0.2.123:443"]));
     server.join().unwrap(); assert_eq!(status.code(), Some(23));
-    assert_eq!(command().args(["tcp", "192.0.2.123:443"]).status().unwrap().code(), Some(24));
+    assert_eq!(process::status(command().args(["tcp", "192.0.2.123:443"])).code(), Some(24));
     std::fs::write(&config, "[ProxyList]\nsocks5 INVALID_ENTRY\n").unwrap();
     let marker = dir.join("must-not-start");
-    assert_eq!(command().arg(&marker).status().unwrap().code(), Some(127));
+    assert_eq!(process::status(command().arg(&marker)).code(), Some(127));
     assert!(!marker.exists());
     std::fs::remove_dir_all(dir).unwrap();
 }
