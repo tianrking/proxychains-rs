@@ -77,6 +77,8 @@ Recommendation:
 - Ordered routing rules:
   - `route direct|proxy|reject domain|domain_suffix|port|protocol|process VALUE`
   - The first matching rule wins; unmatched traffic keeps the configured proxy chain.
+- Project launch profiles:
+  - `--profile FILE` saves a command, arguments, working directory, environment, config file, and group.
 
 ## Build
 
@@ -125,6 +127,7 @@ proxychains4 -f ./proxychains.conf --probe --probe-json
 proxychains4 -f ./proxychains.conf --doctor --doctor-target example.com:80
 proxychains4 -f ./proxychains.conf --doctor --doctor-target example.com:80 --doctor-udp-echo 1.1.1.1:53 --doctor-json
 proxychains4 -f ./proxychains.conf --tree curl https://ifconfig.me
+proxychains4 --profile ./profiles/build.profile
 ```
 
 `--probe` only checks whether a proxy endpoint accepts a TCP connection.
@@ -137,6 +140,18 @@ connection outcomes as JSONL. The record contains process ID, target, stage,
 result, and latency, but never proxy credentials or payload bytes. Use
 `--events --events-follow` in another terminal to follow the file. Logging is
 best-effort: a busy or unavailable log file never blocks a connection hook.
+
+A profile is a small `KEY = VALUE` file. Supported keys are `command`,
+`args` (whitespace-separated), `cwd`, `config`, `group`, and `env.NAME`:
+
+```text
+command = cargo
+args = test --locked
+cwd = C:/src/my-project
+config = C:/src/my-project/proxychains.conf
+group = development
+env.RUST_LOG = info
+```
 
 ## Example Config
 

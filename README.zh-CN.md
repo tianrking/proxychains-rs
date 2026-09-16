@@ -77,6 +77,8 @@ Windows overlapped/IOCP UDP 尚不支持，也不代表所有 QUIC/HTTP/3 应用
 - 有序分流规则：
   - `route direct|proxy|reject domain|domain_suffix|port|protocol|process VALUE`
   - 第一条匹配规则生效，未匹配的连接保持原代理链行为。
+- 项目启动配置：
+  - `--profile FILE` 保存命令、参数、工作目录、环境变量、配置文件和代理组。
 
 ## 编译
 
@@ -125,6 +127,7 @@ proxychains4 -f ./proxychains.conf --probe --probe-json
 proxychains4 -f ./proxychains.conf --doctor --doctor-target example.com:80
 proxychains4 -f ./proxychains.conf --doctor --doctor-target example.com:80 --doctor-udp-echo 1.1.1.1:53 --doctor-json
 proxychains4 -f ./proxychains.conf --tree curl https://ifconfig.me
+proxychains4 --profile ./profiles/build.profile
 ```
 
 `--probe` 只检查代理端口是否接受 TCP 连接。`--doctor` 会分别检查传输、
@@ -135,6 +138,18 @@ proxychains4 -f ./proxychains.conf --tree curl https://ifconfig.me
 JSONL。记录包含进程号、目标、阶段、结果和时延，不包含代理凭据或报文内容。
 另一个终端运行 `--events --events-follow` 可以持续查看记录。记录是尽力而为的，
 日志文件忙或不可用时不会阻塞连接 hook。
+
+启动配置是简单的 `KEY = VALUE` 文件，支持 `command`、空格分隔的 `args`、
+`cwd`、`config`、`group` 和 `env.NAME`：
+
+```text
+command = cargo
+args = test --locked
+cwd = C:/src/my-project
+config = C:/src/my-project/proxychains.conf
+group = development
+env.RUST_LOG = info
+```
 
 ## 示例配置
 

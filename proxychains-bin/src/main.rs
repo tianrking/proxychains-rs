@@ -100,6 +100,10 @@ struct Args {
     #[arg(long, requires = "events")]
     events_follow: bool,
 
+    /// Launch a saved project profile
+    #[arg(long, value_name = "FILE")]
+    profile: Option<PathBuf>,
+
     /// Enable process-tree mode (inject/proxy child and grandchild processes)
     #[arg(long)]
     tree: bool,
@@ -114,14 +118,35 @@ struct Args {
 
     /// The command to run
     #[arg(
-        required_unless_present_any = ["list_groups", "check", "probe", "doctor", "events", "pid", "attach_name"],
+        required_unless_present_any = ["list_groups", "check", "probe", "doctor", "events", "profile", "pid", "attach_name"],
         trailing_var_arg = true
     )]
     command: Vec<String>,
+
+    #[arg(skip)]
+    launch_cwd: Option<PathBuf>,
+    #[arg(skip)]
+    launch_env: Vec<(String, String)>,
+}
+
+#[derive(Debug, Default)]
+struct LaunchProfile {
+    command: String,
+    args: Vec<String>,
+    cwd: Option<PathBuf>,
+    config: Option<PathBuf>,
+    group: Option<String>,
+    env: Vec<(String, String)>,
 }
 
 fn main() {
     let mut args = Args::parse();
+    if let Some(profile) = args.profile.clone() {
+        if let Err(error) = apply_profile(&mut args, &profile) {
+            eprintln!("proxychains: profile {}: {error}", profile.display());
+            process::exit(1);
+        }
+    }
     // Freeze the selected path before children change their working directory.
     if let Some(path) = build_parser(&args).find_config_file() {
         match std::fs::canonicalize(&path) {
@@ -178,6 +203,18 @@ fn main() {
     }
 
     let config = config.unwrap();
+
+    if !args.command.is_empty() && !args.events && !args.doctor && !args.probe {
+        if let Some(cwd) = &args.launch_cwd {
+            if let Err(error) = env::set_current_dir(cwd) {
+                eprintln!("proxychains: cannot enter profile directory {}: {error}", cwd.display());
+                process::exit(1);
+            }
+        }
+        for (key, value) in &args.launch_env {
+            env::set_var(key, value);
+        }
+    }
 
     // Check if we have proxies configured
     if !config.has_proxies() {
@@ -868,6 +905,49 @@ fn set_proxychains_env(config: &Config, args: &Args) {
     }
 }
 
+fn apply_profile(args: &mut Args, path: &PathBuf) -> Result<(), String> {
+    let contents = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let mut profile = LaunchProfile::default();
+    for (line_number, raw) in contents.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("line {} must be KEY=VALUE", line_number + 1))?;
+        let key = key.trim();
+        let value = value.trim().trim_matches('"');
+        match key {
+            "command" => profile.command = value.to_string(),
+            "args" => profile.args = value.split_whitespace().map(str::to_string).collect(),
+            "cwd" => profile.cwd = Some(PathBuf::from(value)),
+            "config" => profile.config = Some(PathBuf::from(value)),
+            "group" => profile.group = Some(value.to_string()),
+            key if key.strip_prefix("env.").is_some_and(|name| !name.is_empty()) => {
+                profile.env.push((key[4..].to_string(), value.to_string()));
+            }
+            _ => return Err(format!("unknown key {key:?} on line {}", line_number + 1)),
+        }
+    }
+    if profile.command.is_empty() {
+        return Err("profile requires command=...".to_string());
+    }
+    if !args.command.is_empty() {
+        return Err("a profile supplies the command; do not append a command".to_string());
+    }
+    args.command = std::iter::once(profile.command).chain(profile.args).collect();
+    if args.config.is_none() {
+        args.config = profile.config;
+    }
+    if args.group.is_none() {
+        args.group = profile.group;
+    }
+    args.launch_cwd = profile.cwd;
+    args.launch_env = profile.env;
+    Ok(())
+}
+
 fn run_events(args: &Args) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let path = args
@@ -1227,6 +1307,18 @@ mod tests {
         assert!(node.authentication.ok);
         assert!(node.target.ok);
         assert!(node.udp_associate.skipped);
+    }
+
+    #[test]
+    fn profile_loads_command_context_without_shell_expansion() {
+        let path = std::env::temp_dir().join(format!("proxychains-profile-{}.conf", std::process::id()));
+        std::fs::write(&path, "command = cargo\nargs = test --locked\ncwd = .\ngroup = work\nenv.RUST_LOG = info\n").unwrap();
+        let mut args = Args::try_parse_from(["proxychains4", "--profile", path.to_str().unwrap()]).unwrap();
+        apply_profile(&mut args, &path).unwrap();
+        assert_eq!(args.command, vec!["cargo", "test", "--locked"]);
+        assert_eq!(args.group.as_deref(), Some("work"));
+        assert_eq!(args.launch_env, vec![("RUST_LOG".into(), "info".into())]);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
