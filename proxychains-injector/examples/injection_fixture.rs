@@ -37,10 +37,19 @@ fn main() {
     }
     if matches!(
         args.get(1).map(String::as_str),
-        Some("tcp-connectex" | "tcp-connectex-iocp")
+        Some(
+            "tcp-connectex"
+                | "tcp-connectex-iocp"
+                | "tcp-connectex-cancel"
+                | "tcp-connectex-cancel-iocp",
+        )
     ) {
         #[cfg(windows)]
-        run_tcp_connectex(&args[2], args[1] == "tcp-connectex-iocp");
+        if args[1].starts_with("tcp-connectex-cancel") {
+            run_tcp_connectex_cancel(&args[2], args[1].ends_with("-iocp"));
+        } else {
+            run_tcp_connectex(&args[2], args[1] == "tcp-connectex-iocp");
+        }
         #[cfg(not(windows))]
         std::process::exit(24);
         std::process::exit(23);
@@ -60,6 +69,137 @@ fn main() {
         std::fs::write(marker, b"started").unwrap();
     }
     std::process::exit(23);
+}
+
+#[cfg(windows)]
+fn run_tcp_connectex_cancel(target: &str, use_iocp: bool) {
+    use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+    use std::ffi::c_void;
+    use std::mem::{forget, transmute};
+    use std::net::SocketAddr;
+    use std::os::windows::io::AsRawSocket;
+    use windows::core::GUID;
+    use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+    use windows::Win32::Networking::WinSock::{
+        closesocket, WSAGetLastError, WSAIoctl, SOCKET, WSAID_CONNECTEX, WSA_IO_PENDING,
+        WSA_OPERATION_ABORTED,
+    };
+    use windows::Win32::System::IO::{
+        CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
+    };
+    use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+
+    type ConnectEx = unsafe extern "system" fn(
+        SOCKET,
+        *const c_void,
+        i32,
+        *const c_void,
+        u32,
+        *mut u32,
+        *mut OVERLAPPED,
+    ) -> i32;
+
+    let target: SocketAddr = target.parse().expect("ConnectEx cancellation target");
+    let socket = Socket::new(
+        Domain::for_address(target),
+        Type::STREAM,
+        Some(Protocol::TCP),
+    )
+    .expect("ConnectEx cancellation socket");
+    socket
+        .bind(&SockAddr::from(SocketAddr::new(
+            if target.is_ipv4() { "0.0.0.0" } else { "::" }
+                .parse()
+                .unwrap(),
+            0,
+        )))
+        .expect("ConnectEx cancellation bind");
+    let raw = SOCKET(socket.as_raw_socket() as usize);
+    let mut function: *mut c_void = std::ptr::null_mut();
+    let mut returned = 0;
+    assert_eq!(
+        unsafe {
+            WSAIoctl(
+                raw,
+                0xC800_0006,
+                Some((&WSAID_CONNECTEX as *const GUID).cast()),
+                std::mem::size_of::<GUID>() as u32,
+                Some((&mut function as *mut *mut c_void).cast()),
+                std::mem::size_of::<*mut c_void>() as u32,
+                &mut returned,
+                None,
+                None,
+            )
+        },
+        0
+    );
+    let connect_ex: ConnectEx = unsafe { transmute(function) };
+    let event = if use_iocp {
+        HANDLE::default()
+    } else {
+        unsafe { CreateEventW(None, true, false, None).expect("ConnectEx cancellation event") }
+    };
+    let port = if use_iocp {
+        let port = unsafe {
+            CreateIoCompletionPort(HANDLE(-1), HANDLE::default(), 0x57, 1)
+                .expect("ConnectEx cancellation IOCP")
+        };
+        unsafe {
+            CreateIoCompletionPort(HANDLE(raw.0 as isize), port, 0x57, 1)
+                .expect("associate cancellation socket")
+        };
+        Some(port)
+    } else {
+        None
+    };
+    let mut overlapped = OVERLAPPED {
+        hEvent: event,
+        ..Default::default()
+    };
+    let destination = SockAddr::from(target);
+    let mut sent = 0;
+    let result = unsafe {
+        connect_ex(
+            raw,
+            destination.as_ptr().cast(),
+            destination.len(),
+            std::ptr::null(),
+            0,
+            &mut sent,
+            &mut overlapped,
+        )
+    };
+    assert_eq!(result, 0);
+    assert_eq!(unsafe { WSAGetLastError() }, WSA_IO_PENDING);
+    // Let the worker establish the proxy TCP connection before cancellation;
+    // the mock proxy then keeps the HTTP handshake pending.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert_eq!(unsafe { closesocket(raw) }, 0);
+    forget(socket);
+
+    let mut completed_bytes = 0;
+    let mut key = 0;
+    let mut completed = std::ptr::null_mut();
+    if let Some(port) = port {
+        unsafe {
+            let _ = GetQueuedCompletionStatus(
+                port,
+                &mut completed_bytes,
+                &mut key,
+                &mut completed,
+                10_000,
+            );
+        }
+        assert_eq!(key, 0x57);
+        assert!(std::ptr::eq(completed, &mut overlapped));
+    } else {
+        assert_eq!(
+            unsafe { WaitForSingleObject(event, 10_000) },
+            WAIT_OBJECT_0
+        );
+    }
+    assert_eq!(completed_bytes, 0);
+    assert_eq!(overlapped.Internal, WSA_OPERATION_ABORTED.0 as usize);
 }
 
 #[cfg(windows)]

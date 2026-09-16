@@ -23,7 +23,7 @@ A modern Rust implementation of classic `proxychains4`, with cross-platform proc
 |---|---|---|
 | Linux | `LD_PRELOAD` | Compile-checked; native regression gate added, event-loop compatibility pending |
 | macOS | `DYLD_INSERT_LIBRARIES` | Compile-checked; native regression gate added, protected apps and event loops not certified |
-| Windows | DLL injection + MinHook | Creation-time tree injection and UDP IOCP fixtures pass; ConnectEx close-cancellation and RIO remain incomplete |
+| Windows | DLL injection + MinHook | Creation-time tree injection, UDP IOCP fixtures, and ConnectEx close-cancellation fixtures pass; RIO remains incomplete |
 
 Author: **tianrking**. See [implementation status](docs/implementation-status.md)
 for verified behavior, commands and unfinished work. This is not system-enforced

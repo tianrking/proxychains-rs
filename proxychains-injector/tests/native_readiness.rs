@@ -46,8 +46,67 @@ fn native_readiness_and_failure_cleanup() {
     verify_tcp_routing(&good, &fixture, &config);
     verify_tcp_connectex(&good, &fixture, &config, "tcp-connectex");
     verify_tcp_connectex(&good, &fixture, &config, "tcp-connectex-iocp");
+    verify_tcp_connectex_cancel(&good, &fixture, &config, "tcp-connectex-cancel");
+    verify_tcp_connectex_cancel(&good, &fixture, &config, "tcp-connectex-cancel-iocp");
     verify_dns_exa(&good, &fixture, &config);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+fn verify_tcp_connectex_cancel(
+    injector: &ProxychainsInjector,
+    fixture: &str,
+    config: &std::path::Path,
+    mode: &str,
+) {
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    std::fs::write(
+        config,
+        format!("strict_chain\nproxy_dns\n[ProxyList]\nhttp 127.0.0.1 {port}\n"),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(1100));
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e)
+                    if (e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.raw_os_error() == Some(10035))
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(e) => panic!("cancelled ConnectEx client did not reach mock proxy: {e}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut header = Vec::new();
+        while !header.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            header.push(byte[0]);
+            assert!(header.len() < 8192);
+        }
+        assert!(header.starts_with(b"CONNECT 192.0.2.123:443 HTTP/1.0\r\n"));
+        // Keep the proxy handshake blocked long enough to prove cancellation,
+        // rather than allowing the worker to finish with a transport error.
+        std::thread::sleep(Duration::from_secs(2));
+    });
+    let info = ProcessInfo {
+        pid: None,
+        name: None,
+        command: fixture.into(),
+        args: vec![mode.into(), "192.0.2.123:443".into()],
+    };
+    assert_eq!(injector.spawn_inject_wait(&info).unwrap(), 23);
+    server.join().unwrap();
 }
 
 fn verify_dns_exa(injector: &ProxychainsInjector, fixture: &str, config: &std::path::Path) {
