@@ -30,7 +30,7 @@ fn native_udp_routing_and_lifecycle() {
         "udp-iocp-cancel",
         "udp-v6relay",
     ];
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     modes.push("udp-dup");
     for mode in modes {
         let ipv6 = mode == "udp-v6relay";

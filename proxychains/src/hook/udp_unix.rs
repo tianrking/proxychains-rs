@@ -171,6 +171,11 @@ fn copy_session(oldfd: c_int, newfd: c_int) {
     udp::duplicate_session(oldfd, newfd);
 }
 
+#[no_mangle]
+pub extern "C" fn proxychains_track_fcntl_dup(oldfd: c_int, newfd: c_int) {
+    copy_session(oldfd, newfd);
+}
+
 pub unsafe fn dup(oldfd: c_int) -> c_int {
     let newfd = original!("dup", (c_int) -> c_int)(oldfd);
     if newfd >= 0 {

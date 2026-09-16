@@ -30,14 +30,6 @@ pub fn run(mode: &str) {
     if mode == "udp-dup" {
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-        #[cfg(unix)]
-        let clone = {
-            use std::os::fd::{AsRawFd, FromRawFd};
-            let fd = unsafe { libc::dup(socket.as_raw_fd()) };
-            assert!(fd >= 0);
-            unsafe { UdpSocket::from_raw_fd(fd) }
-        };
-        #[cfg(not(unix))]
         let clone = socket.try_clone().unwrap();
         socket.send_to(b"dup-original", destination).unwrap();
         clone.send_to(b"dup-clone", destination).unwrap();
