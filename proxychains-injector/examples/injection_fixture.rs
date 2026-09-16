@@ -61,6 +61,13 @@ fn main() {
         std::process::exit(24);
         std::process::exit(23);
     }
+    if args.get(1).map(String::as_str) == Some("dns-queryex") {
+        #[cfg(windows)]
+        run_dns_queryex();
+        #[cfg(not(windows))]
+        std::process::exit(24);
+        std::process::exit(23);
+    }
     if args.get(1).map(String::as_str) == Some("udp-rio") {
         #[cfg(windows)]
         run_udp_rio_probe();
@@ -421,4 +428,61 @@ fn run_dns_exa() {
     assert_eq!(code, 0, "GetAddrInfoExA returned {code}");
     assert!(!result.is_null(), "GetAddrInfoExA returned no result");
     assert_eq!(unsafe { WSACleanup() }, 0);
+}
+
+#[cfg(windows)]
+fn run_dns_queryex() {
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::NetworkManagement::Dns::{
+        DnsFree, DnsQueryEx, DNS_QUERY_REQUEST, DNS_QUERY_REQUEST_VERSION1,
+        DNS_QUERY_RESULT, DNS_QUERY_RESULTS_VERSION1, DNS_TYPE_A, DnsFreeRecordList,
+    };
+
+    static CALLED: AtomicBool = AtomicBool::new(false);
+    static CONTEXT: AtomicUsize = AtomicUsize::new(0);
+    unsafe extern "system" fn callback(
+        context: *const c_void,
+        results: *mut DNS_QUERY_RESULT,
+    ) {
+        CONTEXT.store(context as usize, Ordering::Release);
+        if !results.is_null() {
+            let result = &mut *results;
+            if !result.pQueryRecords.is_null() {
+                DnsFree(Some(result.pQueryRecords.cast()), DnsFreeRecordList);
+                result.pQueryRecords = std::ptr::null_mut();
+            }
+        }
+        CALLED.store(true, Ordering::Release);
+    }
+
+    CALLED.store(false, Ordering::Release);
+    CONTEXT.store(0, Ordering::Release);
+    let name: Vec<u16> = "proxychains-remote-dns.invalid"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let request = DNS_QUERY_REQUEST {
+        Version: DNS_QUERY_REQUEST_VERSION1.0,
+        QueryName: PCWSTR(name.as_ptr()),
+        QueryType: DNS_TYPE_A.0,
+        pQueryCompletionCallback: Some(callback),
+        pQueryContext: 0x1234usize as *mut c_void,
+        ..Default::default()
+    };
+    let mut result = DNS_QUERY_RESULT {
+        Version: DNS_QUERY_RESULTS_VERSION1.0,
+        ..Default::default()
+    };
+    let code = unsafe { DnsQueryEx(&request, &mut result, None) };
+    assert!(code == ERROR_SUCCESS.0 as i32 || code == 9506, "DnsQueryEx returned {code}");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !CALLED.load(Ordering::Acquire) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(CALLED.load(Ordering::Acquire), "DnsQueryEx callback not invoked");
+    assert_eq!(CONTEXT.load(Ordering::Acquire), 0x1234);
 }
