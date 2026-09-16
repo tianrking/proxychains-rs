@@ -65,7 +65,7 @@ fn validate(config: &Config) -> crate::Result<()> {
         });
         if !valid {
             return Err(crate::Error::Config(format!(
-            "UDP proxy group {group:?} requires one or more SOCKS5 proxies"
+                "UDP proxy group {group:?} requires one or more SOCKS5 proxies"
             )));
         }
     }
@@ -80,6 +80,16 @@ pub(crate) fn init(config: &Config) -> crate::Result<()> {
 
 fn sessions() -> &'static Mutex<Sessions> {
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn session_proxy_label(handle: Handle) -> Option<String> {
+    sessions().lock().get(&handle).and_then(|session| {
+        session
+            .lock()
+            .proxy
+            .as_ref()
+            .map(|proxy| format!("{}:{}", proxy.host, proxy.port))
+    })
 }
 
 pub(crate) fn duplicate_session(old: Handle, new: Handle) {
@@ -142,7 +152,10 @@ pub(crate) fn unsupported() -> io::Error {
     )
 }
 
-fn association(session: &mut Session, requested_group: Option<&str>) -> io::Result<Arc<UdpControl>> {
+fn association(
+    session: &mut Session,
+    requested_group: Option<&str>,
+) -> io::Result<Arc<UdpControl>> {
     let started = Instant::now();
     if let Some(association) = &session.association {
         if requested_group.is_some() && requested_group != session.proxy_group.as_deref() {
@@ -154,7 +167,11 @@ fn association(session: &mut Session, requested_group: Option<&str>) -> io::Resu
         if let Err(control_error) = association.check_control() {
             if let Some(proxy) = &session.proxy {
                 if let Some(config) = CONFIG.get() {
-                    crate::chain::mark_proxy_failure(proxy, crate::chain::HealthProtocol::Udp, config.proxy_health_cooldown);
+                    crate::chain::mark_proxy_failure(
+                        proxy,
+                        crate::chain::HealthProtocol::Udp,
+                        config.proxy_health_cooldown,
+                    );
                 }
             }
             return Err(error(control_error));
@@ -162,14 +179,15 @@ fn association(session: &mut Session, requested_group: Option<&str>) -> io::Resu
         return Ok(association.clone());
     }
     let config = CONFIG.get().unwrap();
-    let group = session
-        .proxy_group
-        .as_deref()
-        .or(requested_group);
+    let group = session.proxy_group.as_deref().or(requested_group);
     let proxies = group
         .and_then(|name| config.proxy_groups.get(name))
         .unwrap_or(&config.proxies);
-    if proxies.is_empty() || proxies.iter().any(|proxy| proxy.proxy_type != ProxyType::Socks5) {
+    if proxies.is_empty()
+        || proxies
+            .iter()
+            .any(|proxy| proxy.proxy_type != ProxyType::Socks5)
+    {
         let label = group.unwrap_or("selected");
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -196,7 +214,11 @@ fn association(session: &mut Session, requested_group: Option<&str>) -> io::Resu
                 break;
             }
             Err(error_value) => {
-                crate::chain::mark_proxy_failure(proxy, crate::chain::HealthProtocol::Udp, config.proxy_health_cooldown);
+                crate::chain::mark_proxy_failure(
+                    proxy,
+                    crate::chain::HealthProtocol::Udp,
+                    config.proxy_health_cooldown,
+                );
                 last_error = Some(error_value);
             }
         }
@@ -300,7 +322,10 @@ pub(crate) unsafe fn connect(handle: Handle, address: SocketAddr) -> Option<io::
         return None;
     }
     if action == RouteAction::Reject {
-        return Some(Err(io::Error::new(io::ErrorKind::PermissionDenied, "UDP route rejected by rule")));
+        return Some(Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "UDP route rejected by rule",
+        )));
     }
     // Never switch an established association to direct I/O on reconnect.
     if CONFIG.get().unwrap().should_bypass_ip(&address.ip())
@@ -352,7 +377,10 @@ pub(crate) unsafe fn send(
         return None;
     }
     if action == RouteAction::Reject {
-        return Some(Err(io::Error::new(io::ErrorKind::PermissionDenied, "UDP route rejected by rule")));
+        return Some(Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "UDP route rejected by rule",
+        )));
     }
     if existing.is_none()
         && action == RouteAction::Proxy
@@ -392,22 +420,41 @@ pub(crate) unsafe fn send(
         }
         Ok(data.len())
     })();
+    let proxy_label = session_proxy_label(handle);
     match &result {
         Ok(_) => crate::trace::record(crate::trace::ConnectionEvent {
-            schema_version: "1.0", timestamp_ms: crate::trace::now_ms(), pid: crate::trace::process_id(),
-            process: crate::trace::process_name(), session_id: crate::trace::session_id(),
-            event: "udp_send", protocol: "udp", target: &target_label, port: target_port,
-            proxy: None,
-            stage: "data", ok: true, elapsed_ms: Some(started.elapsed().as_millis()), error: None,
+            schema_version: "1.0",
+            timestamp_ms: crate::trace::now_ms(),
+            pid: crate::trace::process_id(),
+            process: crate::trace::process_name(),
+            session_id: crate::trace::session_id(),
+            event: "udp_send",
+            protocol: "udp",
+            target: &target_label,
+            port: target_port,
+            proxy: proxy_label.clone(),
+            stage: "data",
+            ok: true,
+            elapsed_ms: Some(started.elapsed().as_millis()),
+            error: None,
         }),
         Err(error_value) => {
             let message = error_value.to_string();
             crate::trace::record(crate::trace::ConnectionEvent {
-                schema_version: "1.0", timestamp_ms: crate::trace::now_ms(), pid: crate::trace::process_id(),
-                process: crate::trace::process_name(), session_id: crate::trace::session_id(),
-                event: "udp_send", protocol: "udp", target: &target_label, port: target_port,
-                proxy: None,
-                stage: "data", ok: false, elapsed_ms: Some(started.elapsed().as_millis()), error: Some(&message),
+                schema_version: "1.0",
+                timestamp_ms: crate::trace::now_ms(),
+                pid: crate::trace::process_id(),
+                process: crate::trace::process_name(),
+                session_id: crate::trace::session_id(),
+                event: "udp_send",
+                protocol: "udp",
+                target: &target_label,
+                port: target_port,
+                proxy: proxy_label,
+                stage: "data",
+                ok: false,
+                elapsed_ms: Some(started.elapsed().as_millis()),
+                error: Some(&message),
             });
         }
     }
