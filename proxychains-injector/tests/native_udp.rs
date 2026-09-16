@@ -25,6 +25,7 @@ fn native_udp_routing_and_lifecycle() {
         "udp-iocp-sendmsg",
         "udp-iocp-recv",
         "udp-recvmsg",
+        "udp-iocp-recvmsg",
         "udp-iocp-cancel",
         "udp-v6relay",
     ] {

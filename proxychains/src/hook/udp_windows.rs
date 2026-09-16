@@ -627,7 +627,11 @@ pub(super) unsafe extern "system" fn wsa_recvmsg(
     if !udp::enabled(s) {
         return fail(udp::unsupported());
     }
-    if msg.is_null() || received.is_null() || !ov.is_null() || !completion.is_null() {
+    if msg.is_null() || !completion.is_null() {
+        return fail(udp::unsupported());
+    }
+    let iocp = if ov.is_null() { None } else { iocp_for(s) };
+    if !ov.is_null() && iocp.is_none() {
         return fail(udp::unsupported());
     }
     let message = &mut *(msg.cast::<WSAMSG>());
@@ -642,6 +646,27 @@ pub(super) unsafe extern "system" fn wsa_recvmsg(
         return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
     }
     let buffers = std::slice::from_raw_parts(message.lpBuffers, count);
+    if let Some((port, completion_key)) = iocp {
+        let buffers = buffers
+            .iter()
+            .map(|buffer| (buffer.buf.0 as usize, buffer.len as usize))
+            .collect();
+        return queue_iocp_recv(
+            s,
+            buffers,
+            received as usize,
+            (&mut message.dwFlags as *mut u32) as usize,
+            message.name as usize,
+            (&mut message.namelen as *mut i32) as usize,
+            message.dwFlags as i32,
+            ov,
+            port,
+            completion_key,
+        );
+    }
+    if received.is_null() {
+        return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
+    }
     let result = match udp::receive(s, message.dwFlags as i32) {
         Some(Ok(result)) => result,
         Some(Err(error)) => return fail(error),
