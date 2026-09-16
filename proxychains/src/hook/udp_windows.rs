@@ -347,7 +347,7 @@ unsafe extern "system" fn wsa_sendto(
     if !ov.is_null() && iocp.is_none() {
         return fail(udp::unsupported());
     }
-    if sent.is_null() {
+    if sent.is_null() && ov.is_null() {
         return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
     }
     let bufs = match buffers(bufs, count) {
