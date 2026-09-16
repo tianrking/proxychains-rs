@@ -66,8 +66,8 @@ pub(crate) unsafe fn socket(handle: Handle) -> ManuallyDrop<Socket> {
 }
 
 pub(crate) unsafe fn enabled(handle: Handle) -> bool {
-    !is_internal_network()
-        && CONFIG.get().is_some_and(|c| c.proxy_udp)
+    CONFIG.get().is_some_and(|c| c.proxy_udp)
+        && !is_internal_network()
         && socket(handle).r#type().is_ok_and(|t| t == Type::DGRAM)
         && socket(handle)
             .local_addr()
@@ -291,6 +291,7 @@ fn discard_peek(socket: &Socket, flags: i32, packet: &mut [MaybeUninit<u8>]) -> 
 }
 
 pub(crate) fn logical_peer(handle: Handle) -> Option<SocketAddr> {
+    CONFIG.get()?;
     if is_internal_network() {
         return None;
     }
@@ -298,6 +299,9 @@ pub(crate) fn logical_peer(handle: Handle) -> Option<SocketAddr> {
 }
 
 pub(crate) fn forget(handle: Handle) {
+    if CONFIG.get().is_none() {
+        return;
+    }
     if is_internal_network() {
         return;
     }
