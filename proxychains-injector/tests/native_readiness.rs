@@ -46,7 +46,20 @@ fn native_readiness_and_failure_cleanup() {
     verify_tcp_routing(&good, &fixture, &config);
     verify_tcp_connectex(&good, &fixture, &config, "tcp-connectex");
     verify_tcp_connectex(&good, &fixture, &config, "tcp-connectex-iocp");
+    verify_dns_exa(&good, &fixture, &config);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+fn verify_dns_exa(injector: &ProxychainsInjector, fixture: &str, config: &std::path::Path) {
+    std::fs::write(config, "strict_chain\nproxy_dns\n[ProxyList]\nsocks5 127.0.0.1 9\n").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let info = ProcessInfo {
+        pid: None,
+        name: None,
+        command: fixture.into(),
+        args: vec!["dns-exa".into()],
+    };
+    assert_eq!(injector.spawn_inject_wait(&info).unwrap(), 23);
 }
 
 fn verify_tcp_connectex(injector: &ProxychainsInjector, fixture: &str, config: &std::path::Path, mode: &str) {

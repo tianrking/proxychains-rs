@@ -36,7 +36,7 @@ use crate::ConfigParser;
 
 use super::interpose_windows::{
     init_original_functions, original_connect, original_freeaddrinfo, original_getaddrinfo,
-    original_getaddrinfoexw, original_getaddrinfow, original_gethostbyname, original_getnameinfo,
+    original_getaddrinfoexa, original_getaddrinfoexw, original_getaddrinfow, original_gethostbyname, original_getnameinfo,
     original_dns_query_a, original_dns_query_w, original_wsa_ioctl,
 };
 use super::reload::config_reload_interval;
@@ -1041,6 +1041,65 @@ pub unsafe extern "system" fn hook_getaddrinfoexw_impl(
         overlapped,
         completion_routine,
         pname_handle,
+    )
+}
+
+/// Windows GetAddrInfoExA hook implementation.
+#[cfg(windows)]
+pub unsafe extern "system" fn hook_getaddrinfoexa_impl(
+    pname: *const i8,
+    pservice: *const i8,
+    namespace: u32,
+    pnspid: *mut c_void,
+    hints: *const c_void,
+    ppresult: *mut *mut c_void,
+    timeout: *mut c_void,
+    overlapped: *mut c_void,
+    completion_routine: *mut c_void,
+    pname_handle: *mut c_void,
+) -> i32 {
+    let state = match get_hook_state() {
+        Some(s) => s,
+        None => {
+            return original_getaddrinfoexa(
+                pname, pservice, namespace, pnspid, hints, ppresult, timeout,
+                overlapped, completion_routine, pname_handle,
+            )
+        }
+    };
+    maybe_reload_config(state);
+    let config = state.config.lock().clone();
+    if !config.proxy_dns {
+        return original_getaddrinfoexa(
+            pname, pservice, namespace, pnspid, hints, ppresult, timeout,
+            overlapped, completion_routine, pname_handle,
+        );
+    }
+    if pname.is_null() {
+        return WSAEINVAL.0;
+    }
+    let hostname = match CStr::from_ptr(pname).to_str() {
+        Ok(value) if !value.is_empty() => value,
+        _ => return WSAEINVAL.0,
+    };
+    if hostname.parse::<IpAddr>().is_ok() || crate::dns::lookup_in_hosts(hostname).is_some() {
+        return original_getaddrinfoexa(
+            pname, pservice, namespace, pnspid, hints, ppresult, timeout,
+            overlapped, completion_routine, pname_handle,
+        );
+    }
+    let dns_resolver = DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
+    let fake_ip = match dns_resolver.resolve(hostname) {
+        Ok(ip) => ip,
+        Err(_) => return WSAHOST_NOT_FOUND.0,
+    };
+    let fake = match CString::new(fake_ip.to_string()) {
+        Ok(value) => value,
+        Err(_) => return WSAEINVAL.0,
+    };
+    original_getaddrinfoexa(
+        fake.as_ptr(), pservice, namespace, pnspid, hints, ppresult, timeout,
+        overlapped, completion_routine, pname_handle,
     )
 }
 

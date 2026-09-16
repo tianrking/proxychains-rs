@@ -29,6 +29,13 @@ fn main() {
         std::process::exit(24);
         std::process::exit(23);
     }
+    if args.get(1).map(String::as_str) == Some("dns-exa") {
+        #[cfg(windows)]
+        run_dns_exa();
+        #[cfg(not(windows))]
+        std::process::exit(24);
+        std::process::exit(23);
+    }
     if args.get(1).map(String::as_str) == Some("sleep") {
         std::thread::sleep(std::time::Duration::from_secs(60));
         return;
@@ -145,4 +152,33 @@ fn run_tcp_connectex(target: &str, use_iocp: bool) {
     let mut response = [0; 14];
     stream.read_exact(&mut response).expect("ConnectEx response");
     assert_eq!(&response, b"proxy-response");
+}
+
+#[cfg(windows)]
+fn run_dns_exa() {
+    use std::ffi::{c_void, CString};
+    use std::mem::transmute;
+    use windows::core::PCSTR;
+    use windows::Win32::Networking::WinSock::{WSACleanup, WSAStartup, WSADATA};
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+
+    type GetAddrInfoExA = unsafe extern "system" fn(
+        *const i8, *const i8, u32, *mut c_void, *const c_void, *mut *mut c_void,
+        *mut c_void, *mut c_void, *mut c_void, *mut c_void,
+    ) -> i32;
+    let module = unsafe { GetModuleHandleA(PCSTR(b"ws2_32.dll\0".as_ptr())) }.expect("ws2_32");
+    let mut wsa_data = WSADATA::default();
+    assert_eq!(unsafe { WSAStartup(0x202, &mut wsa_data) }, 0);
+    let get_proc = unsafe { GetProcAddress(module, PCSTR(b"GetAddrInfoExA\0".as_ptr())) }
+        .expect("GetAddrInfoExA");
+    let get: GetAddrInfoExA = unsafe { transmute(get_proc) };
+    let hostname = CString::new("proxychains-remote-dns.invalid").unwrap();
+    let mut result = std::ptr::null_mut();
+    let code = unsafe {
+        get(hostname.as_ptr(), std::ptr::null(), 0, std::ptr::null_mut(), std::ptr::null(), &mut result,
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut())
+    };
+    assert_eq!(code, 0, "GetAddrInfoExA returned {code}");
+    assert!(!result.is_null(), "GetAddrInfoExA returned no result");
+    assert_eq!(unsafe { WSACleanup() }, 0);
 }

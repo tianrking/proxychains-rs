@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 
 use super::hooks_windows::{
     hook_connect_impl, hook_freeaddrinfo_impl, hook_getaddrinfo_impl, hook_getaddrinfow_impl,
-    hook_getaddrinfoexw_impl, hook_gethostbyname_impl, hook_getnameinfo_impl,
+    hook_getaddrinfoexa_impl, hook_getaddrinfoexw_impl, hook_gethostbyname_impl, hook_getnameinfo_impl,
     hook_dns_query_a_impl, hook_dns_query_w_impl, hook_wsa_connect_impl, hook_wsa_ioctl_impl,
     hook_create_io_completion_port_impl,
 };
@@ -62,6 +62,18 @@ type WsaIoctlFn = unsafe extern "system" fn(
     *mut c_void,
     *mut c_void,
 ) -> i32;
+type GetAddrInfoExAFn = unsafe extern "system" fn(
+    *const i8,
+    *const i8,
+    u32,
+    *mut c_void,
+    *const c_void,
+    *mut *mut c_void,
+    *mut c_void,
+    *mut c_void,
+    *mut c_void,
+    *mut c_void,
+) -> i32;
 type CreateIoCompletionPortFn = unsafe extern "system" fn(HANDLE, HANDLE, usize, u32) -> HANDLE;
 type DnsQueryAFn = unsafe extern "system" fn(
     *const i8,
@@ -85,6 +97,7 @@ static ORIGINAL_WSA_CONNECT: OnceLock<WsaConnectFn> = OnceLock::new();
 static ORIGINAL_GETADDRINFO: OnceLock<GetAddrInfoFn> = OnceLock::new();
 static ORIGINAL_GETADDRINFOW: OnceLock<GetAddrInfoWFn> = OnceLock::new();
 static ORIGINAL_GETADDRINFOEXW: OnceLock<GetAddrInfoExWFn> = OnceLock::new();
+static ORIGINAL_GETADDRINFOEXA: OnceLock<GetAddrInfoExAFn> = OnceLock::new();
 static ORIGINAL_FREEADDRINFO: OnceLock<FreeAddrInfoFn> = OnceLock::new();
 static ORIGINAL_GETHOSTBYNAME: OnceLock<GetHostByNameFn> = OnceLock::new();
 static ORIGINAL_GETNAMEINFO: OnceLock<GetNameInfoFn> = OnceLock::new();
@@ -173,6 +186,14 @@ impl OriginalFunctions {
                 let _ = ORIGINAL_GETADDRINFOEXW.set(getaddrinfoexw_fn);
             } else {
                 debug!("GetAddrInfoExW hook not installed (symbol unavailable)");
+            }
+            if let Ok(getaddrinfoexa_fn) = install_api_hook(
+                "GetAddrInfoExA",
+                hook_getaddrinfoexa_impl as *const () as *mut c_void,
+            ) {
+                let _ = ORIGINAL_GETADDRINFOEXA.set(getaddrinfoexa_fn);
+            } else {
+                debug!("GetAddrInfoExA hook not installed (symbol unavailable)");
             }
             if let Ok(dns_query_a_fn) = install_api_hook_from_module(
                 "dnsapi.dll",
@@ -358,6 +379,37 @@ pub unsafe fn original_getaddrinfoexw(
         )
     } else {
         WSASetLastError(WSAHOST_NOT_FOUND.0);
+        WSAHOST_NOT_FOUND.0
+    }
+}
+
+/// Call the original GetAddrInfoExA function when that optional API is present.
+pub unsafe fn original_getaddrinfoexa(
+    pname: *const i8,
+    pservice: *const i8,
+    namespace: u32,
+    pnspid: *mut c_void,
+    hints: *const c_void,
+    ppresult: *mut *mut c_void,
+    timeout: *mut c_void,
+    overlapped: *mut c_void,
+    completion_routine: *mut c_void,
+    pname_handle: *mut c_void,
+) -> i32 {
+    if let Some(f) = ORIGINAL_GETADDRINFOEXA.get() {
+        f(
+            pname,
+            pservice,
+            namespace,
+            pnspid,
+            hints,
+            ppresult,
+            timeout,
+            overlapped,
+            completion_routine,
+            pname_handle,
+        )
+    } else {
         WSAHOST_NOT_FOUND.0
     }
 }
