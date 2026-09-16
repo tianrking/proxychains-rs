@@ -34,12 +34,14 @@ pub fn run(mode: &str) {
         socket.send_to(b"dup-original", destination).unwrap();
         clone.send_to(b"dup-clone", destination).unwrap();
         let mut buffer = [0; 64];
-        let (n, source) = socket.recv_from(&mut buffer).unwrap();
-        assert_eq!(&buffer[..n], b"dup-original");
-        assert_eq!(source, destination);
-        let (n, source) = clone.recv_from(&mut buffer).unwrap();
-        assert_eq!(&buffer[..n], b"dup-clone");
-        assert_eq!(source, destination);
+        let mut received = Vec::new();
+        for _ in 0..2 {
+            let (n, source) = socket.recv_from(&mut buffer).unwrap();
+            assert_eq!(source, destination);
+            received.push(buffer[..n].to_vec());
+        }
+        received.sort();
+        assert_eq!(received, vec![b"dup-clone".to_vec(), b"dup-original".to_vec()]);
         return;
     }
     for _ in 0..2 {

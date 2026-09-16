@@ -78,9 +78,12 @@ fn sessions() -> &'static Mutex<Sessions> {
 
 pub(crate) fn duplicate_session(old: Handle, new: Handle) {
     let mut all = sessions().lock();
-    if let Some(session) = all.get(&old).cloned() {
-        all.insert(new, session);
-    }
+    // Duplication commonly happens before the first send creates the UDP
+    // association (for example `UdpSocket::try_clone`).  Seed the source
+    // entry in that case so both descriptors converge on the same lazy
+    // session instead of opening two SOCKS5 UDP associations later.
+    let session = all.entry(old).or_default().clone();
+    all.insert(new, session);
 }
 
 pub(crate) fn remove_session(handle: Handle) {
