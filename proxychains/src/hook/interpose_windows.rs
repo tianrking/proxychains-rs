@@ -19,6 +19,7 @@ use super::hooks_windows::{
     hook_getaddrinfoexa_impl, hook_getaddrinfoexw_impl, hook_gethostbyname_impl, hook_getnameinfo_impl,
     hook_dns_query_a_impl, hook_dns_query_w_impl, hook_wsa_connect_impl, hook_wsa_ioctl_impl,
     hook_create_io_completion_port_impl,
+    hook_getaddrinfoex_overlapped_result_impl,
 };
 
 type ConnectFn = unsafe extern "system" fn(usize, *const c_void, i32) -> i32;
@@ -74,6 +75,7 @@ type GetAddrInfoExAFn = unsafe extern "system" fn(
     *mut c_void,
     *mut c_void,
 ) -> i32;
+type GetAddrInfoExOverlappedResultFn = unsafe extern "system" fn(*mut c_void) -> i32;
 type CreateIoCompletionPortFn = unsafe extern "system" fn(HANDLE, HANDLE, usize, u32) -> HANDLE;
 type DnsQueryAFn = unsafe extern "system" fn(
     *const i8,
@@ -98,6 +100,7 @@ static ORIGINAL_GETADDRINFO: OnceLock<GetAddrInfoFn> = OnceLock::new();
 static ORIGINAL_GETADDRINFOW: OnceLock<GetAddrInfoWFn> = OnceLock::new();
 static ORIGINAL_GETADDRINFOEXW: OnceLock<GetAddrInfoExWFn> = OnceLock::new();
 static ORIGINAL_GETADDRINFOEXA: OnceLock<GetAddrInfoExAFn> = OnceLock::new();
+static ORIGINAL_GETADDRINFOEX_OVERLAPPED_RESULT: OnceLock<GetAddrInfoExOverlappedResultFn> = OnceLock::new();
 static ORIGINAL_FREEADDRINFO: OnceLock<FreeAddrInfoFn> = OnceLock::new();
 static ORIGINAL_GETHOSTBYNAME: OnceLock<GetHostByNameFn> = OnceLock::new();
 static ORIGINAL_GETNAMEINFO: OnceLock<GetNameInfoFn> = OnceLock::new();
@@ -194,6 +197,14 @@ impl OriginalFunctions {
                 let _ = ORIGINAL_GETADDRINFOEXA.set(getaddrinfoexa_fn);
             } else {
                 debug!("GetAddrInfoExA hook not installed (symbol unavailable)");
+            }
+            if let Ok(result_fn) = install_api_hook(
+                "GetAddrInfoExOverlappedResult",
+                hook_getaddrinfoex_overlapped_result_impl as *const () as *mut c_void,
+            ) {
+                let _ = ORIGINAL_GETADDRINFOEX_OVERLAPPED_RESULT.set(result_fn);
+            } else {
+                debug!("GetAddrInfoExOverlappedResult hook not installed (symbol unavailable)");
             }
             if let Ok(dns_query_a_fn) = install_api_hook_from_module(
                 "dnsapi.dll",
@@ -409,6 +420,15 @@ pub unsafe fn original_getaddrinfoexa(
             completion_routine,
             pname_handle,
         )
+    } else {
+        WSAHOST_NOT_FOUND.0
+    }
+}
+
+/// Call the original GetAddrInfoExOverlappedResult function.
+pub unsafe fn original_getaddrinfoex_overlapped_result(overlapped: *mut c_void) -> i32 {
+    if let Some(f) = ORIGINAL_GETADDRINFOEX_OVERLAPPED_RESULT.get() {
+        f(overlapped)
     } else {
         WSAHOST_NOT_FOUND.0
     }

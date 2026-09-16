@@ -39,6 +39,7 @@ use super::interpose_windows::{
     init_original_functions, original_connect, original_freeaddrinfo, original_getaddrinfo,
     original_getaddrinfoexa, original_getaddrinfoexw, original_getaddrinfow, original_gethostbyname, original_getnameinfo,
     original_dns_query_a, original_dns_query_w, original_wsa_ioctl,
+    original_getaddrinfoex_overlapped_result,
 };
 use super::reload::config_reload_interval;
 
@@ -46,12 +47,12 @@ type LookupCompletionRoutine = unsafe extern "system" fn(u32, u32, *mut c_void);
 
 struct AsyncDnsWContext {
     fake_name: Vec<u16>,
-    callback: LookupCompletionRoutine,
+    callback: Option<LookupCompletionRoutine>,
 }
 
 struct AsyncDnsAContext {
     fake_name: CString,
-    callback: LookupCompletionRoutine,
+    callback: Option<LookupCompletionRoutine>,
 }
 
 static ASYNC_DNS_W: OnceLock<Mutex<HashMap<usize, AsyncDnsWContext>>> = OnceLock::new();
@@ -67,13 +68,17 @@ fn async_dns_a() -> &'static Mutex<HashMap<usize, AsyncDnsAContext>> {
 
 unsafe extern "system" fn async_dns_w_complete(error: u32, bytes: u32, overlapped: *mut c_void) {
     if let Some(context) = async_dns_w().lock().remove(&(overlapped as usize)) {
-        (context.callback)(error, bytes, overlapped);
+        if let Some(callback) = context.callback {
+            (callback)(error, bytes, overlapped);
+        }
     }
 }
 
 unsafe extern "system" fn async_dns_a_complete(error: u32, bytes: u32, overlapped: *mut c_void) {
     if let Some(context) = async_dns_a().lock().remove(&(overlapped as usize)) {
-        (context.callback)(error, bytes, overlapped);
+        if let Some(callback) = context.callback {
+            (callback)(error, bytes, overlapped);
+        }
     }
 }
 
@@ -1074,7 +1079,8 @@ unsafe fn hook_getaddrinfoexw_async(
         Err(_) => return WSAHOST_NOT_FOUND.0,
     };
     let fake_name: Vec<u16> = fake_ip.to_string().encode_utf16().chain(std::iter::once(0)).collect();
-    let callback: LookupCompletionRoutine = mem::transmute(completion_routine);
+    let callback = (!completion_routine.is_null())
+        .then(|| mem::transmute::<*mut c_void, LookupCompletionRoutine>(completion_routine));
     let key = overlapped as usize;
     let mut contexts = async_dns_w().lock();
     contexts.insert(key, AsyncDnsWContext { fake_name, callback });
@@ -1082,7 +1088,8 @@ unsafe fn hook_getaddrinfoexw_async(
     drop(contexts);
     let result = original_getaddrinfoexw(
         fake_ptr, pservice, namespace, pnspid, hints, ppresult, timeout, overlapped,
-        async_dns_w_complete as *mut c_void, pname_handle,
+        if callback.is_some() { async_dns_w_complete as *mut c_void } else { std::ptr::null_mut() },
+        pname_handle,
     );
     if result != 0 && result != WSA_IO_PENDING.0 {
         async_dns_w().lock().remove(&key);
@@ -1125,7 +1132,8 @@ unsafe fn hook_getaddrinfoexa_async(
         Ok(value) => value,
         Err(_) => return WSAEINVAL.0,
     };
-    let callback: LookupCompletionRoutine = mem::transmute(completion_routine);
+    let callback = (!completion_routine.is_null())
+        .then(|| mem::transmute::<*mut c_void, LookupCompletionRoutine>(completion_routine));
     let key = overlapped as usize;
     let mut contexts = async_dns_a().lock();
     contexts.insert(key, AsyncDnsAContext { fake_name, callback });
@@ -1133,9 +1141,24 @@ unsafe fn hook_getaddrinfoexa_async(
     drop(contexts);
     let result = original_getaddrinfoexa(
         fake_ptr, pservice, namespace, pnspid, hints, ppresult, timeout, overlapped,
-        async_dns_a_complete as *mut c_void, pname_handle,
+        if callback.is_some() { async_dns_a_complete as *mut c_void } else { std::ptr::null_mut() },
+        pname_handle,
     );
     if result != 0 && result != WSA_IO_PENDING.0 {
+        async_dns_a().lock().remove(&key);
+    }
+    result
+}
+
+/// Release event-based async DNS fake names after the caller observes completion.
+#[cfg(windows)]
+pub unsafe extern "system" fn hook_getaddrinfoex_overlapped_result_impl(
+    overlapped: *mut c_void,
+) -> i32 {
+    let result = original_getaddrinfoex_overlapped_result(overlapped);
+    if result != WSAEINPROGRESS.0 {
+        let key = overlapped as usize;
+        async_dns_w().lock().remove(&key);
         async_dns_a().lock().remove(&key);
     }
     result
@@ -1191,7 +1214,7 @@ pub unsafe extern "system" fn hook_getaddrinfoexw_impl(
     // Event-based async calls have no completion callback where we can release
     // the owned fake name. Keep those on the system resolver. Callback-based
     // calls are wrapped below and retain the fake name until completion.
-    if !completion_routine.is_null() && !overlapped.is_null() {
+    if !overlapped.is_null() {
         return hook_getaddrinfoexw_async(
             &config,
             pname,
@@ -1206,7 +1229,7 @@ pub unsafe extern "system" fn hook_getaddrinfoexw_impl(
             pname_handle,
         );
     }
-    if !overlapped.is_null() || !completion_routine.is_null() {
+    if !completion_routine.is_null() {
         return original_getaddrinfoexw(
             pname, pservice, namespace, pnspid, hints, ppresult, timeout,
             overlapped, completion_routine, pname_handle,
@@ -1294,7 +1317,7 @@ pub unsafe extern "system" fn hook_getaddrinfoexa_impl(
             overlapped, completion_routine, pname_handle,
         );
     }
-    if !completion_routine.is_null() && !overlapped.is_null() {
+    if !overlapped.is_null() {
         return hook_getaddrinfoexa_async(
             &config,
             pname,
@@ -1309,7 +1332,7 @@ pub unsafe extern "system" fn hook_getaddrinfoexa_impl(
             pname_handle,
         );
     }
-    if !overlapped.is_null() || !completion_routine.is_null() {
+    if !completion_routine.is_null() {
         return original_getaddrinfoexa(
             pname, pservice, namespace, pnspid, hints, ppresult, timeout,
             overlapped, completion_routine, pname_handle,
@@ -1632,7 +1655,7 @@ mod tests {
             key,
             AsyncDnsWContext {
                 fake_name: vec![b'1' as u16, 0],
-                callback,
+                callback: Some(callback),
             },
         );
         unsafe { async_dns_w_complete(0, 0, key as *mut c_void) };
