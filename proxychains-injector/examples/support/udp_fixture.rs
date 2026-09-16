@@ -296,6 +296,11 @@ fn completion_send_recv(socket: &UdpSocket, data: &[u8], destination: SocketAddr
     assert_eq!(&payload[..data.len()], data);
 }
 
+#[cfg(not(windows))]
+fn completion_send_recv(_socket: &UdpSocket, _data: &[u8], _destination: SocketAddr) {
+    unreachable!("Windows completion routines are only available on Windows");
+}
+
 fn run_quic(destination: SocketAddr) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async move {
