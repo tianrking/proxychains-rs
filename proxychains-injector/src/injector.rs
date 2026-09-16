@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Injection errors
 #[derive(Error, Debug)]
@@ -32,21 +32,72 @@ pub enum InjectorError {
     WindowsApi(String),
 }
 
+#[cfg(windows)]
+fn enumerate_descendant_pids(root_pid: u32) -> Result<Vec<u32>> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).map_err(|e| {
+            InjectorError::WindowsApi(format!("CreateToolhelp32Snapshot failed: {e:?}"))
+        })?;
+        let mut entry = PROCESSENTRY32W::default();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut parent_by_pid = HashMap::new();
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                parent_by_pid.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+
+        let mut seen = HashSet::from([root_pid]);
+        let mut queue = VecDeque::from([root_pid]);
+        let mut descendants = Vec::new();
+        while let Some(parent) = queue.pop_front() {
+            for (&pid, &ppid) in &parent_by_pid {
+                if ppid == parent && seen.insert(pid) {
+                    descendants.push(pid);
+                    queue.push_back(pid);
+                }
+            }
+        }
+        Ok(descendants)
+    }
+}
+
 pub type Result<T> = std::result::Result<T, InjectorError>;
 
 #[cfg(windows)]
 fn quote_arg(arg: &str) -> String {
-    if !arg.is_empty() && !arg.chars().any(|c| c == ' ' || c == '\t' || c == '"') { return arg.to_owned(); }
+    if !arg.is_empty() && !arg.chars().any(|c| c == ' ' || c == '\t' || c == '"') {
+        return arg.to_owned();
+    }
     let mut result = String::from("\"");
     let mut slashes = 0;
     for ch in arg.chars() {
-        if ch == '\\' { slashes += 1; continue; }
-        if ch == '"' { result.extend(std::iter::repeat('\\').take(slashes * 2 + 1)); }
-        else { result.extend(std::iter::repeat('\\').take(slashes)); }
-        slashes = 0; result.push(ch);
+        if ch == '\\' {
+            slashes += 1;
+            continue;
+        }
+        if ch == '"' {
+            result.extend(std::iter::repeat('\\').take(slashes * 2 + 1));
+        } else {
+            result.extend(std::iter::repeat('\\').take(slashes));
+        }
+        slashes = 0;
+        result.push(ch);
     }
     result.extend(std::iter::repeat('\\').take(slashes * 2));
-    result.push('"'); result
+    result.push('"');
+    result
 }
 
 /// Process information for injection
@@ -122,12 +173,21 @@ impl ProxychainsInjector {
         unsafe {
             let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
                 .map_err(|e| InjectorError::WindowsApi(e.to_string()))?;
-            let mut entry = PROCESSENTRY32W::default(); entry.dwSize = std::mem::size_of_val(&entry) as u32;
+            let mut entry = PROCESSENTRY32W::default();
+            entry.dwSize = std::mem::size_of_val(&entry) as u32;
             if Process32FirstW(snapshot, &mut entry).is_ok() {
                 loop {
-                    let n = entry.szExeFile.iter().position(|c| *c == 0).unwrap_or(entry.szExeFile.len());
-                    if String::from_utf16_lossy(&entry.szExeFile[..n]).eq_ignore_ascii_case(name) { matches.push(entry.th32ProcessID); }
-                    if Process32NextW(snapshot, &mut entry).is_err() { break; }
+                    let n = entry
+                        .szExeFile
+                        .iter()
+                        .position(|c| *c == 0)
+                        .unwrap_or(entry.szExeFile.len());
+                    if String::from_utf16_lossy(&entry.szExeFile[..n]).eq_ignore_ascii_case(name) {
+                        matches.push(entry.th32ProcessID);
+                    }
+                    if Process32NextW(snapshot, &mut entry).is_err() {
+                        break;
+                    }
                 }
             }
             let _ = CloseHandle(snapshot);
@@ -135,7 +195,9 @@ impl ProxychainsInjector {
         match matches.as_slice() {
             [pid] => self.inject_by_pid(*pid),
             [] => Err(InjectorError::ProcessNotFound(name.into())),
-            _ => Err(InjectorError::InjectionFailed(format!("Multiple processes named {name}; select an explicit PID: {matches:?}"))),
+            _ => Err(InjectorError::InjectionFailed(format!(
+                "Multiple processes named {name}; select an explicit PID: {matches:?}"
+            ))),
         }
     }
 
@@ -179,7 +241,6 @@ impl ProxychainsInjector {
             CreateProcessW, GetExitCodeProcess, ResumeThread, WaitForSingleObject,
             CREATE_SUSPENDED, INFINITE, PROCESS_INFORMATION, STARTUPINFOW,
         };
-
 
         let mut command_line = quote_arg(&process_info.command);
         for arg in &process_info.args {
@@ -236,8 +297,9 @@ impl ProxychainsInjector {
 
             let _ = WaitForSingleObject(process_handle, INFINITE);
             let mut exit_code = 1u32;
-            GetExitCodeProcess(process_handle, &mut exit_code)
-                .map_err(|e| InjectorError::WindowsApi(format!("GetExitCodeProcess failed: {:?}", e)))?;
+            GetExitCodeProcess(process_handle, &mut exit_code).map_err(|e| {
+                InjectorError::WindowsApi(format!("GetExitCodeProcess failed: {:?}", e))
+            })?;
 
             let _ = CloseHandle(thread_handle);
             let _ = CloseHandle(process_handle);
@@ -250,7 +312,16 @@ impl ProxychainsInjector {
     /// (child/grandchild processes) until the root process exits.
     #[cfg(windows)]
     pub fn spawn_inject_tree_wait(&self, process_info: &ProcessInfo) -> Result<i32> {
-        self.spawn_inject_tree_debug_wait(process_info)
+        match self.spawn_inject_tree_debug_wait(process_info) {
+            Ok(exit_code) => Ok(exit_code),
+            Err(error) => {
+                warn!(
+                    "Creation-time tree injection failed; retrying with suspended-process polling fallback: {}",
+                    error
+                );
+                self.spawn_inject_tree_polling_wait(process_info)
+            }
+        }
     }
 
     /// Create the root under the Windows debugger, inject every process at its
@@ -261,10 +332,12 @@ impl ProxychainsInjector {
     fn spawn_inject_tree_debug_wait(&self, process_info: &ProcessInfo) -> Result<i32> {
         use std::os::windows::ffi::OsStrExt;
         use windows::core::{PCWSTR, PWSTR};
-        use windows::Win32::Foundation::{CloseHandle, HANDLE, DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED};
+        use windows::Win32::Foundation::{
+            CloseHandle, DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED, HANDLE,
+        };
         use windows::Win32::System::Diagnostics::Debug::{
-            ContinueDebugEvent, WaitForDebugEvent, CREATE_PROCESS_DEBUG_EVENT,
-            DEBUG_EVENT, EXCEPTION_DEBUG_EVENT, EXIT_PROCESS_DEBUG_EVENT,
+            ContinueDebugEvent, WaitForDebugEvent, CREATE_PROCESS_DEBUG_EVENT, DEBUG_EVENT,
+            EXCEPTION_DEBUG_EVENT, EXIT_PROCESS_DEBUG_EVENT,
         };
         use windows::Win32::System::Threading::{
             CreateProcessW, GetExitCodeProcess, TerminateProcess, DEBUG_PROCESS,
@@ -315,13 +388,23 @@ impl ProxychainsInjector {
                     let info = event.u.CreateProcessInfo;
                     let is_root = event.dwProcessId == root_pid;
                     if fatal_error.is_none() {
+                        debug!(
+                            "Injecting DLL at process creation event: pid={} root={}",
+                            event.dwProcessId, is_root
+                        );
                         if let Err(error) = self.inject_dll(info.hProcess) {
-                            fatal_error = Some(error);
+                            fatal_error = Some(InjectorError::InjectionFailed(format!(
+                                "PID {} (root={}): {error}",
+                                event.dwProcessId, is_root
+                            )));
                             if is_root {
                                 let _ = TerminateProcess(root_handle, 1);
                             }
                         } else {
-                            info!("Injected DLL at process creation event for PID {}", event.dwProcessId);
+                            info!(
+                                "Injected DLL at process creation event for PID {}",
+                                event.dwProcessId
+                            );
                         }
                     }
                     if !is_root {
@@ -340,21 +423,118 @@ impl ProxychainsInjector {
                     continue_status = DBG_EXCEPTION_NOT_HANDLED;
                 }
 
-                ContinueDebugEvent(event.dwProcessId, event.dwThreadId, continue_status)
-                    .map_err(|e| InjectorError::WindowsApi(format!("ContinueDebugEvent failed: {e:?}")))?;
+                ContinueDebugEvent(event.dwProcessId, event.dwThreadId, continue_status).map_err(
+                    |e| InjectorError::WindowsApi(format!("ContinueDebugEvent failed: {e:?}")),
+                )?;
                 if root_exit.is_some() {
                     break;
                 }
             }
 
             let mut exit_code = root_exit.unwrap_or(1);
-            GetExitCodeProcess(root_handle, &mut exit_code)
-                .map_err(|e| InjectorError::WindowsApi(format!("GetExitCodeProcess failed: {e:?}")))?;
+            GetExitCodeProcess(root_handle, &mut exit_code).map_err(|e| {
+                InjectorError::WindowsApi(format!("GetExitCodeProcess failed: {e:?}"))
+            })?;
             let _ = CloseHandle(process_info_win.hThread);
             let _ = CloseHandle(root_handle);
             if let Some(error) = fatal_error {
                 return Err(error);
             }
+            Ok(exit_code as i32)
+        }
+    }
+
+    /// Compatibility fallback for applications that cannot be created under a
+    /// debugger (for example browser launchers with debugger-sensitive startup
+    /// behavior). The root is still injected before resume; descendants are
+    /// discovered by process-table polling, so a short race window remains.
+    #[cfg(windows)]
+    fn spawn_inject_tree_polling_wait(&self, process_info: &ProcessInfo) -> Result<i32> {
+        use std::collections::HashSet;
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::{PCWSTR, PWSTR};
+        use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+        use windows::Win32::System::Threading::{
+            CreateProcessW, GetExitCodeProcess, ResumeThread, TerminateProcess,
+            WaitForSingleObject, CREATE_SUSPENDED, PROCESS_INFORMATION, STARTUPINFOW,
+        };
+
+        let mut command_line = quote_arg(&process_info.command);
+        for arg in &process_info.args {
+            command_line.push(' ');
+            command_line.push_str(&quote_arg(arg));
+        }
+        let mut cmd_wide: Vec<u16> = std::ffi::OsStr::new(&command_line)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut startup_info = STARTUPINFOW::default();
+        startup_info.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+        let mut process_info_win = PROCESS_INFORMATION::default();
+
+        unsafe {
+            CreateProcessW(
+                PCWSTR::null(),
+                PWSTR(cmd_wide.as_mut_ptr()),
+                None,
+                None,
+                false,
+                CREATE_SUSPENDED,
+                None,
+                PCWSTR::null(),
+                &startup_info,
+                &mut process_info_win,
+            )
+            .map_err(|e| InjectorError::ProcessCreationFailed(format!("{e:?}")))?;
+
+            let process_handle: HANDLE = process_info_win.hProcess;
+            let thread_handle: HANDLE = process_info_win.hThread;
+            let root_pid = process_info_win.dwProcessId;
+            if let Err(error) = self.inject_dll(process_handle) {
+                let _ = TerminateProcess(process_handle, 1);
+                let _ = CloseHandle(thread_handle);
+                let _ = CloseHandle(process_handle);
+                return Err(error);
+            }
+            info!(
+                "Injected DLL into suspended fallback root process {}",
+                root_pid
+            );
+
+            if ResumeThread(thread_handle) == u32::MAX {
+                let _ = TerminateProcess(process_handle, 1);
+                let _ = CloseHandle(thread_handle);
+                let _ = CloseHandle(process_handle);
+                return Err(InjectorError::WindowsApi("ResumeThread failed".into()));
+            }
+
+            let mut injected_pids = HashSet::from([root_pid]);
+            loop {
+                for pid in enumerate_descendant_pids(root_pid)? {
+                    if injected_pids.contains(&pid) {
+                        continue;
+                    }
+                    match self.inject_by_pid(pid) {
+                        Ok(()) => {
+                            injected_pids.insert(pid);
+                            debug!("Injected DLL into fallback tree PID {}", pid);
+                        }
+                        Err(error) => {
+                            debug!("Fallback tree injection skipped for PID {}: {}", pid, error);
+                        }
+                    }
+                }
+                if WaitForSingleObject(process_handle, 150) == WAIT_OBJECT_0 {
+                    break;
+                }
+            }
+
+            let mut exit_code = 1u32;
+            GetExitCodeProcess(process_handle, &mut exit_code).map_err(|e| {
+                InjectorError::WindowsApi(format!("GetExitCodeProcess failed: {e:?}"))
+            })?;
+            let _ = CloseHandle(thread_handle);
+            let _ = CloseHandle(process_handle);
             Ok(exit_code as i32)
         }
     }
