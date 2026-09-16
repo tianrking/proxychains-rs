@@ -1,13 +1,14 @@
-//! Winsock datagram interposition. Overlapped datagram calls are explicitly
-//! rejected until completion ownership, cancellation and IOCP are implemented.
+//! Winsock datagram interposition, including SOCKS5 relay-backed IOCP sends.
 use super::udp;
 use std::ffi::c_void;
 use std::io;
 use std::ptr;
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::Networking::WinSock::*;
 use windows::Win32::Foundation::HANDLE;
+use windows::Win32::System::IO::{PostQueuedCompletionStatus, OVERLAPPED};
 
 macro_rules! original {
     ($name:ident, $ty:ident, ($($arg:ty),*) -> $ret:ty) => {
@@ -29,9 +30,15 @@ original!(WSASENDMSG, WsaSendMsg, (usize, *const c_void, u32, *mut u32, *mut c_v
 
 static IOCP_ASSOCIATIONS: OnceLock<parking_lot::Mutex<HashMap<usize, (HANDLE, usize)>>> =
     OnceLock::new();
+static IOCP_PENDING: OnceLock<parking_lot::Mutex<HashMap<(usize, usize), Arc<AtomicBool>>>> =
+    OnceLock::new();
 
 fn iocp_associations() -> &'static parking_lot::Mutex<HashMap<usize, (HANDLE, usize)>> {
     IOCP_ASSOCIATIONS.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+}
+
+fn iocp_pending() -> &'static parking_lot::Mutex<HashMap<(usize, usize), Arc<AtomicBool>>> {
+    IOCP_PENDING.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
 }
 
 pub(super) fn register_iocp(socket: usize, port: HANDLE, completion_key: usize) {
@@ -44,6 +51,15 @@ pub(super) fn register_iocp(socket: usize, port: HANDLE, completion_key: usize) 
 
 pub(super) fn forget_iocp(socket: usize) {
     iocp_associations().lock().remove(&socket);
+    for ((pending_socket, _), cancelled) in iocp_pending().lock().iter() {
+        if *pending_socket == socket {
+            cancelled.store(true, Ordering::Release);
+        }
+    }
+}
+
+fn iocp_for(socket: usize) -> Option<(HANDLE, usize)> {
+    iocp_associations().lock().get(&socket).copied()
 }
 
 pub(super) unsafe fn install() -> crate::Result<()> {
@@ -243,6 +259,67 @@ unsafe fn buffers<'a>(bufs: *const WSABUF, count: u32) -> io::Result<&'a [WSABUF
     Ok(bufs)
 }
 
+unsafe fn queue_iocp_send(
+    socket: usize,
+    data: Vec<u8>,
+    address: Option<std::net::SocketAddr>,
+    flags: i32,
+    sent: *mut u32,
+    overlapped: *mut c_void,
+    port: HANDLE,
+    completion_key: usize,
+) -> i32 {
+    let overlapped = overlapped.cast::<OVERLAPPED>();
+    (*overlapped).Internal = 0x103;
+    (*overlapped).InternalHigh = 0;
+    let sent_ptr = sent as usize;
+    let overlapped_ptr = overlapped as usize;
+    let pending_key = (socket, overlapped_ptr);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    iocp_pending().lock().insert(pending_key, cancelled.clone());
+    let spawned = std::thread::Builder::new()
+        .name("proxychains-udp-iocp".to_string())
+        .spawn(move || {
+            let (bytes, status) = if cancelled.load(Ordering::Acquire) {
+                (0, WSA_OPERATION_ABORTED.0 as usize)
+            } else {
+                let result = unsafe { udp::send(socket, &data, address, flags) };
+                match result {
+                    Some(Ok(bytes)) => (bytes, 0usize),
+                    Some(Err(error)) => (
+                        0,
+                        error.raw_os_error().unwrap_or(WSAECONNABORTED.0) as usize,
+                    ),
+                    None => (0, WSAEOPNOTSUPP.0 as usize),
+                }
+            };
+            unsafe {
+                if sent_ptr != 0 {
+                    *(sent_ptr as *mut u32) = bytes as u32;
+                }
+                let overlapped = &mut *(overlapped_ptr as *mut OVERLAPPED);
+                overlapped.Internal = status;
+                overlapped.InternalHigh = bytes;
+                let _ = PostQueuedCompletionStatus(
+                    port,
+                    bytes as u32,
+                    completion_key,
+                    Some(overlapped as *mut OVERLAPPED),
+                );
+            }
+            iocp_pending().lock().remove(&pending_key);
+        });
+    if spawned.is_err() {
+        iocp_pending().lock().remove(&pending_key);
+        return fail(io::Error::new(
+            io::ErrorKind::Other,
+            "failed to start UDP IOCP relay worker",
+        ));
+    }
+    WSASetLastError(WSA_IO_PENDING.0);
+    SOCKET_ERROR
+}
+
 unsafe extern "system" fn wsa_sendto(
     s: usize,
     bufs: *const WSABUF,
@@ -259,7 +336,15 @@ unsafe extern "system" fn wsa_sendto(
             s, bufs, count, sent, flags, addr, addrlen, ov, completion,
         );
     }
-    if !ov.is_null() || !completion.is_null() {
+    if !completion.is_null() {
+        return fail(udp::unsupported());
+    }
+    let iocp = if ov.is_null() {
+        None
+    } else {
+        iocp_for(s)
+    };
+    if !ov.is_null() && iocp.is_none() {
         return fail(udp::unsupported());
     }
     if sent.is_null() {
@@ -278,6 +363,26 @@ unsafe extern "system" fn wsa_sendto(
         if b.len != 0 {
             data.extend_from_slice(std::slice::from_raw_parts(b.buf.0, b.len as usize));
         }
+    }
+    let address = if addr.is_null() {
+        None
+    } else {
+        match udp::parse_address(addr, addrlen.max(0) as usize) {
+            Some(address) => Some(address),
+            None => return fail(io::Error::from_raw_os_error(WSAEFAULT.0)),
+        }
+    };
+    if let Some((port, completion_key)) = iocp {
+        return queue_iocp_send(
+            s,
+            data,
+            address,
+            flags as i32,
+            sent,
+            ov,
+            port,
+            completion_key,
+        );
     }
     let result = sendto(
         s,

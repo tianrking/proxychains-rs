@@ -58,7 +58,9 @@ pub fn run(mode: &str) {
                     std::io::ErrorKind::WouldBlock
                 );
             }
-            let n = if mode == "udp-vectored" {
+            let n = if mode == "udp-iocp" && round == 0 {
+                iocp_send_to(&socket, data, destination)
+            } else if mode == "udp-vectored" {
                 vectored_send(&socket, data, destination)
             } else if connected {
                 socket.send(data).unwrap()
@@ -209,6 +211,58 @@ fn reject_overlapped(socket: &UdpSocket, destination: SocketAddr) {
         );
         assert_eq!(WSAGetLastError(), WSAEOPNOTSUPP);
     }
+}
+#[cfg(windows)]
+fn iocp_send_to(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> usize {
+    use std::os::windows::io::AsRawSocket;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Networking::WinSock::{WSAGetLastError, WSASendTo, SOCKET, WSABUF, WSA_IO_PENDING};
+    use windows::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED};
+    let port = unsafe {
+        CreateIoCompletionPort(
+            HANDLE(-1),
+            HANDLE::default(),
+            0x51,
+            1,
+        ).expect("CreateIoCompletionPort")
+    };
+    let socket_handle = HANDLE(socket.as_raw_socket() as isize);
+    unsafe {
+        CreateIoCompletionPort(socket_handle, port, 0x51, 1).expect("associate UDP socket with IOCP");
+    }
+    let destination = socket2::SockAddr::from(destination);
+    let mut sent = 0;
+    let mut overlapped = OVERLAPPED::default();
+    let buffer = WSABUF {
+        len: data.len() as u32,
+        buf: windows::core::PSTR(data.as_ptr().cast_mut()),
+    };
+    let result = unsafe {
+        WSASendTo(
+            SOCKET(socket.as_raw_socket() as usize),
+            std::slice::from_ref(&buffer),
+            None,
+            0,
+            Some(destination.as_ptr().cast()),
+            destination.len(),
+            Some(&mut overlapped),
+            None,
+        )
+    };
+    assert_eq!(result, -1);
+    assert_eq!(unsafe { WSAGetLastError() }, WSA_IO_PENDING);
+    let mut bytes = 0;
+    let mut key = 0;
+    let mut completed = std::ptr::null_mut();
+    unsafe {
+        GetQueuedCompletionStatus(port, &mut bytes, &mut key, &mut completed, 5000)
+            .expect("UDP IOCP completion");
+    }
+    assert_eq!(key, 0x51);
+    assert_eq!(completed, &mut overlapped);
+    assert_eq!(bytes as usize, data.len());
+    sent = bytes;
+    sent as usize
 }
 #[cfg(unix)]
 fn vectored_send(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> usize {
