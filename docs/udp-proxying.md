@@ -2,11 +2,14 @@
 
 Related to [issue #1](https://github.com/tianrking/proxychains-rs/issues/1).
 
-Add `proxy_udp` to a configuration with **exactly one SOCKS5 node**, then launch
+Add `proxy_udp` to a configuration with one or more SOCKS5 nodes, then launch
 the application through `proxychains4`. The server must support UDP ASSOCIATE
 and its returned UDP relay must be reachable from the client. A `route_group`
-rule may select a named group containing exactly one SOCKS5 node for a UDP
+rule may select a named group containing one or more SOCKS5 nodes for a UDP
 destination, which allows the default TCP configuration to contain a chain.
+New UDP associations try eligible nodes in order and use the shared health
+cooldown to skip recently failed nodes. An established association is not
+migrated if its proxy later fails.
 
 ```ini
 strict_chain

@@ -145,6 +145,44 @@ fn native_udp_routing_and_lifecycle() {
         // The proxy is gone: failure must not become a direct send.
         assert_eq!(run(&library, &fixture, &config, "udp-failure"), 23);
     }
+    // A new UDP association skips a failed SOCKS5 node and uses the next
+    // eligible node in the default proxy list.
+    let first = TcpListener::bind("127.0.0.1:0").unwrap();
+    let second = TcpListener::bind("127.0.0.1:0").unwrap();
+    let first_port = first.local_addr().unwrap().port();
+    let second_port = second.local_addr().unwrap().port();
+    std::fs::write(
+        &config,
+        format!(
+            "proxy_udp\n[ProxyList]\nsocks5 127.0.0.1 {first_port}\nsocks5 127.0.0.1 {second_port}\n"
+        ),
+    )
+    .unwrap();
+    drop(first);
+    second.set_nonblocking(true).unwrap();
+    let failover_server = std::thread::spawn(move || {
+        let mut control = accept(&second);
+        let mut hello = [0; 3];
+        control.read_exact(&mut hello).unwrap();
+        assert_eq!(hello, [5, 1, 0]);
+        control.write_all(&[5, 0]).unwrap();
+        let mut request = [0; 10];
+        control.read_exact(&mut request).unwrap();
+        let relay = UdpSocket::bind("127.0.0.1:0").unwrap();
+        relay
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reply = vec![5, 0, 0, 1, 127, 0, 0, 1];
+        reply.extend(relay.local_addr().unwrap().port().to_be_bytes());
+        control.write_all(&reply).unwrap();
+        let mut packet = [0; 1024];
+        let (n, client) = relay.recv_from(&mut packet).unwrap();
+        relay.send_to(&packet[..n], client).unwrap();
+        assert_eq!(control.read(&mut [0]).unwrap(), 0);
+    });
+    assert_eq!(run(&library, &fixture, &config, "udp-failover"), 23);
+    failover_server.join().unwrap();
+
     for response in [
         vec![5, 7, 0, 1, 0, 0, 0, 0, 0, 0],
         vec![5, 0, 0, 1, 127, 0, 0, 1, 0, 0],

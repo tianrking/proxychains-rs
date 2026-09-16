@@ -16,6 +16,18 @@ pub fn run(mode: &str) {
         assert!(socket.send_to(b"must-not-go-direct", destination).is_err());
         return;
     }
+    if mode == "udp-failover" {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        socket.send_to(b"udp-failover", destination).unwrap();
+        let mut buffer = [0; 64];
+        let (n, source) = socket.recv_from(&mut buffer).unwrap();
+        assert_eq!(&buffer[..n], b"udp-failover");
+        assert_eq!(source, destination);
+        return;
+    }
     if mode == "udp-control-closed" {
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         socket

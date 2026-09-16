@@ -39,8 +39,11 @@ fn validate(config: &Config) -> crate::Result<()> {
     if !config.proxy_udp {
         return Ok(());
     }
-    let default_valid = config.proxies.len() == 1
-        && config.proxies[0].proxy_type == ProxyType::Socks5;
+    let default_valid = !config.proxies.is_empty()
+        && config
+            .proxies
+            .iter()
+            .all(|proxy| proxy.proxy_type == ProxyType::Socks5);
     let udp_groups: Vec<&str> = config
         .route_rules
         .iter()
@@ -53,13 +56,15 @@ fn validate(config: &Config) -> crate::Result<()> {
         ));
     }
     for group in udp_groups {
-        let valid = config
-            .proxy_groups
-            .get(group)
-            .is_some_and(|proxies| proxies.len() == 1 && proxies[0].proxy_type == ProxyType::Socks5);
+        let valid = config.proxy_groups.get(group).is_some_and(|proxies| {
+            !proxies.is_empty()
+                && proxies
+                    .iter()
+                    .all(|proxy| proxy.proxy_type == ProxyType::Socks5)
+        });
         if !valid {
             return Err(crate::Error::Config(format!(
-                "UDP proxy group {group:?} requires exactly one SOCKS5 proxy"
+            "UDP proxy group {group:?} requires one or more SOCKS5 proxies"
             )));
         }
     }
@@ -162,46 +167,47 @@ fn association(session: &mut Session, requested_group: Option<&str>) -> io::Resu
     let proxies = group
         .and_then(|name| config.proxy_groups.get(name))
         .unwrap_or(&config.proxies);
-    if proxies.len() != 1 || proxies[0].proxy_type != ProxyType::Socks5 {
+    if proxies.is_empty() || proxies.iter().any(|proxy| proxy.proxy_type != ProxyType::Socks5) {
         let label = group.unwrap_or("selected");
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("UDP proxy group {label:?} requires exactly one SOCKS5 node"),
+            format!("UDP proxy group {label:?} requires one or more SOCKS5 nodes"),
         ));
     }
-    let proxy = &proxies[0];
-    if !crate::chain::proxy_is_available(proxy) {
+    let available = proxies
+        .iter()
+        .filter(|proxy| crate::chain::proxy_is_available(proxy))
+        .collect::<Vec<_>>();
+    if available.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::ConnectionRefused,
-            "UDP proxy is in health cooldown",
+            "all UDP proxies are in health cooldown",
         ));
     }
-    let association = match UdpControl::connect(
-        proxy,
-        config.tcp_connect_timeout,
-        config.tcp_read_timeout,
-    ) {
-        Ok(association) => {
-            crate::chain::mark_proxy_success(proxy);
-            crate::trace::record(crate::trace::ConnectionEvent {
-                schema_version: "1.0",
-                timestamp_ms: crate::trace::now_ms(),
-                pid: crate::trace::process_id(),
-                process: crate::trace::process_name(),
-                session_id: crate::trace::session_id(),
-                event: "udp_associate",
-                protocol: "udp",
-                target: "unknown",
-                port: 0,
-                stage: "udp_associate",
-                ok: true,
-                elapsed_ms: None,
-                error: None,
-            });
-            association
+    let mut selected = None;
+    let mut last_error = None;
+    for proxy in available {
+        match UdpControl::connect(proxy, config.tcp_connect_timeout, config.tcp_read_timeout) {
+            Ok(association) => {
+                crate::chain::mark_proxy_success(proxy);
+                selected = Some((proxy.clone(), association));
+                break;
+            }
+            Err(error_value) => {
+                crate::chain::mark_proxy_failure(proxy, config.proxy_health_cooldown);
+                last_error = Some(error_value);
+            }
         }
-        Err(error_value) => {
-            crate::chain::mark_proxy_failure(proxy, config.proxy_health_cooldown);
+    }
+    let (proxy, association) = match selected {
+        Some(selected) => selected,
+        None => {
+            let error_value = last_error.unwrap_or_else(|| {
+                crate::Error::Io(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "all UDP proxy associations failed",
+                ))
+            });
             let message = error_value.to_string();
             crate::trace::record(crate::trace::ConnectionEvent {
                 schema_version: "1.0",
@@ -221,6 +227,21 @@ fn association(session: &mut Session, requested_group: Option<&str>) -> io::Resu
             return Err(error(error_value));
         }
     };
+    crate::trace::record(crate::trace::ConnectionEvent {
+        schema_version: "1.0",
+        timestamp_ms: crate::trace::now_ms(),
+        pid: crate::trace::process_id(),
+        process: crate::trace::process_name(),
+        session_id: crate::trace::session_id(),
+        event: "udp_associate",
+        protocol: "udp",
+        target: "unknown",
+        port: 0,
+        stage: "udp_associate",
+        ok: true,
+        elapsed_ms: None,
+        error: None,
+    });
     let association = Arc::new(association);
     session.proxy_group = group.map(str::to_owned);
     session.proxy = Some(proxy.clone());
@@ -522,7 +543,7 @@ mod tests {
     use crate::config::ProxyData;
 
     #[test]
-    fn udp_requires_one_socks5_node_only_when_enabled() {
+    fn udp_requires_socks5_nodes_only_when_enabled() {
         let mut config = Config::default();
         assert!(validate(&config).is_ok());
         config.proxy_udp = true;
@@ -533,6 +554,8 @@ mod tests {
         assert!(validate(&config).is_err());
         config.proxies[0].proxy_type = ProxyType::Socks5;
         config.proxies.push(ProxyData::default());
+        assert!(validate(&config).is_ok());
+        config.proxies[1].proxy_type = ProxyType::Http;
         assert!(validate(&config).is_err());
     }
 
