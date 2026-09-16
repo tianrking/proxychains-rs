@@ -50,7 +50,9 @@ impl ChainManager {
         let selector = ProxySelector::from_chain_type(config.chain_type);
         let mut proxies = config.proxies.clone();
         for proxy in &mut proxies {
-            if proxy.state == ProxyState::Play && !health::is_available(proxy) {
+            if proxy.state == ProxyState::Play
+                && !health::is_available(proxy, health::HealthProtocol::Tcp)
+            {
                 proxy.state = ProxyState::Down;
             }
         }
@@ -93,7 +95,7 @@ impl ChainManager {
         stream.set_read_timeout(None)?;
         stream.set_write_timeout(None)?;
         for proxy in proxy_states.iter().filter(|proxy| proxy.state == ProxyState::Play) {
-            health::mark_success(proxy);
+            health::mark_success(proxy, health::HealthProtocol::Tcp);
         }
         Ok(stream)
     }
@@ -502,7 +504,11 @@ impl ChainManager {
     }
 
     fn mark_down(&self, proxy: &mut ProxyData) {
-        health::mark_failure(proxy, self.config.proxy_health_cooldown);
+        health::mark_failure(
+            proxy,
+            health::HealthProtocol::Tcp,
+            self.config.proxy_health_cooldown,
+        );
         mark_down(proxy);
     }
 }

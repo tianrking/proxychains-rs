@@ -8,8 +8,15 @@ use parking_lot::Mutex;
 
 use crate::config::ProxyData;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HealthProtocol {
+    Tcp,
+    Udp,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ProxyKey {
+    protocol: HealthProtocol,
     proxy_type: crate::config::ProxyType,
     host: String,
     port: u16,
@@ -25,8 +32,9 @@ struct HealthEntry {
 static HEALTH: Lazy<Mutex<HashMap<ProxyKey, HealthEntry>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-fn key(proxy: &ProxyData) -> ProxyKey {
+fn key(proxy: &ProxyData, protocol: HealthProtocol) -> ProxyKey {
     ProxyKey {
+        protocol,
         proxy_type: proxy.proxy_type,
         host: proxy.host.trim().to_ascii_lowercase(),
         port: proxy.port,
@@ -35,10 +43,10 @@ fn key(proxy: &ProxyData) -> ProxyKey {
 }
 
 /// Return whether a proxy is currently eligible for a new connection.
-pub fn is_available(proxy: &ProxyData) -> bool {
+pub fn is_available(proxy: &ProxyData, protocol: HealthProtocol) -> bool {
     let now = Instant::now();
     let mut health = HEALTH.lock();
-    let proxy_key = key(proxy);
+    let proxy_key = key(proxy, protocol);
     match health.get(&proxy_key).copied() {
         Some(entry) if entry.down_until > now => false,
         Some(_) => {
@@ -52,13 +60,13 @@ pub fn is_available(proxy: &ProxyData) -> bool {
 }
 
 /// Record a failed connection and suppress new attempts for `cooldown`.
-pub fn mark_failure(proxy: &ProxyData, cooldown: Duration) {
+pub fn mark_failure(proxy: &ProxyData, protocol: HealthProtocol, cooldown: Duration) {
     if cooldown.is_zero() {
         return;
     }
     let now = Instant::now();
     let mut health = HEALTH.lock();
-    let proxy_key = key(proxy);
+    let proxy_key = key(proxy, protocol);
     let previous = health.get(&proxy_key).copied();
     let failures = previous.map_or(1, |entry| entry.failures.saturating_add(1));
     // Exponential backoff is capped so a long-lived process can recover from
@@ -75,8 +83,8 @@ pub fn mark_failure(proxy: &ProxyData, cooldown: Duration) {
 }
 
 /// Record a successful connection and clear any prior failure backoff.
-pub fn mark_success(proxy: &ProxyData) {
-    HEALTH.lock().remove(&key(proxy));
+pub fn mark_success(proxy: &ProxyData, protocol: HealthProtocol) {
+    HEALTH.lock().remove(&key(proxy, protocol));
 }
 
 /// Clear all shared health state. Primarily useful for explicit state resets
@@ -99,19 +107,20 @@ mod tests {
     #[test]
     fn failure_is_shared_until_cooldown_expires() {
         let proxy = proxy();
-        assert!(is_available(&proxy));
-        mark_failure(&proxy, Duration::from_millis(100));
-        assert!(!is_available(&proxy));
+        assert!(is_available(&proxy, HealthProtocol::Tcp));
+        mark_failure(&proxy, HealthProtocol::Tcp, Duration::from_millis(100));
+        assert!(!is_available(&proxy, HealthProtocol::Tcp));
+        assert!(is_available(&proxy, HealthProtocol::Udp));
         thread::sleep(Duration::from_millis(150));
-        assert!(is_available(&proxy));
+        assert!(is_available(&proxy, HealthProtocol::Tcp));
     }
 
     #[test]
     fn success_clears_failure() {
         let proxy = ProxyData::new(Ipv4Addr::LOCALHOST, 1081, ProxyType::Socks5);
-        mark_failure(&proxy, Duration::from_secs(60));
-        assert!(!is_available(&proxy));
-        mark_success(&proxy);
-        assert!(is_available(&proxy));
+        mark_failure(&proxy, HealthProtocol::Udp, Duration::from_secs(60));
+        assert!(!is_available(&proxy, HealthProtocol::Udp));
+        mark_success(&proxy, HealthProtocol::Udp);
+        assert!(is_available(&proxy, HealthProtocol::Udp));
     }
 }

@@ -27,7 +27,7 @@ use windows::core::GUID;
 use windows::Win32::System::IO::{PostQueuedCompletionStatus, OVERLAPPED};
 use windows::Win32::System::Threading::SetEvent;
 
-use crate::chain::{mark_proxy_failure, mark_proxy_success, proxy_is_available};
+use crate::chain::{mark_proxy_failure, mark_proxy_success, proxy_is_available, HealthProtocol};
 use crate::config::{ChainType, Config, ProxyData, ProxyState, RouteAction, RouteProtocol};
 use crate::dns::{is_fake_ip, DnsResolver};
 use crate::error::{Error, Result};
@@ -290,7 +290,7 @@ fn select_indices(state: &HookState, proxies: &[ProxyData]) -> Option<Vec<usize>
     let alive_indices: Vec<usize> = proxies
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.state == ProxyState::Play && proxy_is_available(p))
+        .filter(|(_, p)| p.state == ProxyState::Play && proxy_is_available(p, HealthProtocol::Tcp))
         .map(|(i, _)| i)
         .collect();
 
@@ -481,7 +481,7 @@ pub unsafe extern "system" fn hook_connect_impl(
         ) {
             Ok(()) => {
                 for proxy in &selected_proxies {
-                    mark_proxy_success(proxy);
+                    mark_proxy_success(proxy, HealthProtocol::Tcp);
                 }
                 crate::trace::record(crate::trace::ConnectionEvent {
                     schema_version: "1.0",
@@ -510,7 +510,7 @@ pub unsafe extern "system" fn hook_connect_impl(
                     if route_proxies.is_some() {
                         if let Some(p) = selected_proxies.get(failed_hop) {
                             if !matches!(e, Error::Blocked) {
-                                mark_proxy_failure(p, config.proxy_health_cooldown);
+                                mark_proxy_failure(p, HealthProtocol::Tcp, config.proxy_health_cooldown);
                             }
                         }
                     } else {
@@ -519,7 +519,7 @@ pub unsafe extern "system" fn hook_connect_impl(
                             p.state = if matches!(e, Error::Blocked) {
                                 ProxyState::Blocked
                             } else {
-                                mark_proxy_failure(p, config.proxy_health_cooldown);
+                                mark_proxy_failure(p, HealthProtocol::Tcp, config.proxy_health_cooldown);
                                 ProxyState::Down
                             };
                         }

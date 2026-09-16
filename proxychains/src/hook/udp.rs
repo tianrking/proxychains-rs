@@ -154,7 +154,7 @@ fn association(session: &mut Session, requested_group: Option<&str>) -> io::Resu
         if let Err(control_error) = association.check_control() {
             if let Some(proxy) = &session.proxy {
                 if let Some(config) = CONFIG.get() {
-                    crate::chain::mark_proxy_failure(proxy, config.proxy_health_cooldown);
+                    crate::chain::mark_proxy_failure(proxy, crate::chain::HealthProtocol::Udp, config.proxy_health_cooldown);
                 }
             }
             return Err(error(control_error));
@@ -178,7 +178,7 @@ fn association(session: &mut Session, requested_group: Option<&str>) -> io::Resu
     }
     let available = proxies
         .iter()
-        .filter(|proxy| crate::chain::proxy_is_available(proxy))
+        .filter(|proxy| crate::chain::proxy_is_available(proxy, crate::chain::HealthProtocol::Udp))
         .collect::<Vec<_>>();
     if available.is_empty() {
         return Err(io::Error::new(
@@ -191,12 +191,12 @@ fn association(session: &mut Session, requested_group: Option<&str>) -> io::Resu
     for proxy in available {
         match UdpControl::connect(proxy, config.tcp_connect_timeout, config.tcp_read_timeout) {
             Ok(association) => {
-                crate::chain::mark_proxy_success(proxy);
+                crate::chain::mark_proxy_success(proxy, crate::chain::HealthProtocol::Udp);
                 selected = Some((proxy.clone(), association));
                 break;
             }
             Err(error_value) => {
-                crate::chain::mark_proxy_failure(proxy, config.proxy_health_cooldown);
+                crate::chain::mark_proxy_failure(proxy, crate::chain::HealthProtocol::Udp, config.proxy_health_cooldown);
                 last_error = Some(error_value);
             }
         }
