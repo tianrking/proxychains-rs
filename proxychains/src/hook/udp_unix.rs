@@ -202,7 +202,7 @@ pub unsafe fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int {
     result
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub unsafe fn fcntl(s: c_int, command: c_int, argument: *mut c_void) -> c_int {
     let result = original!("fcntl", (c_int, c_int, *mut c_void) -> c_int)(s, command, argument);
     if result >= 0
