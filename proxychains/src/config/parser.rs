@@ -3,7 +3,7 @@
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -336,9 +336,21 @@ impl ConfigParser {
     /// Parse a localnet line
     fn parse_localnet(&self, value: &str, config: &mut Config) -> Result<()> {
         // Format: address/mask or address mask
-        let parts: Vec<&str> = value.split(|c| c == '/' || c == ' ').collect();
+        let parts: Vec<&str> = if value.contains('/') {
+            value.split('/').map(str::trim).collect()
+        } else {
+            value.split_whitespace().collect()
+        };
         if parts.len() != 2 {
             return Err(Error::Config(format!("Invalid localnet format: {}", value)));
+        }
+
+        if let Ok(address) = parts[0].parse::<Ipv6Addr>() {
+            let prefix: u8 = parts[1].parse().map_err(|_| {
+                Error::Config(format!("IPv6 localnet requires a CIDR prefix: {}", parts[1]))
+            })?;
+            config.localnets_v6.push(LocalNetV6::new(address, prefix)?);
+            return Ok(());
         }
 
         let address: Ipv4Addr = parts[0].parse().map_err(|_| {
@@ -556,6 +568,20 @@ mod tests {
         assert!(localnet.contains(&Ipv4Addr::new(192, 168, 1, 1)));
         assert!(localnet.contains(&Ipv4Addr::new(192, 168, 255, 255)));
         assert!(!localnet.contains(&Ipv4Addr::new(10, 0, 0, 1)));
+    }
+
+    #[test]
+    fn test_ipv6_localnet_cidr_bypasses_proxy() {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("proxychains_localnet6_{}.conf", ts));
+        fs::write(&path, "localnet 2001:db8:1234::/48\n").unwrap();
+        let config = ConfigParser::new().with_path(path.clone()).parse().unwrap();
+        assert!(config.should_bypass_ip(&"2001:db8:1234::42".parse().unwrap()));
+        assert!(!config.should_bypass_ip(&"2001:db8:5678::42".parse().unwrap()));
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

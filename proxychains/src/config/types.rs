@@ -1,7 +1,7 @@
 //! Configuration types for proxychains
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, ToSocketAddrs};
 use std::time::Duration;
 use crate::error::{Error, Result};
 
@@ -207,6 +207,33 @@ pub struct DnatRule {
     pub new_port: u16,
 }
 
+/// IPv6 local network represented by a CIDR prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalNetV6 {
+    pub address: Ipv6Addr,
+    pub prefix: u8,
+}
+
+impl LocalNetV6 {
+    pub fn new(address: Ipv6Addr, prefix: u8) -> Result<Self> {
+        if prefix > 128 {
+            return Err(Error::Config(format!("Invalid IPv6 localnet prefix: {prefix}")));
+        }
+        Ok(Self { address, prefix })
+    }
+
+    pub fn contains(&self, ip: &Ipv6Addr) -> bool {
+        let address = u128::from(self.address);
+        let ip = u128::from(*ip);
+        let mask = if self.prefix == 0 {
+            0
+        } else {
+            u128::MAX << (128 - self.prefix)
+        };
+        address & mask == ip & mask
+    }
+}
+
 /// Protocol selector used by routing rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteProtocol {
@@ -304,6 +331,8 @@ pub struct Config {
     pub proxy_health_cooldown: Duration,
     /// Local networks to bypass
     pub localnets: Vec<LocalNet>,
+    /// IPv6 local networks to bypass.
+    pub localnets_v6: Vec<LocalNetV6>,
     /// DNAT rules
     pub dnats: Vec<DnatRule>,
     /// Ordered routing rules. An unmatched connection keeps proxy behavior.
@@ -328,6 +357,7 @@ impl Default for Config {
             max_chain_retries: 8,
             proxy_health_cooldown: Duration::from_secs(5),
             localnets: Vec::new(),
+            localnets_v6: Vec::new(),
             dnats: Vec::new(),
             route_rules: Vec::new(),
             proxies: Vec::new(),
@@ -370,6 +400,7 @@ impl Config {
                     || v6.is_unspecified()
                     || v6.is_unique_local()
                     || v6.is_unicast_link_local()
+                    || self.localnets_v6.iter().any(|localnet| localnet.contains(v6))
             }
         }
     }

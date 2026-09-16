@@ -184,6 +184,9 @@ tcp_connect_time_out 8000
 max_chain_retries 8
 # Keep failed nodes out of new connection selection for this long (milliseconds).
 proxy_health_cooldown_ms 5000
+# Bypass local networks; IPv4 masks and IPv6 CIDR prefixes are accepted.
+# localnet 192.168.0.0/255.255.0.0
+# localnet 2001:db8:1234::/48
 
 # Optional ordered routing rules (first match wins):
 # route direct domain_suffix .internal.example
