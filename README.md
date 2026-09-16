@@ -60,6 +60,9 @@ Recommendation:
   - `--probe` (quick per-node reachability/latency check)
   - `--probe-json` (machine-readable probe output)
   - `--doctor` (end-to-end protocol and target diagnostics)
+  - Shared proxy health cooldown (`proxy_health_cooldown_ms`) prevents repeated
+    attempts against a failing node across new connections; it applies to TCP
+    chain selection and Windows hooks, while existing streams are never migrated.
   - `--log-file FILE` (best-effort JSONL connection events from intercepted hooks)
   - `--events --log-file FILE [--events-follow]` (view recorded events)
 - DNS:
@@ -162,6 +165,8 @@ remote_dns_subnet 224
 tcp_read_time_out 15000
 tcp_connect_time_out 8000
 max_chain_retries 8
+# Keep failed nodes out of new connection selection for this long (milliseconds).
+proxy_health_cooldown_ms 5000
 
 # Optional ordered routing rules (first match wins):
 # route direct domain_suffix .internal.example

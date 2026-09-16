@@ -60,6 +60,8 @@ Windows overlapped/IOCP UDP 尚不支持，也不代表所有 QUIC/HTTP/3 应用
   - `--probe`（快速探测每个节点连通性与时延）
   - `--probe-json`（机器可读 JSON 输出）
   - `--doctor`（端到端协议和目标诊断）
+  - 共享代理健康冷却（`proxy_health_cooldown_ms`）：让新连接自动避开
+    近期失败的节点；已经建立的连接不会被迁移。
   - `--log-file FILE`（把已捕获的 TCP/UDP 连接结果写入 JSONL）
   - `--events --log-file FILE [--events-follow]`（查看连接记录）
 - DNS：
@@ -160,6 +162,8 @@ remote_dns_subnet 224
 tcp_read_time_out 15000
 tcp_connect_time_out 8000
 max_chain_retries 8
+# 代理失败后，从新连接选择中冷却的时间（毫秒）
+proxy_health_cooldown_ms 5000
 
 # 可选的有序分流规则（第一条匹配生效）：
 # route direct domain_suffix .internal.example

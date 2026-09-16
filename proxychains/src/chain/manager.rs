@@ -9,6 +9,7 @@ use crate::config::{ChainType, Config, ProxyData, ProxyState};
 use crate::error::{Error, Result};
 use crate::proxy::{connect_to_proxy, tunnel_through_proxy, TargetAddress};
 
+use super::health;
 use super::selector::{count_alive, mark_blocked, mark_down, ProxySelector};
 
 /// Error codes for chain operations (compatible with C version)
@@ -47,7 +48,13 @@ impl ChainManager {
     /// Create a new chain manager
     pub fn new(config: Config) -> Self {
         let selector = ProxySelector::from_chain_type(config.chain_type);
-        let proxy_states = Mutex::new(config.proxies.clone());
+        let mut proxies = config.proxies.clone();
+        for proxy in &mut proxies {
+            if proxy.state == ProxyState::Play && !health::is_available(proxy) {
+                proxy.state = ProxyState::Down;
+            }
+        }
+        let proxy_states = Mutex::new(proxies);
 
         Self {
             config,
@@ -85,6 +92,9 @@ impl ChainManager {
         // Handshake deadlines must not become application stream deadlines.
         stream.set_read_timeout(None)?;
         stream.set_write_timeout(None)?;
+        for proxy in proxy_states.iter().filter(|proxy| proxy.state == ProxyState::Play) {
+            health::mark_success(proxy);
+        }
         Ok(stream)
     }
 
@@ -103,7 +113,7 @@ impl ChainManager {
             Ok(s) => s,
             Err(e) => {
                 error!("Failed to connect to first proxy: {}", e);
-                mark_down(&mut proxies[0]);
+                self.mark_down(&mut proxies[0]);
                 return Err(Error::ChainDown);
             }
         };
@@ -141,7 +151,7 @@ impl ChainManager {
                 self.config.tcp_read_timeout,
             ) {
                 error!("Failed to chain to proxy {}: {}", i, e);
-                mark_down(&mut proxies[i]);
+                self.mark_down(&mut proxies[i]);
                 return Err(Error::ChainDown);
             }
         }
@@ -211,7 +221,7 @@ impl ChainManager {
                 Ok(s) => s,
                 Err(e) => {
                     warn!("Failed to connect to proxy {}: {}", first_idx, e);
-                    mark_down(&mut proxies[first_idx]);
+                    self.mark_down(&mut proxies[first_idx]);
                     continue 'again;
                 }
             };
@@ -239,7 +249,7 @@ impl ChainManager {
                     self.config.tcp_read_timeout,
                 ) {
                     warn!("Failed to chain to proxy {}: {}", next_idx, e);
-                    mark_down(&mut proxies[next_idx]);
+                    self.mark_down(&mut proxies[next_idx]);
                     continue 'again;
                 }
 
@@ -314,7 +324,7 @@ impl ChainManager {
                 Ok(s) => s,
                 Err(e) => {
                     warn!("Failed to connect to random proxy {}: {}", first_idx, e);
-                    mark_down(&mut proxies[first_idx]);
+                    self.mark_down(&mut proxies[first_idx]);
                     continue 'again;
                 }
             };
@@ -337,7 +347,7 @@ impl ChainManager {
                     self.config.tcp_read_timeout,
                 ) {
                     warn!("Failed in random chain at proxy {}: {}", next_idx, e);
-                    mark_down(&mut proxies[next_idx]);
+                    self.mark_down(&mut proxies[next_idx]);
                     continue 'again;
                 }
 
@@ -437,13 +447,13 @@ impl ChainManager {
                         }
                         Err(e) => {
                             warn!("Failover: proxy {} failed: {}", i, e);
-                            mark_down(&mut proxies[i]);
+                            self.mark_down(&mut proxies[i]);
                         }
                     }
                 }
                 Err(e) => {
                     warn!("Failover: failed to connect to proxy {}: {}", i, e);
-                    mark_down(&mut proxies[i]);
+                    self.mark_down(&mut proxies[i]);
                 }
             }
         }
@@ -484,10 +494,16 @@ impl ChainManager {
 
     /// Reset all proxy states
     pub fn reset_states(&self) {
+        health::clear();
         let mut states = self.proxy_states.lock();
         for proxy in states.iter_mut() {
             proxy.state = ProxyState::Play;
         }
+    }
+
+    fn mark_down(&self, proxy: &mut ProxyData) {
+        health::mark_failure(proxy, self.config.proxy_health_cooldown);
+        mark_down(proxy);
     }
 }
 
@@ -515,5 +531,20 @@ mod tests {
     fn test_chain_error_conversion() {
         let err: Error = ChainError::ChainEmpty.into();
         assert!(matches!(err, Error::ChainEmpty));
+    }
+
+    #[test]
+    fn failed_proxy_is_cooled_for_a_new_manager() {
+        let mut config = create_test_config();
+        config.proxies[0].host = "127.0.0.1".to_string();
+        config.proxies[0].ip = Ipv4Addr::LOCALHOST;
+        config.proxies[0].port = 9;
+        config.proxy_health_cooldown = std::time::Duration::from_secs(1);
+
+        let manager = ChainManager::new(config.clone());
+        manager.mark_down(&mut manager.proxy_states.lock()[0]);
+
+        let second = ChainManager::new(config);
+        assert_eq!(second.proxy_states.lock()[0].state, ProxyState::Down);
     }
 }

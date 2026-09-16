@@ -288,6 +288,12 @@ impl ConfigParser {
                     config.max_chain_retries = retries.max(1);
                 }
             }
+            "proxy_health_cooldown_ms" => {
+                let cooldown: u64 = value.parse().map_err(|_| {
+                    crate::error::Error::Config("Invalid proxy_health_cooldown_ms".into())
+                })?;
+                config.proxy_health_cooldown = Duration::from_millis(cooldown);
+            }
             "localnet" => {
                 self.parse_localnet(value, config)?;
             }
@@ -600,6 +606,20 @@ socks5 127.0.0.1 1080
         assert_eq!(config.route_action(RouteProtocol::Tcp, Some("mail.example"), 25), RouteAction::Reject);
         assert_eq!(config.route_action(RouteProtocol::Udp, Some("dns.example"), 53), RouteAction::Direct);
         assert_eq!(config.route_action(RouteProtocol::Tcp, Some("example.com"), 443), RouteAction::Proxy);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_parse_proxy_health_cooldown() {
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("proxychains_health_{}.conf", ts));
+        fs::write(&path, r#"
+proxy_health_cooldown_ms 1250
+[ProxyList]
+socks5 127.0.0.1 1080
+"#).unwrap();
+        let config = ConfigParser::new().with_path(path.clone()).parse().unwrap();
+        assert_eq!(config.proxy_health_cooldown, Duration::from_millis(1250));
         let _ = fs::remove_file(path);
     }
 

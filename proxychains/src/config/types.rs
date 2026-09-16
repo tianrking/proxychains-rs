@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::error::{Error, Result};
 
 /// Proxy protocol type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ProxyType {
     #[default]
     Socks5,
@@ -297,6 +297,8 @@ pub struct Config {
     pub tcp_connect_timeout: Duration,
     /// Maximum retry attempts when establishing a chain
     pub max_chain_retries: usize,
+    /// Cooldown applied after a proxy connection failure.
+    pub proxy_health_cooldown: Duration,
     /// Local networks to bypass
     pub localnets: Vec<LocalNet>,
     /// DNAT rules
@@ -319,6 +321,7 @@ impl Default for Config {
             tcp_read_timeout: Duration::from_millis(15000),
             tcp_connect_timeout: Duration::from_millis(8000),
             max_chain_retries: 8,
+            proxy_health_cooldown: Duration::from_secs(5),
             localnets: Vec::new(),
             dnats: Vec::new(),
             route_rules: Vec::new(),
