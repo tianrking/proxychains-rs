@@ -8,7 +8,8 @@ use std::ffi::{c_void, CStr, CString};
 use std::mem::{self, ManuallyDrop};
 use std::net::{IpAddr, Ipv4Addr};
 use std::os::windows::io::FromRawSocket;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -68,6 +69,43 @@ static HOOK_STATE: OnceLock<HookState> = OnceLock::new();
 /// Tracks custom addrinfo allocations created by `hook_getaddrinfo_impl`.
 static CUSTOM_ADDRINFO_ALLOCATIONS: OnceLock<Mutex<HashMap<usize, CustomAddrinfoAllocation>>> =
     OnceLock::new();
+/// Cancellation flags for ConnectEx operations that are still completing on a worker.
+struct ConnectExPending {
+    cancelled: AtomicBool,
+    completed: AtomicBool,
+    overlapped: usize,
+    event: HANDLE,
+    iocp: Option<(HANDLE, usize)>,
+}
+
+static CONNECTEX_PENDING: OnceLock<Mutex<HashMap<(usize, usize), Arc<ConnectExPending>>>> =
+    OnceLock::new();
+
+fn connectex_pending() -> &'static Mutex<HashMap<(usize, usize), Arc<ConnectExPending>>> {
+    CONNECTEX_PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Mark all queued ConnectEx operations for a socket as cancelled before the OS handle closes.
+pub(super) fn cancel_connect_ex(socket: usize) {
+    for ((pending_socket, _), pending) in connectex_pending().lock().iter() {
+        if *pending_socket == socket {
+            pending.cancelled.store(true, Ordering::Release);
+            if !pending.completed.swap(true, Ordering::AcqRel) {
+                unsafe {
+                    let ov = &mut *(pending.overlapped as *mut OVERLAPPED);
+                    ov.Internal = windows::Win32::Networking::WinSock::WSA_OPERATION_ABORTED.0 as usize;
+                    ov.InternalHigh = 0;
+                    if !pending.event.is_invalid() {
+                        let _ = SetEvent(pending.event);
+                    }
+                    if let Some((port, key)) = pending.iocp {
+                        let _ = PostQueuedCompletionStatus(port, 0, key, Some(ov));
+                    }
+                }
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct CustomAddrinfoAllocation {
@@ -574,6 +612,17 @@ pub unsafe extern "system" fn hook_connect_ex_impl(
     let bytes_sent_ptr = bytes_sent as usize;
     let iocp = super::udp_windows::iocp_for(sock);
     let ov = &mut *(overlapped as *mut OVERLAPPED);
+    let pending_key = (sock, overlapped_ptr);
+    let pending = Arc::new(ConnectExPending {
+        cancelled: AtomicBool::new(false),
+        completed: AtomicBool::new(false),
+        overlapped: overlapped_ptr,
+        event: ov.hEvent,
+        iocp,
+    });
+    connectex_pending()
+        .lock()
+        .insert(pending_key, pending.clone());
     ov.Internal = 0x103;
     ov.InternalHigh = 0;
     let spawned = std::thread::Builder::new()
@@ -582,7 +631,9 @@ pub unsafe extern "system" fn hook_connect_ex_impl(
             let result = hook_connect_impl(sock, name_bytes.as_ptr().cast(), name_bytes.len() as i32);
             let mut status = 0usize;
             let mut bytes = 0usize;
-            if result == SOCKET_ERROR {
+            if pending.cancelled.load(Ordering::Acquire) {
+                status = windows::Win32::Networking::WinSock::WSA_OPERATION_ABORTED.0 as usize;
+            } else if result == SOCKET_ERROR {
                 status = WSAGetLastError().0 as usize;
             } else if !send_bytes.is_empty() {
                 let sent = send(SOCKET(sock), &send_bytes, SEND_RECV_FLAGS(0));
@@ -592,20 +643,28 @@ pub unsafe extern "system" fn hook_connect_ex_impl(
                     bytes = sent as usize;
                 }
             }
-            if bytes_sent_ptr != 0 {
-                *(bytes_sent_ptr as *mut u32) = bytes as u32;
+            if pending.cancelled.load(Ordering::Acquire) {
+                status = windows::Win32::Networking::WinSock::WSA_OPERATION_ABORTED.0 as usize;
+                bytes = 0;
             }
-            let ov = &mut *(overlapped_ptr as *mut OVERLAPPED);
-            ov.Internal = status;
-            ov.InternalHigh = bytes;
-            if !ov.hEvent.is_invalid() {
-                let _ = SetEvent(ov.hEvent);
+            if !pending.completed.swap(true, Ordering::AcqRel) {
+                if bytes_sent_ptr != 0 {
+                    *(bytes_sent_ptr as *mut u32) = bytes as u32;
+                }
+                let ov = &mut *(overlapped_ptr as *mut OVERLAPPED);
+                ov.Internal = status;
+                ov.InternalHigh = bytes;
+                if !ov.hEvent.is_invalid() {
+                    let _ = SetEvent(ov.hEvent);
+                }
+                if let Some((port, key)) = pending.iocp {
+                    let _ = PostQueuedCompletionStatus(port, bytes as u32, key, Some(ov));
+                }
             }
-            if let Some((port, key)) = iocp {
-                let _ = PostQueuedCompletionStatus(port, bytes as u32, key, Some(ov));
-            }
+            connectex_pending().lock().remove(&pending_key);
         });
     if spawned.is_err() {
+        connectex_pending().lock().remove(&pending_key);
         WSASetLastError(WSAEWOULDBLOCK.0);
         return 0;
     }
@@ -1389,6 +1448,29 @@ mod tests {
         assert_eq!(result, 0);
         assert!(!replacement.is_null());
         assert_eq!(returned as usize, std::mem::size_of::<*mut c_void>());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_connectex_close_marks_pending_completion_aborted() {
+        let mut overlapped = OVERLAPPED::default();
+        let key = (usize::MAX - 1, (&mut overlapped as *mut OVERLAPPED) as usize);
+        let pending = Arc::new(ConnectExPending {
+            cancelled: AtomicBool::new(false),
+            completed: AtomicBool::new(false),
+            overlapped: key.1,
+            event: HANDLE::default(),
+            iocp: None,
+        });
+        connectex_pending().lock().insert(key, pending.clone());
+        cancel_connect_ex(key.0);
+        assert!(pending.cancelled.load(Ordering::Acquire));
+        assert!(pending.completed.load(Ordering::Acquire));
+        assert_eq!(
+            overlapped.Internal as u32,
+            windows::Win32::Networking::WinSock::WSA_OPERATION_ABORTED.0 as u32
+        );
+        connectex_pending().lock().remove(&key);
     }
 }
 

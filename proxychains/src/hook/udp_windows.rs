@@ -228,6 +228,7 @@ unsafe extern "system" fn recv(s: usize, buf: *mut u8, len: i32, flags: i32) -> 
 }
 unsafe extern "system" fn close(s: usize) -> i32 {
     // Winsock may refuse to close a nonblocking socket with linger enabled.
+    super::hooks_windows::cancel_connect_ex(s);
     let result = CLOSE.get().unwrap()(s);
     if result == 0 {
         udp::forget(s);

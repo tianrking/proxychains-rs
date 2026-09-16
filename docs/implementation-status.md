@@ -11,7 +11,7 @@ does not imply verification on an unavailable operating system or application.
 | DNS mapping and configuration lifecycle | Core fixes implemented; IPv4 and IPv6 localnet bypass rules supported; synchronous Windows `GetAddrInfoExA` and `GetAddrInfoExW` participate in proxy-DNS fake-IP mapping | Custom subnet, concurrency, exhaustion, IPv6 CIDR bypass and explicit missing path tests; asynchronous `GetAddrInfoExA/W` calls intentionally use the original resolver until a lifetime-preserving completion wrapper is implemented |
 | Injection readiness and process attachment | Implemented, Windows fixture passes | Invalid DLL/config, successful attach, corrected-config retry, name ambiguity, real TCP payload and failed proxy |
 | Unix socket lifecycle and event-loop compatibility | Premature close and flag loss fixed; event-loop compatibility pending | Linux/macOS compile checks pass; native preload fixture added but not run locally; replacing an fd still does not preserve epoll/kqueue registrations |
-| UDP and IPv6 transport | SOCKS5 UDP transport, explicit forwarder, opt-in transparent UDP hooks, synchronous and IOCP Windows `WSASendMsg`/`WSARecvMsg`, and Windows IOCP `WSASendTo`/`WSARecvFrom` implemented | Windows native UDP fixture passes, including IPv6 relay, domains, authentication, vectored I/O, IOCP completion, cancellation and extension-pointer calls; see [UDP scope](udp-proxying.md); RIO and general QUIC remain unsupported |
+| UDP and IPv6 transport | SOCKS5 UDP transport, explicit forwarder, opt-in transparent UDP hooks, synchronous and IOCP Windows `WSASendMsg`/`WSARecvMsg`, Windows IOCP `WSASendTo`/`WSARecvFrom`, and ConnectEx cancellation signaling implemented | Windows native UDP fixture passes, including IPv6 relay, domains, authentication, vectored I/O, IOCP completion, cancellation and extension-pointer calls; ConnectEx event/IOCP completion remains covered by native readiness, while close-cancellation needs a dedicated long-lived application fixture; see [UDP scope](udp-proxying.md); RIO and general QUIC remain unsupported |
 | Shared proxy health and cooldown | Implemented for TCP chain/Windows selection and transparent UDP association creation | Unit tests cover cross-manager suppression, bounded expiry, success recovery and config parsing; UDP association failures enter the same cooldown; cross-target Windows compile check passes |
 | Route explanation CLI | Implemented (`--explain`) | CLI parser test and explicit rule/action output; process and local-address behavior remain subject to observed hook context |
 | Per-route proxy groups | Implemented for TCP and transparent UDP hooks (`route_group`) | Parser validates named groups; TCP and UDP groups must each contain one SOCKS5 node for UDP; each UDP socket keeps its initial association |
@@ -50,8 +50,11 @@ uses debugger creation events to inject each child before it resumes, closing
 the old process-table polling window. The public `spawn_and_inject` API still
 injects after launch and does not have the same before-first-instruction
 guarantee. ConnectEx now preserves synchronous calls and provides overlapped
-completion through an event or an associated IOCP; cancellation and migration
-of an already pending ConnectEx operation remain unsupported.
+completion through an event or an associated IOCP. Closing the socket marks a
+pending operation as `WSA_OPERATION_ABORTED` and publishes its completion before
+the worker finishes; callers must still keep their `OVERLAPPED` storage valid
+until that completion is observed. Migration of an already pending operation
+remains unsupported.
 
 Explicit UDP forwarding through a configuration containing exactly one SOCKS5 node:
 

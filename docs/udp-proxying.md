@@ -94,8 +94,11 @@ This is process-level API interposition, not OS-enforced network isolation.
 The Windows `ConnectEx` extension is intercepted as well. Calls without an
 `OVERLAPPED` complete synchronously; overlapped calls return
 `WSA_IO_PENDING`, preserve the optional initial send buffer, and complete via
-the caller's event or the socket's associated IOCP. Closing a socket does not
-cancel an already queued ConnectEx worker.
+the caller's event or the socket's associated IOCP. Closing a socket marks the
+pending operation `WSA_OPERATION_ABORTED` and publishes its completion before
+the worker exits. The caller must keep the `OVERLAPPED` and byte-count storage
+valid until that completion is observed; an already pending operation cannot be
+migrated to another socket.
 
 ## Native validation
 
