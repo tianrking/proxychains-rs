@@ -32,6 +32,7 @@ struct Session {
     // route group selected for the first proxied destination so later sends do
     // not switch an established relay underneath the application.
     proxy_group: Option<String>,
+    proxy: Option<crate::config::ProxyData>,
 }
 
 fn validate(config: &Config) -> crate::Result<()> {
@@ -129,7 +130,14 @@ fn association(session: &mut Session, requested_group: Option<&str>) -> io::Resu
                 "UDP proxy group cannot change after association",
             ));
         }
-        association.check_control().map_err(error)?;
+        if let Err(control_error) = association.check_control() {
+            if let Some(proxy) = &session.proxy {
+                if let Some(config) = CONFIG.get() {
+                    crate::chain::mark_proxy_failure(proxy, config.proxy_health_cooldown);
+                }
+            }
+            return Err(error(control_error));
+        }
         return Ok(association.clone());
     }
     let config = CONFIG.get().unwrap();
@@ -147,12 +155,20 @@ fn association(session: &mut Session, requested_group: Option<&str>) -> io::Resu
             format!("UDP proxy group {label:?} requires exactly one SOCKS5 node"),
         ));
     }
+    let proxy = &proxies[0];
+    if !crate::chain::proxy_is_available(proxy) {
+        return Err(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            "UDP proxy is in health cooldown",
+        ));
+    }
     let association = match UdpControl::connect(
-        &proxies[0],
+        proxy,
         config.tcp_connect_timeout,
         config.tcp_read_timeout,
     ) {
         Ok(association) => {
+            crate::chain::mark_proxy_success(proxy);
             crate::trace::record(crate::trace::ConnectionEvent {
                 schema_version: "1.0",
                 timestamp_ms: crate::trace::now_ms(),
@@ -171,6 +187,7 @@ fn association(session: &mut Session, requested_group: Option<&str>) -> io::Resu
             association
         }
         Err(error_value) => {
+            crate::chain::mark_proxy_failure(proxy, config.proxy_health_cooldown);
             let message = error_value.to_string();
             crate::trace::record(crate::trace::ConnectionEvent {
                 schema_version: "1.0",
@@ -192,6 +209,7 @@ fn association(session: &mut Session, requested_group: Option<&str>) -> io::Resu
     };
     let association = Arc::new(association);
     session.proxy_group = group.map(str::to_owned);
+    session.proxy = Some(proxy.clone());
     session.association = Some(association.clone());
     Ok(association)
 }

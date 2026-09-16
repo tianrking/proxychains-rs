@@ -65,8 +65,8 @@ Recommendation:
   - `--doctor` (end-to-end protocol and target diagnostics)
   - `--explain HOST:PORT` (show the matched route rule and effective action)
   - Shared proxy health cooldown (`proxy_health_cooldown_ms`) prevents repeated
-    attempts against a failing node across new connections; it applies to TCP
-    chain selection and Windows hooks, while existing streams are never migrated.
+    attempts against a failing node across new connections and UDP associations;
+    existing TCP streams and UDP sockets are never migrated.
   - `--log-file FILE` (best-effort JSONL connection events from intercepted hooks)
   - `--events --log-file FILE [--events-follow]` (view recorded events)
 - DNS:

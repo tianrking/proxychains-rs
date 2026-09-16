@@ -54,7 +54,9 @@ Existing poll/select registrations stay attached to the original socket.
 The first connect/send performs a bounded **synchronous** SOCKS handshake, even
 on nonblocking sockets. Subsequent datagrams use the original socket flags.
 Association failure returns an error without direct fallback. TCP control closure
-invalidates the association; close/recreate the application socket to recover.
+invalidates the association and places its proxy in the shared health cooldown;
+close/recreate the application socket to recover. New UDP associations skip a
+proxy while it is in cooldown and successful associations clear that state.
 Control closure is checked around I/O but does not independently wake an infinite
 poll/receive, so applications should use receive timeouts.
 
