@@ -531,6 +531,7 @@ pub unsafe extern "system" fn hook_wsa_connect_impl(
 
 const SIO_GET_EXTENSION_FUNCTION_POINTER: u32 = 0xC800_0006;
 const WSAID_CONNECTEX: GUID = GUID::from_u128(0x25a207b9_ddf3_4660_8ee9_76e58c74063e);
+const WSAID_WSARECVMSG: GUID = GUID::from_u128(0xf689d7c8_6f1f_436b_8a53_e54fe351c322);
 
 /// ConnectEx replacement used when applications query extension function pointers via WSAIoctl.
 ///
@@ -601,14 +602,18 @@ pub unsafe extern "system" fn hook_wsa_ioctl_impl(
         && in_buffer_len >= std::mem::size_of::<GUID>() as u32
     {
         let requested = *(in_buffer as *const GUID);
-        if requested == WSAID_WSASENDMSG {
+        if requested == WSAID_WSASENDMSG || requested == WSAID_WSARECVMSG {
             if out_buffer.is_null()
                 || out_buffer_len < std::mem::size_of::<*const c_void>() as u32
             {
                 WSASetLastError(WSAEFAULT.0);
                 return SOCKET_ERROR;
             }
-            let replacement = super::udp_windows::wsa_sendmsg as *const c_void;
+            let replacement = if requested == WSAID_WSASENDMSG {
+                super::udp_windows::wsa_sendmsg as *const c_void
+            } else {
+                super::udp_windows::wsa_recvmsg as *const c_void
+            };
             std::ptr::copy_nonoverlapping(
                 &replacement as *const *const c_void as *const u8,
                 out_buffer as *mut u8,
@@ -1206,6 +1211,29 @@ mod tests {
         let config = Config::default();
         let state = HookState::new(config);
         assert!(state.initialized);
+    }
+
+    #[test]
+    fn test_wsa_ioctl_exposes_synchronous_recvmsg_pointer() {
+        let guid = WSAID_WSARECVMSG;
+        let mut replacement: *mut c_void = std::ptr::null_mut();
+        let mut returned = 0;
+        let result = unsafe {
+            hook_wsa_ioctl_impl(
+                usize::MAX,
+                SIO_GET_EXTENSION_FUNCTION_POINTER,
+                (&guid as *const GUID).cast_mut().cast(),
+                std::mem::size_of::<GUID>() as u32,
+                (&mut replacement as *mut *mut c_void).cast(),
+                std::mem::size_of::<*mut c_void>() as u32,
+                &mut returned,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(result, 0);
+        assert!(!replacement.is_null());
+        assert_eq!(returned as usize, std::mem::size_of::<*mut c_void>());
     }
 
     #[test]

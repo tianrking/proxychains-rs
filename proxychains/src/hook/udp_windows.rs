@@ -615,6 +615,74 @@ unsafe extern "system" fn wsa_recv(
     )
 }
 
+/// Synchronous `WSARecvMsg` implementation for extension-function callers.
+/// Relay metadata does not carry ancillary data, so control buffers are rejected.
+pub(super) unsafe extern "system" fn wsa_recvmsg(
+    s: usize,
+    msg: *mut c_void,
+    received: *mut u32,
+    ov: *mut c_void,
+    completion: *mut c_void,
+) -> i32 {
+    if !udp::enabled(s) {
+        return fail(udp::unsupported());
+    }
+    if msg.is_null() || received.is_null() || !ov.is_null() || !completion.is_null() {
+        return fail(udp::unsupported());
+    }
+    let message = &mut *(msg.cast::<WSAMSG>());
+    if message.Control.len != 0 {
+        return fail(udp::unsupported());
+    }
+    let count = usize::try_from(message.dwBufferCount).ok();
+    let Some(count) = count.filter(|&count| count <= 1024) else {
+        return fail(io::Error::from_raw_os_error(WSAEMSGSIZE.0));
+    };
+    if count != 0 && message.lpBuffers.is_null() {
+        return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
+    }
+    let buffers = std::slice::from_raw_parts(message.lpBuffers, count);
+    let result = match udp::receive(s, message.dwFlags as i32) {
+        Some(Ok(result)) => result,
+        Some(Err(error)) => return fail(error),
+        None => return fail(udp::unsupported()),
+    };
+    if message.name.is_null() || message.namelen <= 0 {
+        return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
+    }
+    if let Err(error) = store_address(
+        result.source,
+        message.name.cast(),
+        &mut message.namelen,
+    ) {
+        return fail(error);
+    }
+    let mut offset = 0usize;
+    for buffer in buffers {
+        let length = usize::try_from(buffer.len).unwrap_or(usize::MAX);
+        if length != 0 && buffer.buf.is_null() {
+            return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
+        }
+        let count = length.min(result.payload.len().saturating_sub(offset));
+        if count != 0 {
+            ptr::copy_nonoverlapping(
+                result.payload.as_ptr().add(offset),
+                buffer.buf.0,
+                count,
+            );
+        }
+        offset += count;
+    }
+    *received = offset as u32;
+    message.Control.len = 0;
+    message.dwFlags = 0;
+    if offset < result.payload.len() {
+        fail(io::Error::from_raw_os_error(WSAEMSGSIZE.0))
+    } else {
+        0
+    }
+}
+
 pub(super) unsafe extern "system" fn wsa_sendmsg(
     s: usize,
     msg: *const c_void,

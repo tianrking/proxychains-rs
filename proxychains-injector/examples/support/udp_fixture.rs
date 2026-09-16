@@ -75,6 +75,11 @@ pub fn run(mode: &str) {
                 assert_eq!(n, data.len());
                 continue;
             }
+            if mode == "udp-recvmsg" && round == 0 {
+                let n = recvmsg_from(&socket, data);
+                assert_eq!(n, data.len());
+                continue;
+            }
             if mode == "udp-iocp-cancel" && round == 0 {
                 iocp_cancel_recv(&socket);
                 return;
@@ -383,6 +388,72 @@ fn iocp_cancel_recv(socket: &UdpSocket) {
 }
 #[cfg(not(windows))]
 fn iocp_cancel_recv(_socket: &UdpSocket) {}
+#[cfg(windows)]
+fn recvmsg_from(socket: &UdpSocket, expected: &[u8]) -> usize {
+    use std::ffi::c_void;
+    use std::mem::transmute;
+    use std::os::windows::io::AsRawSocket;
+    use windows::core::GUID;
+    use windows::Win32::Networking::WinSock::{
+        LPWSAOVERLAPPED_COMPLETION_ROUTINE, SOCKET, WSABUF, WSAMSG, WSAIoctl,
+    };
+    const SIO_GET_EXTENSION_FUNCTION_POINTER: u32 = 0xC800_0006;
+    const WSAID_WSARECVMSG: GUID = GUID::from_u128(0xf689d7c8_6f1f_436b_8a53_e54fe351c322);
+    type RecvMsg = unsafe extern "system" fn(
+        SOCKET,
+        *mut WSAMSG,
+        *mut u32,
+        *mut windows::Win32::System::IO::OVERLAPPED,
+        LPWSAOVERLAPPED_COMPLETION_ROUTINE,
+    ) -> i32;
+    let raw = SOCKET(socket.as_raw_socket() as usize);
+    let mut function: *mut c_void = std::ptr::null_mut();
+    let mut returned = 0;
+    let result = unsafe {
+        WSAIoctl(
+            raw,
+            SIO_GET_EXTENSION_FUNCTION_POINTER,
+            Some((&WSAID_WSARECVMSG as *const GUID).cast()),
+            std::mem::size_of::<GUID>() as u32,
+            Some((&mut function as *mut *mut c_void).cast()),
+            std::mem::size_of::<*mut c_void>() as u32,
+            &mut returned,
+            None,
+            None,
+        )
+    };
+    assert_eq!(result, 0);
+    let recvmsg: RecvMsg = unsafe { transmute(function) };
+    let mut payload = vec![0u8; expected.len().max(64)];
+    let mut buffer = WSABUF {
+        len: payload.len() as u32,
+        buf: windows::core::PSTR(payload.as_mut_ptr()),
+    };
+    let mut storage = [0u8; 128];
+    let mut message = WSAMSG {
+        name: storage.as_mut_ptr().cast(),
+        namelen: storage.len() as i32,
+        lpBuffers: &mut buffer,
+        dwBufferCount: 1,
+        Control: WSABUF {
+            len: 0,
+            buf: windows::core::PSTR(std::ptr::null_mut()),
+        },
+        dwFlags: 0,
+    };
+    let mut received = 0;
+    assert_eq!(unsafe { recvmsg(raw, &mut message, &mut received, std::ptr::null_mut(), None) }, 0);
+    assert_eq!(received as usize, expected.len());
+    assert_eq!(&payload[..received as usize], expected);
+    received as usize
+}
+#[cfg(not(windows))]
+fn recvmsg_from(socket: &UdpSocket, expected: &[u8]) -> usize {
+    let mut payload = vec![0u8; expected.len().max(64)];
+    let (n, _) = socket.recv_from(&mut payload).unwrap();
+    assert_eq!(&payload[..n], expected);
+    n
+}
 #[cfg(not(windows))]
 fn iocp_send_to(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> usize {
     socket.send_to(data, destination).unwrap()
