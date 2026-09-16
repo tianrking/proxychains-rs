@@ -7,9 +7,11 @@ the application through `proxychains4`. The server must support UDP ASSOCIATE
 and its returned UDP relay must be reachable from the client. A `route_group`
 rule may select a named group containing one or more SOCKS5 nodes for a UDP
 destination, which allows the default TCP configuration to contain a chain.
-New UDP associations try eligible nodes in order and use the shared health
-cooldown to skip recently failed nodes. An established association is not
-migrated if its proxy later fails.
+New UDP associations try eligible nodes in order and use the UDP-specific health
+cooldown to skip recently failed nodes. A UDP failure does not hide a node that
+is still healthy for TCP, and TCP failures do not remove a working UDP node from
+UDP selection. An established association is not migrated if its proxy later
+fails.
 
 ```ini
 strict_chain

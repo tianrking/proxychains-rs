@@ -123,4 +123,15 @@ mod tests {
         mark_success(&proxy, HealthProtocol::Udp);
         assert!(is_available(&proxy, HealthProtocol::Udp));
     }
+
+    #[test]
+    fn success_only_clears_the_selected_protocol() {
+        let proxy = ProxyData::new(Ipv4Addr::LOCALHOST, 1082, ProxyType::Socks5);
+        mark_failure(&proxy, HealthProtocol::Tcp, Duration::from_secs(60));
+        mark_failure(&proxy, HealthProtocol::Udp, Duration::from_secs(60));
+        mark_success(&proxy, HealthProtocol::Tcp);
+        assert!(is_available(&proxy, HealthProtocol::Tcp));
+        assert!(!is_available(&proxy, HealthProtocol::Udp));
+        mark_success(&proxy, HealthProtocol::Udp);
+    }
 }
