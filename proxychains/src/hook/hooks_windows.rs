@@ -394,8 +394,8 @@ pub unsafe extern "system" fn hook_connect_impl(
         return original_connect(sock, addr, len);
     }
 
-    let target = if let Some(domain) = target_domain {
-        TargetAddress::from_both(final_ip, domain)
+    let target = if let Some(ref domain) = target_domain {
+        TargetAddress::from_both(final_ip, domain.clone())
     } else {
         TargetAddress::from_ip(final_ip)
     };
@@ -403,9 +403,28 @@ pub unsafe extern "system" fn hook_connect_impl(
     // A failed handshake has already connected this application-owned socket.
     // It cannot safely be reconnected to another proxy; let the application retry
     // using a fresh socket, with failed-node state retained for selection.
+    let route_group = config
+        .route_proxy_group(RouteProtocol::Tcp, target_domain.as_deref(), final_port)
+        .map(str::to_string);
+    let route_proxies = if let Some(group) = route_group.as_deref() {
+        let Some(proxies) = config.proxy_groups.get(group) else {
+            WSASetLastError(WSAECONNREFUSED.0);
+            return SOCKET_ERROR;
+        };
+        Some(proxies.clone())
+    } else {
+        None
+    };
     let max_attempts = 1;
     for attempt in 1..=max_attempts {
-        let (selected_indices, selected_proxies) = {
+        let (selected_indices, selected_proxies) = if let Some(proxies) = route_proxies.as_ref() {
+            let Some(indices) = select_indices(state, proxies) else {
+                WSASetLastError(WSAECONNREFUSED.0);
+                return SOCKET_ERROR;
+            };
+            let chosen = indices.iter().map(|&i| proxies[i].clone()).collect::<Vec<_>>();
+            (indices, chosen)
+        } else {
             let proxies = state.proxy_states.lock();
             let Some(indices) = select_indices(state, &proxies) else {
                 WSASetLastError(WSAECONNREFUSED.0);
@@ -414,7 +433,6 @@ pub unsafe extern "system" fn hook_connect_impl(
             let chosen = indices.iter().map(|&i| proxies[i].clone()).collect::<Vec<_>>();
             (indices, chosen)
         };
-
         match connect_chain_on_socket(
             sock,
             &selected_proxies,
@@ -447,14 +465,22 @@ pub unsafe extern "system" fn hook_connect_impl(
                     .or_else(|| selected_indices.last())
                     .copied();
                 if let Some(idx) = failed_proxy_global {
-                    let mut proxies = state.proxy_states.lock();
-                    if let Some(p) = proxies.get_mut(idx) {
-                        p.state = if matches!(e, Error::Blocked) {
-                            ProxyState::Blocked
-                        } else {
-                            mark_proxy_failure(p, config.proxy_health_cooldown);
-                            ProxyState::Down
-                        };
+                    if route_proxies.is_some() {
+                        if let Some(p) = selected_proxies.get(failed_hop) {
+                            if !matches!(e, Error::Blocked) {
+                                mark_proxy_failure(p, config.proxy_health_cooldown);
+                            }
+                        }
+                    } else {
+                        let mut proxies = state.proxy_states.lock();
+                        if let Some(p) = proxies.get_mut(idx) {
+                            p.state = if matches!(e, Error::Blocked) {
+                                ProxyState::Blocked
+                            } else {
+                                mark_proxy_failure(p, config.proxy_health_cooldown);
+                                ProxyState::Down
+                            };
+                        }
                     }
                 }
                 warn!("connect attempt {}/{} failed: {}", attempt, max_attempts, e);

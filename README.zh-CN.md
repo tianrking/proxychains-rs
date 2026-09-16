@@ -79,6 +79,8 @@ Windows overlapped/IOCP UDP 尚不支持，也不代表所有 QUIC/HTTP/3 应用
   - SOCKS4/4a 不支持 IPv6 目标
 - 有序分流规则：
   - `route direct|proxy|reject domain|domain_suffix|port|protocol|process VALUE`
+  - `route_group GROUP domain|domain_suffix|port|protocol|process VALUE` 为匹配的
+    TCP 连接选择指定代理组。
   - 第一条匹配规则生效，未匹配的连接保持原代理链行为。
 - 项目启动配置：
   - `--profile FILE` 保存命令、参数、工作目录、环境变量、配置文件和代理组。
@@ -172,6 +174,7 @@ proxy_health_cooldown_ms 5000
 # route direct domain_suffix .internal.example
 # route reject port 25
 # route direct protocol udp
+# route_group jp domain git.example.com
 
 # 兼容别名示例：
 # round_robin_chain

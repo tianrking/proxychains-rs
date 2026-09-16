@@ -1,5 +1,6 @@
 //! Configuration types for proxychains
 
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, ToSocketAddrs};
 use std::time::Duration;
 use crate::error::{Error, Result};
@@ -225,6 +226,8 @@ pub enum RouteAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteRule {
     pub action: RouteAction,
+    /// Optional proxy group selected when this rule's action is `proxy`.
+    pub proxy_group: Option<String>,
     pub protocol: Option<RouteProtocol>,
     pub domain: Option<String>,
     pub domain_suffix: Option<String>,
@@ -307,6 +310,8 @@ pub struct Config {
     pub route_rules: Vec<RouteRule>,
     /// Proxy list
     pub proxies: Vec<ProxyData>,
+    /// All named proxy groups retained for per-route selection.
+    pub proxy_groups: HashMap<String, Vec<ProxyData>>,
 }
 
 impl Default for Config {
@@ -326,6 +331,7 @@ impl Default for Config {
             dnats: Vec::new(),
             route_rules: Vec::new(),
             proxies: Vec::new(),
+            proxy_groups: HashMap::new(),
         }
     }
 }
@@ -423,6 +429,32 @@ impl Config {
     ) -> RouteAction {
         self.matching_route_rule(protocol, domain, port, process)
             .map_or(RouteAction::Proxy, |rule| rule.action)
+    }
+
+    /// Return the proxy group selected by the first matching route rule.
+    pub fn route_proxy_group_for_process(
+        &self,
+        protocol: RouteProtocol,
+        domain: Option<&str>,
+        port: u16,
+        process: &str,
+    ) -> Option<&str> {
+        self.matching_route_rule(protocol, domain, port, process)
+            .and_then(|rule| rule.proxy_group.as_deref())
+    }
+
+    /// Return the proxy group selected for the current executable.
+    pub fn route_proxy_group(
+        &self,
+        protocol: RouteProtocol,
+        domain: Option<&str>,
+        port: u16,
+    ) -> Option<&str> {
+        let process = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+            .unwrap_or_default();
+        self.route_proxy_group_for_process(protocol, domain, port, &process)
     }
 
     /// Return the first matching route rule, if any.

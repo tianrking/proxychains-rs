@@ -362,8 +362,21 @@ pub unsafe fn hook_connect(
     let status_flags = libc::fcntl(sock, libc::F_GETFL);
     if descriptor_flags < 0 || status_flags < 0 { return -1; }
 
-    // Connect through proxy chain
-    let chain_manager = ChainManager::new(state.config.clone());
+    // Connect through the selected proxy group. Route-group selection is made
+    // before the chain manager is created so each new connection gets an
+    // independent, auditable choice of exit group.
+    let mut chain_config = state.config.clone();
+    if let Some(group) = state
+        .config
+        .route_proxy_group(RouteProtocol::Tcp, target_domain.as_deref(), final_port)
+    {
+        let Some(proxies) = state.config.proxy_groups.get(group) else {
+            error!("Proxy group selected by route rule is unavailable: {}", group);
+            return -1;
+        };
+        chain_config.proxies = proxies.clone();
+    }
+    let chain_manager = ChainManager::new(chain_config);
     match chain_manager.connect_proxy_chain(
         final_ip,
         final_port,

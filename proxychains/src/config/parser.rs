@@ -116,6 +116,7 @@ impl ConfigParser {
         config
             .proxies
             .push(ProxyData::new_host(host.to_string(), port, ProxyType::Socks5));
+        config.proxy_groups.insert("default".to_string(), config.proxies.clone());
 
         Ok(config)
     }
@@ -127,7 +128,8 @@ impl ConfigParser {
         let reader = BufReader::new(file);
 
         let mut config = Config::default();
-        let mut in_proxy_list = false;
+        let mut proxy_group: Option<String> = None;
+        let mut selected_proxy_group = false;
         let selected_group = self.selected_group().map(|s| s.to_lowercase());
         let mut matched_selected_group = selected_group.is_none();
 
@@ -155,23 +157,31 @@ impl ConfigParser {
                         .filter(|g| !g.is_empty())
                         .unwrap_or_else(|| "default".to_string());
 
-                    in_proxy_list = if let Some(ref selected) = selected_group {
+                    selected_proxy_group = if let Some(ref selected) = selected_group {
                         let is_match = &group_name == selected;
                         if is_match {
                             matched_selected_group = true;
                         }
                         is_match
-                    } else {
-                        true
-                    };
+                    } else { true };
+                    proxy_group = Some(group_name);
                 } else {
-                    in_proxy_list = false;
+                    proxy_group = None;
+                    selected_proxy_group = false;
                 }
                 continue;
             }
 
-            if in_proxy_list {
-                self.parse_proxy_line(trimmed, &mut config)?;
+            if let Some(group) = proxy_group.as_deref() {
+                let proxy = self.parse_proxy_line(trimmed)?;
+                config
+                    .proxy_groups
+                    .entry(group.to_string())
+                    .or_default()
+                    .push(proxy.clone());
+                if selected_proxy_group {
+                    config.proxies.push(proxy);
+                }
             } else {
                 self.parse_config_line(trimmed, &mut config)?;
             }
@@ -186,6 +196,17 @@ impl ConfigParser {
                     "Proxy group not found: {}",
                     group
                 )));
+            }
+        }
+
+        for rule in &config.route_rules {
+            if let Some(group) = rule.proxy_group.as_deref() {
+                if !config.proxy_groups.contains_key(group) {
+                    return Err(Error::Config(format!(
+                        "Proxy group not found for route rule: {}",
+                        group
+                    )));
+                }
             }
         }
 
@@ -303,6 +324,9 @@ impl ConfigParser {
             "route" => {
                 self.parse_route(value, config)?;
             }
+            "route_group" => {
+                self.parse_route_group(value, config)?;
+            }
             _ => {} // Ignore unknown options
         }
 
@@ -364,6 +388,7 @@ impl ConfigParser {
         if parts.len() != 3 {
             return Err(Error::Config("Invalid route format; expected route ACTION MATCHER VALUE".into()));
         }
+
         let action = match parts[0].to_ascii_lowercase().as_str() {
             "proxy" => RouteAction::Proxy,
             "direct" => RouteAction::Direct,
@@ -372,6 +397,7 @@ impl ConfigParser {
         };
         let mut rule = RouteRule {
             action,
+            proxy_group: None,
             protocol: None,
             domain: None,
             domain_suffix: None,
@@ -396,8 +422,50 @@ impl ConfigParser {
         Ok(())
     }
 
+    /// Parse a proxy-group route rule: route_group GROUP MATCHER VALUE.
+    fn parse_route_group(&self, value: &str, config: &mut Config) -> Result<()> {
+        let parts: Vec<&str> = value.split_whitespace().collect();
+        if parts.len() != 3 {
+            return Err(Error::Config(
+                "Invalid route_group format; expected route_group GROUP MATCHER VALUE".into(),
+            ));
+        }
+        let group = parts[0].to_ascii_lowercase();
+        let mut rule = RouteRule {
+            action: RouteAction::Proxy,
+            proxy_group: Some(group),
+            protocol: None,
+            domain: None,
+            domain_suffix: None,
+            port: None,
+            process: None,
+        };
+        match parts[1].to_ascii_lowercase().as_str() {
+            "domain" => rule.domain = Some(parts[2].trim_end_matches('.').to_string()),
+            "domain_suffix" | "suffix" => {
+                rule.domain_suffix = Some(parts[2].trim_end_matches('.').to_string())
+            }
+            "port" => {
+                rule.port = Some(parts[2].parse().map_err(|_| {
+                    Error::Config(format!("Invalid route port: {}", parts[2]))
+                })?)
+            }
+            "process" | "process_name" => rule.process = Some(parts[2].to_string()),
+            "protocol" => {
+                rule.protocol = Some(match parts[2].to_ascii_lowercase().as_str() {
+                    "tcp" => RouteProtocol::Tcp,
+                    "udp" => RouteProtocol::Udp,
+                    _ => return Err(Error::Config(format!("Invalid route protocol: {}", parts[2]))),
+                });
+            }
+            _ => return Err(Error::Config(format!("Invalid route matcher: {}", parts[1]))),
+        }
+        config.route_rules.push(rule);
+        Ok(())
+    }
+
     /// Parse a proxy line
-    fn parse_proxy_line(&self, line: &str, config: &mut Config) -> Result<()> {
+    fn parse_proxy_line(&self, line: &str) -> Result<ProxyData> {
         // Format: type host port [user pass]
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 3 {
@@ -425,8 +493,7 @@ impl ConfigParser {
             proxy.pass = Some(parts[4].to_string());
         }
 
-        config.proxies.push(proxy);
-        Ok(())
+        Ok(proxy)
     }
 
     /// Apply environment variable overrides
@@ -606,6 +673,47 @@ socks5 127.0.0.1 1080
         assert_eq!(config.route_action(RouteProtocol::Tcp, Some("mail.example"), 25), RouteAction::Reject);
         assert_eq!(config.route_action(RouteProtocol::Udp, Some("dns.example"), 53), RouteAction::Direct);
         assert_eq!(config.route_action(RouteProtocol::Tcp, Some("example.com"), 443), RouteAction::Proxy);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_parse_route_group_and_retain_all_groups() {
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("proxychains_route_groups_{}.conf", ts));
+        fs::write(&path, r#"
+route_group jp domain git.example.com
+[ProxyList]
+socks5 127.0.0.1 1080
+[ProxyList:jp]
+socks5 127.0.0.2 1080
+"#).unwrap();
+        let config = ConfigParser::new().with_path(path.clone()).parse().unwrap();
+        assert_eq!(config.proxies.len(), 2);
+        assert_eq!(config.proxy_groups["default"].len(), 1);
+        assert_eq!(config.proxy_groups["jp"].len(), 1);
+        assert_eq!(
+            config.route_proxy_group_for_process(
+                RouteProtocol::Tcp,
+                Some("git.example.com"),
+                443,
+                "git.exe"
+            ),
+            Some("jp")
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_route_group_requires_existing_group() {
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("proxychains_route_group_missing_{}.conf", ts));
+        fs::write(&path, r#"
+route_group missing domain example.com
+[ProxyList]
+socks5 127.0.0.1 1080
+"#).unwrap();
+        let error = ConfigParser::new().with_path(path.clone()).parse().unwrap_err();
+        assert!(format!("{error}").contains("Proxy group not found for route rule"));
         let _ = fs::remove_file(path);
     }
 

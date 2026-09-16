@@ -78,8 +78,10 @@ Recommendation:
 - IPv6 progress:
   - IPv6 targets supported through SOCKS5/HTTP hops
   - SOCKS4/4a does not support IPv6 targets
-- Ordered routing rules:
+  - Ordered routing rules:
   - `route direct|proxy|reject domain|domain_suffix|port|protocol|process VALUE`
+  - `route_group GROUP domain|domain_suffix|port|protocol|process VALUE` selects
+    a named proxy group for matching TCP connections.
   - The first matching rule wins; unmatched traffic keeps the configured proxy chain.
 - Project launch profiles:
   - `--profile FILE` saves a command, arguments, working directory, environment, config file, and group.
@@ -176,6 +178,7 @@ proxy_health_cooldown_ms 5000
 # route direct domain_suffix .internal.example
 # route reject port 25
 # route direct protocol udp
+# route_group jp domain git.example.com
 
 # compatibility alias examples:
 # round_robin_chain
