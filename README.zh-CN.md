@@ -59,6 +59,7 @@ Windows overlapped/IOCP UDP 尚不支持，也不代表所有 QUIC/HTTP/3 应用
   - `--check`
   - `--probe`（快速探测每个节点连通性与时延）
   - `--probe-json`（机器可读 JSON 输出）
+  - `--doctor`（端到端协议和目标诊断）
 - DNS：
   - `proxy_dns`
   - 兼容别名：`proxy_dns_old`、`proxy_dns_daemon`
@@ -116,8 +117,14 @@ proxychains4 -f ./proxychains.conf --group jp --check
 proxychains4 -f ./proxychains.conf --group jp --probe
 proxychains4 -f ./proxychains.conf --probe --probe-timeout-ms 1200
 proxychains4 -f ./proxychains.conf --probe --probe-json
+proxychains4 -f ./proxychains.conf --doctor --doctor-target example.com:80
+proxychains4 -f ./proxychains.conf --doctor --doctor-target example.com:80 --doctor-udp-echo 1.1.1.1:53 --doctor-json
 proxychains4 -f ./proxychains.conf --tree curl https://ifconfig.me
 ```
+
+`--probe` 只检查代理端口是否接受 TCP 连接。`--doctor` 会分别检查传输、
+协议/认证、目标连接，以及可选的 SOCKS5 UDP ASSOCIATE 和真实 UDP 回显。
+仅建立 UDP ASSOCIATE 不会被报告为 UDP 转发正常。
 
 ## 示例配置
 

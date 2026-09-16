@@ -59,6 +59,7 @@ Recommendation:
   - `--check`
   - `--probe` (quick per-node reachability/latency check)
   - `--probe-json` (machine-readable probe output)
+  - `--doctor` (end-to-end protocol and target diagnostics)
 - DNS:
   - `proxy_dns`
   - compatibility aliases: `proxy_dns_old`, `proxy_dns_daemon`
@@ -116,8 +117,15 @@ proxychains4 -f ./proxychains.conf --group jp --check
 proxychains4 -f ./proxychains.conf --group jp --probe
 proxychains4 -f ./proxychains.conf --probe --probe-timeout-ms 1200
 proxychains4 -f ./proxychains.conf --probe --probe-json
+proxychains4 -f ./proxychains.conf --doctor --doctor-target example.com:80
+proxychains4 -f ./proxychains.conf --doctor --doctor-target example.com:80 --doctor-udp-echo 1.1.1.1:53 --doctor-json
 proxychains4 -f ./proxychains.conf --tree curl https://ifconfig.me
 ```
+
+`--probe` only checks whether a proxy endpoint accepts a TCP connection.
+`--doctor` separately checks transport, protocol/authentication, target
+connection, and optional SOCKS5 UDP ASSOCIATE plus an actual UDP echo. A
+successful UDP ASSOCIATE alone is not reported as working UDP forwarding.
 
 ## Example Config
 

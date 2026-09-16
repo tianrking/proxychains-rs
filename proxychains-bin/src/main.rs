@@ -16,11 +16,13 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use serde::Serialize;
-use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 use tracing::{debug, error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
+use proxychains::config::ProxyType;
+use proxychains::proxy::{connect_to_proxy, tunnel_through_proxy, TargetAddress, UdpAssociation};
 use proxychains::{Config, ConfigParser};
 
 /// Proxychains4 - Run commands through proxy chains
@@ -70,6 +72,22 @@ struct Args {
     #[arg(long)]
     probe_fail_only: bool,
 
+    /// Run end-to-end protocol and target checks for every configured proxy
+    #[arg(long)]
+    doctor: bool,
+
+    /// TCP target used by --doctor (default: example.com:80)
+    #[arg(long, value_name = "HOST:PORT", default_value = "example.com:80")]
+    doctor_target: String,
+
+    /// Optional UDP echo target used by --doctor for SOCKS5 UDP ASSOCIATE
+    #[arg(long, value_name = "HOST:PORT")]
+    doctor_udp_echo: Option<String>,
+
+    /// Print doctor results as JSON
+    #[arg(long)]
+    doctor_json: bool,
+
     /// Enable process-tree mode (inject/proxy child and grandchild processes)
     #[arg(long)]
     tree: bool,
@@ -84,7 +102,7 @@ struct Args {
 
     /// The command to run
     #[arg(
-        required_unless_present_any = ["list_groups", "check", "probe", "pid", "attach_name"],
+        required_unless_present_any = ["list_groups", "check", "probe", "doctor", "pid", "attach_name"],
         trailing_var_arg = true
     )]
     command: Vec<String>,
@@ -96,7 +114,10 @@ fn main() {
     if let Some(path) = build_parser(&args).find_config_file() {
         match std::fs::canonicalize(&path) {
             Ok(path) => args.config = Some(path),
-            Err(e) => { eprintln!("proxychains: cannot open config {}: {}", path.display(), e); process::exit(1); }
+            Err(e) => {
+                eprintln!("proxychains: cannot open config {}: {}", path.display(), e);
+                process::exit(1);
+            }
         }
     }
 
@@ -168,6 +189,11 @@ fn main() {
         process::exit(if failed == 0 { 0 } else { 2 });
     }
 
+    if args.doctor {
+        let failed = run_doctor(&config, &args);
+        process::exit(if failed == 0 { 0 } else { 2 });
+    }
+
     if args.pid.is_some() || args.attach_name.is_some() {
         set_proxychains_env(&config, &args);
         #[cfg(windows)]
@@ -179,12 +205,21 @@ fn main() {
                     None => injector.inject_by_name(args.attach_name.as_deref().unwrap()),
                 });
             match result {
-                Ok(()) => { println!("Hooks ready; only subsequent supported connections are affected."); process::exit(0); }
-                Err(e) => { eprintln!("proxychains: attach failed: {e}"); process::exit(1); }
+                Ok(()) => {
+                    println!("Hooks ready; only subsequent supported connections are affected.");
+                    process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("proxychains: attach failed: {e}");
+                    process::exit(1);
+                }
             }
         }
         #[cfg(not(windows))]
-        { eprintln!("proxychains: process attachment requires Windows; use launch mode on this platform"); process::exit(1); }
+        {
+            eprintln!("proxychains: process attachment requires Windows; use launch mode on this platform");
+            process::exit(1);
+        }
     }
 
     // Execute the command with platform-specific injection
@@ -244,7 +279,11 @@ fn print_check_summary(config: &Config, args: &Args) {
         args.group.as_deref().unwrap_or("default/all")
     );
     for (idx, proxy) in config.proxies.iter().enumerate() {
-        let auth = if proxy.user.is_some() { "auth" } else { "no-auth" };
+        let auth = if proxy.user.is_some() {
+            "auth"
+        } else {
+            "no-auth"
+        };
         println!(
             "  {}. {} {}:{} ({})",
             idx + 1,
@@ -326,6 +365,311 @@ fn run_probe(config: &Config, args: &Args) -> usize {
     failed
 }
 
+fn parse_doctor_target(raw: &str) -> Result<(String, u16), String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err("doctor target cannot be empty".to_string());
+    }
+    if let Ok(addr) = value.parse::<SocketAddr>() {
+        return Ok((addr.ip().to_string(), addr.port()));
+    }
+    let (host, port) = value
+        .rsplit_once(':')
+        .ok_or_else(|| format!("invalid target {value:?}; expected HOST:PORT"))?;
+    let port = port
+        .parse::<u16>()
+        .map_err(|_| format!("invalid target port {port:?}"))?;
+    if host.is_empty() || host.contains('[') || host.contains(']') {
+        return Err(format!("invalid target host {host:?}"));
+    }
+    Ok((host.to_string(), port))
+}
+
+fn run_doctor(config: &Config, args: &Args) -> usize {
+    let target = match parse_doctor_target(&args.doctor_target) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("proxychains: doctor: {error}");
+            return 1;
+        }
+    };
+    let udp_target = match args
+        .doctor_udp_echo
+        .as_deref()
+        .map(parse_doctor_target)
+        .transpose()
+    {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("proxychains: doctor: {error}");
+            return 1;
+        }
+    };
+    let timeout = args
+        .probe_timeout_ms
+        .map(Duration::from_millis)
+        .unwrap_or(config.tcp_connect_timeout);
+    let mut nodes = Vec::with_capacity(config.proxies.len());
+    for (index, proxy) in config.proxies.iter().enumerate() {
+        nodes.push(doctor_proxy(
+            proxy,
+            index + 1,
+            &target,
+            udp_target.as_ref(),
+            timeout,
+        ));
+    }
+    let failed = nodes.iter().filter(|node| !node.ok).count();
+    let report = DoctorReport {
+        schema_version: "1.0".to_string(),
+        target: format!("{}:{}", target.0, target.1),
+        udp_echo_target: udp_target
+            .as_ref()
+            .map(|(host, port)| format!("{host}:{port}")),
+        timeout_ms: timeout.as_millis(),
+        nodes,
+    };
+    if args.doctor_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
+        );
+    } else {
+        print_doctor_report(&report);
+    }
+    failed
+}
+
+fn doctor_proxy(
+    proxy: &proxychains::config::ProxyData,
+    index: usize,
+    target: &(String, u16),
+    udp_echo_target: Option<&(String, u16)>,
+    timeout: Duration,
+) -> DoctorNode {
+    let address = format!("{}:{}", proxy.host, proxy.port);
+    let mut node = DoctorNode {
+        index,
+        proxy_type: proxy.proxy_type.to_string(),
+        address,
+        ok: false,
+        transport: DoctorStage::skipped(),
+        authentication: DoctorStage::skipped(),
+        target: DoctorStage::skipped(),
+        udp_associate: DoctorStage::skipped(),
+        udp_echo: DoctorStage::skipped(),
+    };
+    let started = Instant::now();
+    let mut stream = match connect_to_proxy(proxy, timeout) {
+        Ok(stream) => {
+            node.transport = DoctorStage::ok(started.elapsed());
+            stream
+        }
+        Err(error) => {
+            node.transport =
+                DoctorStage::failed(started.elapsed(), "transport", &error.to_string());
+            return node;
+        }
+    };
+    let handshake_started = Instant::now();
+    if proxy.proxy_type == ProxyType::Socks5 && (proxy.user.is_some() != proxy.pass.is_some()) {
+        node.authentication = DoctorStage::failed(
+            handshake_started.elapsed(),
+            "authentication",
+            "both username and password are required",
+        );
+        return node;
+    }
+    match tunnel_through_proxy(
+        &mut stream,
+        proxy,
+        &TargetAddress::from_domain(target.0.clone()),
+        target.1,
+        timeout,
+    ) {
+        Ok(()) => {
+            node.authentication = DoctorStage::ok(handshake_started.elapsed());
+            node.target = DoctorStage::ok(handshake_started.elapsed());
+        }
+        Err(error) => {
+            let kind = if proxy.proxy_type == ProxyType::Socks5 {
+                if proxy.user.is_some() {
+                    "authentication_or_protocol"
+                } else {
+                    "protocol_or_target"
+                }
+            } else {
+                "protocol_or_target"
+            };
+            node.authentication =
+                DoctorStage::failed(handshake_started.elapsed(), kind, &error.to_string());
+            node.target =
+                DoctorStage::failed(handshake_started.elapsed(), "target", &error.to_string());
+            return node;
+        }
+    }
+    if let Some((udp_host, udp_port)) = udp_echo_target {
+        if proxy.proxy_type != ProxyType::Socks5 {
+            node.udp_associate =
+                DoctorStage::skipped_with("requires_socks5", "UDP ASSOCIATE requires SOCKS5");
+            node.udp_echo =
+                DoctorStage::skipped_with("requires_socks5", "UDP ASSOCIATE requires SOCKS5");
+        } else {
+            let udp_started = Instant::now();
+            match UdpAssociation::connect(proxy, timeout, timeout) {
+                Ok(association) => {
+                    node.udp_associate = DoctorStage::ok(udp_started.elapsed());
+                    let echo_started = Instant::now();
+                    let send = association.send_to(
+                        &TargetAddress::from_domain(udp_host.clone()),
+                        *udp_port,
+                        b"proxychains-doctor",
+                    );
+                    match send.and_then(|_| association.recv_from().map(|_| ())) {
+                        Ok(()) => node.udp_echo = DoctorStage::ok(echo_started.elapsed()),
+                        Err(error) => {
+                            node.udp_echo = DoctorStage::failed(
+                                echo_started.elapsed(),
+                                "udp_echo",
+                                &error.to_string(),
+                            )
+                        }
+                    }
+                }
+                Err(error) => {
+                    node.udp_associate = DoctorStage::failed(
+                        udp_started.elapsed(),
+                        "udp_associate",
+                        &error.to_string(),
+                    )
+                }
+            }
+        }
+    }
+    node.ok = node.transport.ok
+        && node.authentication.ok
+        && node.target.ok
+        && (!udp_echo_target.is_some() || (node.udp_associate.ok && node.udp_echo.ok));
+    node
+}
+
+fn print_doctor_report(report: &DoctorReport) {
+    println!("Proxy doctor:");
+    println!(
+        "  target={} timeout_ms={}",
+        report.target, report.timeout_ms
+    );
+    if let Some(target) = &report.udp_echo_target {
+        println!("  udp_echo_target={target}");
+    }
+    for node in &report.nodes {
+        println!(
+            "  [{}] {} {} -> {}",
+            node.index,
+            if node.ok { "OK" } else { "FAIL" },
+            node.proxy_type,
+            node.address
+        );
+        print_doctor_stage("transport", &node.transport);
+        print_doctor_stage("authentication", &node.authentication);
+        print_doctor_stage("target", &node.target);
+        if node.udp_echo.is_skipped() && node.udp_associate.is_skipped() {
+            continue;
+        }
+        print_doctor_stage("udp_associate", &node.udp_associate);
+        print_doctor_stage("udp_echo", &node.udp_echo);
+    }
+    let ok = report.nodes.iter().filter(|node| node.ok).count();
+    println!(
+        "Doctor summary: total={}, ok={}, fail={}",
+        report.nodes.len(),
+        ok,
+        report.nodes.len().saturating_sub(ok)
+    );
+}
+
+fn print_doctor_stage(name: &str, stage: &DoctorStage) {
+    let status = if stage.ok {
+        "OK"
+    } else if stage.skipped {
+        "SKIP"
+    } else {
+        "FAIL"
+    };
+    let detail = stage.error.as_deref().unwrap_or("");
+    println!(
+        "      {status:<4} {name:<16} {} ms {}",
+        stage.latency_ms, detail
+    );
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorReport {
+    schema_version: String,
+    target: String,
+    udp_echo_target: Option<String>,
+    timeout_ms: u128,
+    nodes: Vec<DoctorNode>,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorNode {
+    index: usize,
+    proxy_type: String,
+    address: String,
+    ok: bool,
+    transport: DoctorStage,
+    authentication: DoctorStage,
+    target: DoctorStage,
+    udp_associate: DoctorStage,
+    udp_echo: DoctorStage,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorStage {
+    ok: bool,
+    skipped: bool,
+    latency_ms: u128,
+    failure_type: Option<String>,
+    error: Option<String>,
+}
+
+impl DoctorStage {
+    fn ok(elapsed: Duration) -> Self {
+        Self {
+            ok: true,
+            skipped: false,
+            latency_ms: elapsed.as_millis(),
+            failure_type: None,
+            error: None,
+        }
+    }
+    fn skipped() -> Self {
+        Self::skipped_with("not_requested", "")
+    }
+    fn skipped_with(kind: &str, message: &str) -> Self {
+        Self {
+            ok: false,
+            skipped: true,
+            latency_ms: 0,
+            failure_type: Some(kind.to_string()),
+            error: (!message.is_empty()).then(|| message.to_string()),
+        }
+    }
+    fn failed(elapsed: Duration, kind: &str, message: &str) -> Self {
+        Self {
+            ok: false,
+            skipped: false,
+            latency_ms: elapsed.as_millis(),
+            failure_type: Some(kind.to_string()),
+            error: Some(message.to_string()),
+        }
+    }
+    fn is_skipped(&self) -> bool {
+        self.skipped
+    }
+}
+
 fn classify_probe_error(err: &std::io::Error) -> &'static str {
     match err.kind() {
         ErrorKind::TimedOut => "timeout",
@@ -347,16 +691,8 @@ fn build_probe_report(results: Vec<ProbeNode>, timeout: Duration, group: String)
     } else {
         (ok as f64) * 100.0 / (total as f64)
     };
-    let best_latency_ms = results
-        .iter()
-        .filter(|r| r.ok)
-        .map(|r| r.latency_ms)
-        .min();
-    let worst_latency_ms = results
-        .iter()
-        .filter(|r| r.ok)
-        .map(|r| r.latency_ms)
-        .max();
+    let best_latency_ms = results.iter().filter(|r| r.ok).map(|r| r.latency_ms).min();
+    let worst_latency_ms = results.iter().filter(|r| r.ok).map(|r| r.latency_ms).max();
     let mut stats = ProbeFailureStats::default();
     for r in &results {
         if r.ok {
@@ -562,7 +898,10 @@ fn execute_command(args: &Args, config: &Config) -> Result<i32, String> {
         );
 
         if ret < 0 {
-            return Err(format!("execvp failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "execvp failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
     }
 
@@ -633,7 +972,7 @@ fn set_preload_env(library_path: &str) -> Result<(), String> {
 
 #[cfg(windows)]
 fn execute_command(args: &Args, config: &Config) -> Result<i32, String> {
-    use proxychains_injector::{ProxychainsInjector, ProcessInfo, find_library_path};
+    use proxychains_injector::{find_library_path, ProcessInfo, ProxychainsInjector};
 
     if args.command.is_empty() {
         return Err("No command specified".to_string());
@@ -760,6 +1099,74 @@ mod tests {
         assert!(args.is_ok());
         let args = args.unwrap();
         assert!(args.probe_fail_only);
+    }
+
+    #[test]
+    fn test_args_doctor_without_command() {
+        let args = Args::try_parse_from([
+            "proxychains4",
+            "--doctor",
+            "--doctor-target",
+            "127.0.0.1:8080",
+            "--doctor-json",
+        ])
+        .unwrap();
+        assert!(args.doctor);
+        assert_eq!(args.doctor_target, "127.0.0.1:8080");
+        assert!(args.doctor_json);
+        assert!(args.command.is_empty());
+    }
+
+    #[test]
+    fn doctor_target_parser_accepts_domain_and_ipv6() {
+        assert_eq!(
+            parse_doctor_target("example.test:443").unwrap(),
+            ("example.test".into(), 443)
+        );
+        assert_eq!(parse_doctor_target("[::1]:53").unwrap(), ("::1".into(), 53));
+        assert!(parse_doctor_target("missing-port").is_err());
+        assert!(parse_doctor_target("host:0").is_ok());
+    }
+
+    #[test]
+    fn doctor_performs_real_socks5_handshake() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut greeting = [0; 3];
+            stream.read_exact(&mut greeting).unwrap();
+            assert_eq!(greeting, [5, 1, 0]);
+            stream.write_all(&[5, 0]).unwrap();
+            let mut header = [0; 4];
+            stream.read_exact(&mut header).unwrap();
+            assert_eq!(header, [5, 1, 0, 3]);
+            let mut len = [0; 1];
+            stream.read_exact(&mut len).unwrap();
+            let mut domain = vec![0; len[0] as usize + 2];
+            stream.read_exact(&mut domain).unwrap();
+            assert_eq!(&domain[..domain.len() - 2], b"target.test");
+            stream.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 1]).unwrap();
+        });
+
+        let proxy = proxychains::config::ProxyData::new_host("127.0.0.1", port, ProxyType::Socks5);
+        let node = doctor_proxy(
+            &proxy,
+            1,
+            &("target.test".into(), 443),
+            None,
+            Duration::from_secs(2),
+        );
+        server.join().unwrap();
+        assert!(node.ok);
+        assert!(node.transport.ok);
+        assert!(node.authentication.ok);
+        assert!(node.target.ok);
+        assert!(node.udp_associate.skipped);
     }
 
     #[test]
