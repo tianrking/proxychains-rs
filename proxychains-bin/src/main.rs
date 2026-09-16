@@ -1041,6 +1041,12 @@ fn run_events(args: &Args) -> bool {
     loop {
         let mut file = match std::fs::File::open(&path) {
             Ok(file) => file,
+            Err(error)
+                if args.events_follow && error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
             Err(error) => {
                 eprintln!("proxychains: cannot read connection log {}: {error}", path.display());
                 return true;

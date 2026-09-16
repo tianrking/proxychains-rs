@@ -143,8 +143,8 @@ proxychains4 --profile ./profiles/build.profile
 启动命令时加入 `--log-file`，即可把 hook 捕获到的 TCP/UDP 连接结果写成
 JSONL。记录包含进程名、进程号、可选的 `PROXYCHAINS_SESSION_ID`、目标、
 阶段、结果和时延，不包含代理凭据或报文内容。
-另一个终端运行 `--events --events-follow` 可以持续查看记录。记录是尽力而为的，
-日志文件忙或不可用时不会阻塞连接 hook。
+另一个终端运行 `--events --events-follow` 可以持续查看记录；日志文件尚未创建时，
+follow 模式会等待它出现。记录是尽力而为的，日志文件忙或不可用时不会阻塞连接 hook。
 
 启动配置是简单的 `KEY = VALUE` 文件，支持 `command`、空格分隔的 `args`、
 `cwd`、`config`、`group` 和 `env.NAME`。相对的 `cwd`、`config` 路径均按
