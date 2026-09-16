@@ -28,15 +28,39 @@ struct Session {
     association: Option<Arc<UdpControl>>,
     // The application's logical peer, independent of the kernel relay peer.
     peer: Option<SocketAddr>,
+    // A UDP socket keeps one SOCKS5 association for its lifetime. Remember the
+    // route group selected for the first proxied destination so later sends do
+    // not switch an established relay underneath the application.
+    proxy_group: Option<String>,
 }
 
 fn validate(config: &Config) -> crate::Result<()> {
-    if config.proxy_udp
-        && (config.proxies.len() != 1 || config.proxies[0].proxy_type != ProxyType::Socks5)
-    {
+    if !config.proxy_udp {
+        return Ok(());
+    }
+    let default_valid = config.proxies.len() == 1
+        && config.proxies[0].proxy_type == ProxyType::Socks5;
+    let udp_groups: Vec<&str> = config
+        .route_rules
+        .iter()
+        .filter(|rule| rule.protocol != Some(RouteProtocol::Tcp))
+        .filter_map(|rule| rule.proxy_group.as_deref())
+        .collect();
+    if !default_valid && udp_groups.is_empty() {
         return Err(crate::Error::Config(
-            "proxy_udp requires exactly one SOCKS5 proxy (no UDP proxy chains)".into(),
+            "proxy_udp requires exactly one SOCKS5 proxy (or a UDP route_group)".into(),
         ));
+    }
+    for group in udp_groups {
+        let valid = config
+            .proxy_groups
+            .get(group)
+            .is_some_and(|proxies| proxies.len() == 1 && proxies[0].proxy_type == ProxyType::Socks5);
+        if !valid {
+            return Err(crate::Error::Config(format!(
+                "UDP proxy group {group:?} requires exactly one SOCKS5 proxy"
+            )));
+        }
     }
     Ok(())
 }
@@ -97,14 +121,34 @@ pub(crate) fn unsupported() -> io::Error {
     )
 }
 
-fn association(session: &mut Session) -> io::Result<Arc<UdpControl>> {
+fn association(session: &mut Session, requested_group: Option<&str>) -> io::Result<Arc<UdpControl>> {
     if let Some(association) = &session.association {
+        if requested_group.is_some() && requested_group != session.proxy_group.as_deref() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "UDP proxy group cannot change after association",
+            ));
+        }
         association.check_control().map_err(error)?;
         return Ok(association.clone());
     }
     let config = CONFIG.get().unwrap();
+    let group = session
+        .proxy_group
+        .as_deref()
+        .or(requested_group);
+    let proxies = group
+        .and_then(|name| config.proxy_groups.get(name))
+        .unwrap_or(&config.proxies);
+    if proxies.len() != 1 || proxies[0].proxy_type != ProxyType::Socks5 {
+        let label = group.unwrap_or("selected");
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("UDP proxy group {label:?} requires exactly one SOCKS5 node"),
+        ));
+    }
     let association = match UdpControl::connect(
-        &config.proxies[0],
+        &proxies[0],
         config.tcp_connect_timeout,
         config.tcp_read_timeout,
     ) {
@@ -147,8 +191,17 @@ fn association(session: &mut Session) -> io::Result<Arc<UdpControl>> {
         }
     };
     let association = Arc::new(association);
+    session.proxy_group = group.map(str::to_owned);
     session.association = Some(association.clone());
     Ok(association)
+}
+
+fn route_group(address: SocketAddr) -> Option<String> {
+    let config = CONFIG.get()?;
+    let (target, port) = target(address);
+    config
+        .route_proxy_group(RouteProtocol::Udp, target.domain(), port)
+        .map(str::to_owned)
 }
 
 fn mapped_relay(socket: &Socket, association: &UdpControl) -> io::Result<SocketAddr> {
@@ -202,7 +255,7 @@ pub(crate) unsafe fn connect(handle: Handle, address: SocketAddr) -> Option<io::
     Some((|| {
         let session = sessions().lock().entry(handle).or_default().clone();
         let mut session = session.lock();
-        let association = association(&mut session)?;
+        let association = association(&mut session, route_group(address).as_deref())?;
         let socket = socket(handle);
         socket.connect(&mapped_relay(&socket, &association)?.into())?;
         session.peer = Some(address);
@@ -266,7 +319,7 @@ pub(crate) unsafe fn send(
         let packet = encode_udp_datagram(&target, port, data)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         let session = sessions().lock().entry(handle).or_default().clone();
-        let association = association(&mut session.lock())?;
+        let association = association(&mut session.lock(), route_group(address).as_deref())?;
         let relay = mapped_relay(&socket, &association)?;
         let sent = match socket.peer_addr() {
             Ok(peer) if peer.as_socket() == Some(relay) => {
@@ -322,7 +375,7 @@ pub(crate) unsafe fn receive(handle: Handle, flags: i32) -> Option<io::Result<Re
         }
         let (association, peer) = {
             let mut session = session.lock();
-            (association(&mut session)?, session.peer)
+            (association(&mut session, None)?, session.peer)
         };
         let socket = socket(handle);
         let relay = mapped_relay(&socket, &association)?;
@@ -448,6 +501,53 @@ mod tests {
         assert!(validate(&config).is_err());
         config.proxies[0].proxy_type = ProxyType::Socks5;
         config.proxies.push(ProxyData::default());
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn udp_route_group_allows_multi_node_default_for_tcp() {
+        let mut config = Config::default();
+        config.proxy_udp = true;
+        config.proxies = vec![ProxyData::default(), ProxyData::default()];
+        config.proxy_groups.insert(
+            "jp".into(),
+            vec![ProxyData {
+                proxy_type: ProxyType::Socks5,
+                ..ProxyData::default()
+            }],
+        );
+        config.route_rules.push(crate::config::RouteRule {
+            action: RouteAction::Proxy,
+            proxy_group: Some("jp".into()),
+            protocol: Some(RouteProtocol::Udp),
+            domain: None,
+            domain_suffix: None,
+            port: None,
+            process: None,
+        });
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn udp_route_group_rejects_non_socks5_or_chained_group() {
+        let mut config = Config::default();
+        config.proxy_udp = true;
+        config.proxy_groups.insert(
+            "http".into(),
+            vec![ProxyData {
+                proxy_type: ProxyType::Http,
+                ..ProxyData::default()
+            }],
+        );
+        config.route_rules.push(crate::config::RouteRule {
+            action: RouteAction::Proxy,
+            proxy_group: Some("http".into()),
+            protocol: Some(RouteProtocol::Udp),
+            domain: None,
+            domain_suffix: None,
+            port: None,
+            process: None,
+        });
         assert!(validate(&config).is_err());
     }
 
