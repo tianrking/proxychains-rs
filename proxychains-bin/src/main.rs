@@ -506,6 +506,12 @@ fn parse_doctor_target(raw: &str) -> Result<(String, u16), String> {
     Ok((host.to_string(), port))
 }
 
+fn doctor_target_address(host: &str) -> TargetAddress {
+    host.parse::<std::net::IpAddr>()
+        .map(TargetAddress::from_ip)
+        .unwrap_or_else(|_| TargetAddress::from_domain(host.to_string()))
+}
+
 fn run_doctor(config: &Config, args: &Args) -> usize {
     let target = match parse_doctor_target(&args.doctor_target) {
         Ok(target) => target,
@@ -604,7 +610,7 @@ fn doctor_proxy(
     match tunnel_through_proxy(
         &mut stream,
         proxy,
-        &TargetAddress::from_domain(target.0.clone()),
+        &doctor_target_address(&target.0),
         target.1,
         timeout,
     ) {
@@ -642,7 +648,7 @@ fn doctor_proxy(
                     node.udp_associate = DoctorStage::ok(udp_started.elapsed());
                     let echo_started = Instant::now();
                     let send = association.send_to(
-                        &TargetAddress::from_domain(udp_host.clone()),
+                        &doctor_target_address(udp_host),
                         *udp_port,
                         b"proxychains-doctor",
                     );
@@ -1367,6 +1373,22 @@ mod tests {
         assert_eq!(parse_doctor_target("[::1]:53").unwrap(), ("::1".into(), 53));
         assert!(parse_doctor_target("missing-port").is_err());
         assert!(parse_doctor_target("host:0").is_ok());
+    }
+
+    #[test]
+    fn doctor_target_address_preserves_ip_literals() {
+        assert!(matches!(
+            doctor_target_address("192.0.2.10"),
+            TargetAddress::Ip(std::net::IpAddr::V4(_))
+        ));
+        assert!(matches!(
+            doctor_target_address("2001:db8::10"),
+            TargetAddress::Ip(std::net::IpAddr::V6(_))
+        ));
+        assert!(matches!(
+            doctor_target_address("example.test"),
+            TargetAddress::Domain(_)
+        ));
     }
 
     #[test]
