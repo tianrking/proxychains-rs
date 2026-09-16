@@ -201,6 +201,16 @@ pub unsafe fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int {
     }
     result
 }
+
+#[cfg(target_os = "linux")]
+pub unsafe fn fcntl(s: c_int, command: c_int, argument: c_int) -> c_int {
+    let result = original!("fcntl", (c_int, c_int, c_int) -> c_int)(s, command, argument);
+    if result >= 0 && (command == libc::F_DUPFD || command == libc::F_DUPFD_CLOEXEC) {
+        copy_session(s, result);
+    }
+    result
+}
+
 pub unsafe fn getpeername(s: c_int, addr: *mut sockaddr, len: *mut socklen_t) -> c_int {
     if let Some(peer) = udp::logical_peer(s) {
         if addr.is_null() || len.is_null() {

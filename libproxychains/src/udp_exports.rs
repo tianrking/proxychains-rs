@@ -20,6 +20,8 @@ export!(dup(s: c_int) -> c_int);
 export!(dup2(oldfd: c_int, newfd: c_int) -> c_int);
 #[cfg(target_os = "linux")]
 export!(dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int);
+#[cfg(target_os = "linux")]
+export!(fcntl(s: c_int, command: c_int, argument: c_int) -> c_int);
 export!(getpeername(s: c_int, addr: *mut sockaddr, len: *mut socklen_t) -> c_int);
 export!(sendmsg(s: c_int, msg: *const libc::msghdr, flags: c_int) -> ssize_t);
 export!(recvmsg(s: c_int, msg: *mut libc::msghdr, flags: c_int) -> ssize_t);
