@@ -107,6 +107,7 @@ fn maybe_reload_config(state: &HookState) {
 
 /// Initialize the hook library.
 pub fn init_hooks(config: Config) -> Result<()> {
+    crate::trace::init_from_env();
     super::udp::init(&config)?;
     let state = HookState::new(config);
     if HOOK_STATE.set(state).is_err() {
@@ -360,6 +361,7 @@ pub unsafe extern "system" fn hook_connect_impl(
         None => return original_connect(sock, addr, len),
     };
     let target_port = get_port_from_sockaddr(addr);
+    let started = std::time::Instant::now();
     debug!("hook_connect_impl intercepted target {}:{}", target_ip, target_port);
 
     if config.should_bypass_ip(&target_ip) {
@@ -382,6 +384,7 @@ pub unsafe extern "system" fn hook_connect_impl(
         }
         _ => (dnat_ip, None),
     };
+    let target_label = target_domain.as_deref().unwrap_or("ip").to_string();
 
     let target = if let Some(domain) = target_domain {
         TargetAddress::from_both(final_ip, domain)
@@ -411,7 +414,22 @@ pub unsafe extern "system" fn hook_connect_impl(
             final_port,
             config.tcp_read_timeout,
         ) {
-            Ok(()) => return 0,
+            Ok(()) => {
+                crate::trace::record(crate::trace::ConnectionEvent {
+                    schema_version: "1.0",
+                    timestamp_ms: crate::trace::now_ms(),
+                    pid: crate::trace::process_id(),
+                    event: "connect",
+                    protocol: "tcp",
+                    target: &target_label,
+                    port: final_port,
+                    stage: "target",
+                    ok: true,
+                    elapsed_ms: Some(started.elapsed().as_millis()),
+                    error: None,
+                });
+                return 0;
+            }
             Err((e, failed_hop)) => {
                 let failed_proxy_global = selected_indices
                     .get(failed_hop)
@@ -432,6 +450,19 @@ pub unsafe extern "system" fn hook_connect_impl(
         }
     }
 
+    crate::trace::record(crate::trace::ConnectionEvent {
+        schema_version: "1.0",
+        timestamp_ms: crate::trace::now_ms(),
+        pid: crate::trace::process_id(),
+        event: "connect",
+        protocol: "tcp",
+        target: &target_label,
+        port: final_port,
+        stage: "target",
+        ok: false,
+        elapsed_ms: Some(started.elapsed().as_millis()),
+        error: Some("proxy chain connection failed"),
+    });
     WSASetLastError(WSAECONNREFUSED.0);
     SOCKET_ERROR
 }

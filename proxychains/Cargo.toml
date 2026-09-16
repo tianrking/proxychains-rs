@@ -24,6 +24,8 @@ socket2.workspace = true
 rand.workspace = true
 sha2.workspace = true
 hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

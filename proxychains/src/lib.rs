@@ -38,6 +38,7 @@ pub mod hook;
 pub mod net;
 pub mod platform;
 pub mod proxy;
+pub mod trace;
 
 // Re-exports for convenience
 pub use chain::{ChainManager, ChainError};

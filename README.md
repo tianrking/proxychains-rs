@@ -60,6 +60,8 @@ Recommendation:
   - `--probe` (quick per-node reachability/latency check)
   - `--probe-json` (machine-readable probe output)
   - `--doctor` (end-to-end protocol and target diagnostics)
+  - `--log-file FILE` (best-effort JSONL connection events from intercepted hooks)
+  - `--events --log-file FILE [--events-follow]` (view recorded events)
 - DNS:
   - `proxy_dns`
   - compatibility aliases: `proxy_dns_old`, `proxy_dns_daemon`
@@ -126,6 +128,12 @@ proxychains4 -f ./proxychains.conf --tree curl https://ifconfig.me
 `--doctor` separately checks transport, protocol/authentication, target
 connection, and optional SOCKS5 UDP ASSOCIATE plus an actual UDP echo. A
 successful UDP ASSOCIATE alone is not reported as working UDP forwarding.
+
+Set `--log-file` when launching a command to record intercepted TCP and UDP
+connection outcomes as JSONL. The record contains process ID, target, stage,
+result, and latency, but never proxy credentials or payload bytes. Use
+`--events --events-follow` in another terminal to follow the file. Logging is
+best-effort: a busy or unavailable log file never blocks a connection hook.
 
 ## Example Config
 

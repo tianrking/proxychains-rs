@@ -103,14 +103,46 @@ fn association(session: &mut Session) -> io::Result<Arc<UdpControl>> {
         return Ok(association.clone());
     }
     let config = CONFIG.get().unwrap();
-    let association = Arc::new(
-        UdpControl::connect(
-            &config.proxies[0],
-            config.tcp_connect_timeout,
-            config.tcp_read_timeout,
-        )
-        .map_err(error)?,
-    );
+    let association = match UdpControl::connect(
+        &config.proxies[0],
+        config.tcp_connect_timeout,
+        config.tcp_read_timeout,
+    ) {
+        Ok(association) => {
+            crate::trace::record(crate::trace::ConnectionEvent {
+                schema_version: "1.0",
+                timestamp_ms: crate::trace::now_ms(),
+                pid: crate::trace::process_id(),
+                event: "udp_associate",
+                protocol: "udp",
+                target: "unknown",
+                port: 0,
+                stage: "udp_associate",
+                ok: true,
+                elapsed_ms: None,
+                error: None,
+            });
+            association
+        }
+        Err(error_value) => {
+            let message = error_value.to_string();
+            crate::trace::record(crate::trace::ConnectionEvent {
+                schema_version: "1.0",
+                timestamp_ms: crate::trace::now_ms(),
+                pid: crate::trace::process_id(),
+                event: "udp_associate",
+                protocol: "udp",
+                target: "unknown",
+                port: 0,
+                stage: "udp_associate",
+                ok: false,
+                elapsed_ms: None,
+                error: Some(&message),
+            });
+            return Err(error(error_value));
+        }
+    };
+    let association = Arc::new(association);
     session.association = Some(association.clone());
     Ok(association)
 }
@@ -188,7 +220,11 @@ pub(crate) unsafe fn send(
     if existing.is_none() && CONFIG.get().unwrap().should_bypass_ip(&address.ip()) {
         return None;
     }
-    Some((|| {
+    let (target_label, target_port) = {
+        let (target, port) = target(address);
+        (target.host(), port)
+    };
+    let result = (|| {
         // Only normal datagrams/nonblocking sends: MSG_MORE/OOB must not corrupt framing.
         #[cfg(unix)]
         let allowed = libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL;
@@ -215,7 +251,23 @@ pub(crate) unsafe fn send(
             return Err(io::Error::new(io::ErrorKind::WriteZero, "partial UDP send"));
         }
         Ok(data.len())
-    })())
+    })();
+    match &result {
+        Ok(_) => crate::trace::record(crate::trace::ConnectionEvent {
+            schema_version: "1.0", timestamp_ms: crate::trace::now_ms(), pid: crate::trace::process_id(),
+            event: "udp_send", protocol: "udp", target: &target_label, port: target_port,
+            stage: "data", ok: true, elapsed_ms: None, error: None,
+        }),
+        Err(error_value) => {
+            let message = error_value.to_string();
+            crate::trace::record(crate::trace::ConnectionEvent {
+                schema_version: "1.0", timestamp_ms: crate::trace::now_ms(), pid: crate::trace::process_id(),
+                event: "udp_send", protocol: "udp", target: &target_label, port: target_port,
+                stage: "data", ok: false, elapsed_ms: None, error: Some(&message),
+            });
+        }
+    }
+    Some(result)
 }
 
 pub(crate) struct Received {

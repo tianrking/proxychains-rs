@@ -230,6 +230,7 @@ unsafe fn store_fake_addrinfo_result(
 
 /// Initialize the hook library
 pub fn init_hooks(config: Config) -> Result<()> {
+    crate::trace::init_from_env();
     super::udp::init(&config)?;
     // Initialize original functions first
     init_original_functions()?;
@@ -297,6 +298,7 @@ pub unsafe fn hook_connect(
     };
 
     let target_port = get_port_from_sockaddr(addr);
+    let started = Instant::now();
 
     // Check if we should bypass this connection
     if state.config.should_bypass_ip(&target_ip) {
@@ -324,6 +326,9 @@ pub unsafe fn hook_connect(
         }
         _ => (dnat_ip, None),
     };
+    let target_label = target_domain
+        .clone()
+        .unwrap_or_else(|| final_ip.to_string());
 
     // Check if proxy DNS is enabled and we have a domain
     if state.config.proxy_dns && target_domain.is_some() {
@@ -373,10 +378,37 @@ pub unsafe fn hook_connect(
             if libc::fcntl(sock, libc::F_SETFD, descriptor_flags) < 0 { return -1; }
 
             info!("Proxy connection established");
+            crate::trace::record(crate::trace::ConnectionEvent {
+                schema_version: "1.0",
+                timestamp_ms: crate::trace::now_ms(),
+                pid: crate::trace::process_id(),
+                event: "connect",
+                protocol: "tcp",
+                target: &target_label,
+                port: final_port,
+                stage: "target",
+                ok: true,
+                elapsed_ms: Some(started.elapsed().as_millis()),
+                error: None,
+            });
             0
         }
         Err(e) => {
             error!("Failed to establish proxy chain: {}", e);
+            let error_text = e.to_string();
+            crate::trace::record(crate::trace::ConnectionEvent {
+                schema_version: "1.0",
+                timestamp_ms: crate::trace::now_ms(),
+                pid: crate::trace::process_id(),
+                event: "connect",
+                protocol: "tcp",
+                target: &target_label,
+                port: final_port,
+                stage: "target",
+                ok: false,
+                elapsed_ms: Some(started.elapsed().as_millis()),
+                error: Some(&error_text),
+            });
             // Set errno in a platform-specific way.
             #[cfg(target_os = "linux")]
             {

@@ -88,6 +88,18 @@ struct Args {
     #[arg(long)]
     doctor_json: bool,
 
+    /// Write hook connection events as JSONL to this file
+    #[arg(long, value_name = "FILE")]
+    log_file: Option<PathBuf>,
+
+    /// Print connection events from a JSONL log file and exit
+    #[arg(long)]
+    events: bool,
+
+    /// Keep waiting for new connection events after printing the log
+    #[arg(long, requires = "events")]
+    events_follow: bool,
+
     /// Enable process-tree mode (inject/proxy child and grandchild processes)
     #[arg(long)]
     tree: bool,
@@ -102,7 +114,7 @@ struct Args {
 
     /// The command to run
     #[arg(
-        required_unless_present_any = ["list_groups", "check", "probe", "doctor", "pid", "attach_name"],
+        required_unless_present_any = ["list_groups", "check", "probe", "doctor", "events", "pid", "attach_name"],
         trailing_var_arg = true
     )]
     command: Vec<String>,
@@ -138,6 +150,11 @@ fn main() {
             .finish();
         tracing::subscriber::set_global_default(subscriber)
             .expect("Failed to set tracing subscriber");
+    }
+
+    if args.events {
+        let failed = run_events(&args);
+        process::exit(if failed { 1 } else { 0 });
     }
 
     if args.list_groups {
@@ -844,6 +861,49 @@ fn set_proxychains_env(config: &Config, args: &Args) {
 
     if let Some(ref group) = args.group {
         env::set_var("PROXYCHAINS_PROXY_GROUP", group);
+    }
+
+    if let Some(ref path) = args.log_file {
+        env::set_var("PROXYCHAINS_LOG_FILE", path);
+    }
+}
+
+fn run_events(args: &Args) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let path = args
+        .log_file
+        .clone()
+        .or_else(|| env::var_os("PROXYCHAINS_LOG_FILE").map(PathBuf::from));
+    let Some(path) = path else {
+        eprintln!("proxychains: --events requires --log-file FILE");
+        return true;
+    };
+    let mut offset = 0u64;
+    loop {
+        let mut file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) => {
+                eprintln!("proxychains: cannot read connection log {}: {error}", path.display());
+                return true;
+            }
+        };
+        if file.seek(SeekFrom::Start(offset)).is_err() {
+            eprintln!("proxychains: cannot seek connection log {}", path.display());
+            return true;
+        }
+        let mut bytes = Vec::new();
+        if file.read_to_end(&mut bytes).is_err() {
+            eprintln!("proxychains: cannot read connection log {}", path.display());
+            return true;
+        }
+        offset += bytes.len() as u64;
+        if !bytes.is_empty() {
+            print!("{}", String::from_utf8_lossy(&bytes));
+        }
+        if !args.events_follow {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(200));
     }
 }
 

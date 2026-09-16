@@ -60,6 +60,8 @@ Windows overlapped/IOCP UDP 尚不支持，也不代表所有 QUIC/HTTP/3 应用
   - `--probe`（快速探测每个节点连通性与时延）
   - `--probe-json`（机器可读 JSON 输出）
   - `--doctor`（端到端协议和目标诊断）
+  - `--log-file FILE`（把已捕获的 TCP/UDP 连接结果写入 JSONL）
+  - `--events --log-file FILE [--events-follow]`（查看连接记录）
 - DNS：
   - `proxy_dns`
   - 兼容别名：`proxy_dns_old`、`proxy_dns_daemon`
@@ -125,6 +127,11 @@ proxychains4 -f ./proxychains.conf --tree curl https://ifconfig.me
 `--probe` 只检查代理端口是否接受 TCP 连接。`--doctor` 会分别检查传输、
 协议/认证、目标连接，以及可选的 SOCKS5 UDP ASSOCIATE 和真实 UDP 回显。
 仅建立 UDP ASSOCIATE 不会被报告为 UDP 转发正常。
+
+启动命令时加入 `--log-file`，即可把 hook 捕获到的 TCP/UDP 连接结果写成
+JSONL。记录包含进程号、目标、阶段、结果和时延，不包含代理凭据或报文内容。
+另一个终端运行 `--events --events-follow` 可以持续查看记录。记录是尽力而为的，
+日志文件忙或不可用时不会阻塞连接 hook。
 
 ## 示例配置
 
