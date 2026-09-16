@@ -135,20 +135,28 @@ impl<'a> Socks5Connector<'a> {
         target_addr: &TargetAddr,
         target_port: u16,
     ) -> Result<()> {
-        // Step 1: Negotiate authentication method
-        let method = self.negotiate_auth(stream)?;
+        self.handshake(stream)?;
+        self.connect_target(stream, target_addr, target_port)
+    }
 
-        // Step 2: Authenticate if required
+    /// Complete method negotiation and optional username/password authentication.
+    pub fn handshake<T: Read + Write>(&self, stream: &mut T) -> Result<()> {
+        let method = self.negotiate_auth(stream)?;
         if matches!(method, AuthMethod::UserPass) {
             self.authenticate(stream)?;
         }
+        Ok(())
+    }
 
-        // Step 3: Send CONNECT request
+    /// Send a CONNECT request after [`Self::handshake`] succeeds.
+    pub fn connect_target<T: Read + Write>(
+        &self,
+        stream: &mut T,
+        target_addr: &TargetAddr,
+        target_port: u16,
+    ) -> Result<()> {
         self.send_connect_request(stream, target_addr, target_port)?;
-
-        // Step 4: Read response
         self.read_connect_response(stream)?;
-
         Ok(())
     }
 

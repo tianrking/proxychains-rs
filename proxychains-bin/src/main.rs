@@ -22,7 +22,10 @@ use tracing::{debug, error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use proxychains::config::{ProxyType, RouteAction, RouteProtocol};
-use proxychains::proxy::{connect_to_proxy, tunnel_through_proxy, TargetAddress, UdpAssociation};
+use proxychains::proxy::{
+    connect_to_proxy, tunnel_through_proxy, Socks5Connector, TargetAddress, TargetAddr,
+    UdpAssociation,
+};
 use proxychains::{Config, ConfigParser};
 
 /// Proxychains4 - Run commands through proxy chains
@@ -512,6 +515,12 @@ fn doctor_target_address(host: &str) -> TargetAddress {
         .unwrap_or_else(|_| TargetAddress::from_domain(host.to_string()))
 }
 
+fn doctor_socks5_target_address(host: &str) -> TargetAddr {
+    host.parse::<std::net::IpAddr>()
+        .map(TargetAddr::from_ip)
+        .unwrap_or_else(|_| TargetAddr::from_domain(host))
+}
+
 fn run_doctor(config: &Config, args: &Args) -> usize {
     let target = match parse_doctor_target(&args.doctor_target) {
         Ok(target) => target,
@@ -607,32 +616,49 @@ fn doctor_proxy(
         );
         return node;
     }
-    match tunnel_through_proxy(
-        &mut stream,
-        proxy,
-        &doctor_target_address(&target.0),
-        target.1,
-        timeout,
-    ) {
-        Ok(()) => {
-            node.authentication = DoctorStage::ok(handshake_started.elapsed());
-            node.target = DoctorStage::ok(handshake_started.elapsed());
-        }
-        Err(error) => {
-            let kind = if proxy.proxy_type == ProxyType::Socks5 {
-                if proxy.user.is_some() {
-                    "authentication_or_protocol"
-                } else {
-                    "protocol_or_target"
-                }
-            } else {
-                "protocol_or_target"
-            };
-            node.authentication =
-                DoctorStage::failed(handshake_started.elapsed(), kind, &error.to_string());
-            node.target =
-                DoctorStage::failed(handshake_started.elapsed(), "target", &error.to_string());
+    if proxy.proxy_type == ProxyType::Socks5 {
+        let connector = Socks5Connector::new(proxy, timeout);
+        if let Err(error) = connector.handshake(&mut stream) {
+            node.authentication = DoctorStage::failed(
+                handshake_started.elapsed(),
+                "authentication",
+                &error.to_string(),
+            );
             return node;
+        }
+        node.authentication = DoctorStage::ok(handshake_started.elapsed());
+        let target_started = Instant::now();
+        if let Err(error) = connector.connect_target(
+            &mut stream,
+            &doctor_socks5_target_address(&target.0),
+            target.1,
+        ) {
+            node.target = DoctorStage::failed(target_started.elapsed(), "target", &error.to_string());
+            return node;
+        }
+        node.target = DoctorStage::ok(target_started.elapsed());
+    } else {
+        match tunnel_through_proxy(
+            &mut stream,
+            proxy,
+            &doctor_target_address(&target.0),
+            target.1,
+            timeout,
+        ) {
+            Ok(()) => {
+                node.authentication = DoctorStage::ok(handshake_started.elapsed());
+                node.target = DoctorStage::ok(handshake_started.elapsed());
+            }
+            Err(error) => {
+                node.authentication = DoctorStage::failed(
+                    handshake_started.elapsed(),
+                    "protocol_or_target",
+                    &error.to_string(),
+                );
+                node.target =
+                    DoctorStage::failed(handshake_started.elapsed(), "target", &error.to_string());
+                return node;
+            }
         }
     }
     if let Some((udp_host, udp_port)) = udp_echo_target {
@@ -1447,6 +1473,36 @@ mod tests {
         assert!(node.authentication.ok);
         assert!(node.target.ok);
         assert!(node.udp_associate.skipped);
+    }
+
+    #[test]
+    fn doctor_separates_socks5_authentication_failure() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut greeting = [0; 3];
+            stream.read_exact(&mut greeting).unwrap();
+            assert_eq!(greeting, [5, 1, 0]);
+            stream.write_all(&[5, 255]).unwrap();
+        });
+        let proxy = proxychains::config::ProxyData::new_host("127.0.0.1", port, ProxyType::Socks5);
+        let node = doctor_proxy(
+            &proxy,
+            1,
+            &("target.test".into(), 443),
+            None,
+            Duration::from_secs(2),
+        );
+        server.join().unwrap();
+        assert!(!node.ok);
+        assert!(!node.authentication.ok);
+        assert_eq!(node.authentication.failure_type.as_deref(), Some("authentication"));
+        assert!(node.target.skipped);
     }
 
     #[test]
