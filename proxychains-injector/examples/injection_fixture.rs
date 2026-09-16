@@ -487,6 +487,12 @@ fn run_dns_queryex() {
     while !CALLED.load(Ordering::Acquire) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(CALLED.load(Ordering::Acquire), "DnsQueryEx callback not invoked");
-    assert_eq!(CONTEXT.load(Ordering::Acquire), 0x1234);
+    // Windows may satisfy cached queries synchronously without invoking the
+    // completion routine. When it does invoke the routine, the hook must
+    // restore the application's original context before forwarding it.
+    if CALLED.load(Ordering::Acquire) {
+        assert_eq!(CONTEXT.load(Ordering::Acquire), 0x1234);
+    } else {
+        assert_eq!(code, ERROR_SUCCESS.0 as i32);
+    }
 }
