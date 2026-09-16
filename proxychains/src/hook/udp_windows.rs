@@ -320,6 +320,105 @@ unsafe fn queue_iocp_send(
     SOCKET_ERROR
 }
 
+unsafe fn queue_iocp_recv(
+    socket: usize,
+    buffers: Vec<(usize, usize)>,
+    received: usize,
+    flags: usize,
+    address: usize,
+    address_len: usize,
+    receive_flags: i32,
+    overlapped: *mut c_void,
+    port: HANDLE,
+    completion_key: usize,
+) -> i32 {
+    let overlapped = overlapped.cast::<OVERLAPPED>();
+    (*overlapped).Internal = 0x103;
+    (*overlapped).InternalHigh = 0;
+    let overlapped_ptr = overlapped as usize;
+    let pending_key = (socket, overlapped_ptr);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    iocp_pending().lock().insert(pending_key, cancelled.clone());
+    let spawned = std::thread::Builder::new()
+        .name("proxychains-udp-iocp-recv".to_string())
+        .spawn(move || {
+            let (bytes, status) = if cancelled.load(Ordering::Acquire) {
+                (0usize, WSA_OPERATION_ABORTED.0 as usize)
+            } else {
+                match unsafe { udp::receive(socket, receive_flags) } {
+                    Some(Ok(result)) => {
+                        if cancelled.load(Ordering::Acquire) {
+                            (0, WSA_OPERATION_ABORTED.0 as usize)
+                        } else {
+                        let mut copied = 0usize;
+                        for (buffer, length) in &buffers {
+                            let count = (*length).min(result.payload.len().saturating_sub(copied));
+                            if count != 0 {
+                                unsafe {
+                                    ptr::copy_nonoverlapping(
+                                        result.payload.as_ptr().add(copied),
+                                        *buffer as *mut u8,
+                                        count,
+                                    );
+                                }
+                            }
+                            copied += count;
+                        }
+                        let mut status = 0usize;
+                        if copied < result.payload.len() {
+                            status = WSAEMSGSIZE.0 as usize;
+                        }
+                        unsafe {
+                            if address != 0 {
+                                if let Err(error) = store_address(
+                                    result.source,
+                                    address as *mut c_void,
+                                    address_len as *mut i32,
+                                ) {
+                                    status = error.raw_os_error().unwrap_or(WSAEFAULT.0) as usize;
+                                }
+                            }
+                            if flags != 0 {
+                                *(flags as *mut u32) = 0;
+                            }
+                        }
+                        (copied, status)
+                        }
+                    }
+                    Some(Err(error)) => (
+                        0,
+                        error.raw_os_error().unwrap_or(WSAECONNABORTED.0) as usize,
+                    ),
+                    None => (0, WSAEOPNOTSUPP.0 as usize),
+                }
+            };
+            unsafe {
+                if received != 0 {
+                    *(received as *mut u32) = bytes as u32;
+                }
+                let overlapped = &mut *(overlapped_ptr as *mut OVERLAPPED);
+                overlapped.Internal = status;
+                overlapped.InternalHigh = bytes;
+                let _ = PostQueuedCompletionStatus(
+                    port,
+                    bytes as u32,
+                    completion_key,
+                    Some(overlapped as *mut OVERLAPPED),
+                );
+            }
+            iocp_pending().lock().remove(&pending_key);
+        });
+    if spawned.is_err() {
+        iocp_pending().lock().remove(&pending_key);
+        return fail(io::Error::new(
+            io::ErrorKind::Other,
+            "failed to start UDP IOCP receive worker",
+        ));
+    }
+    WSASetLastError(WSA_IO_PENDING.0);
+    SOCKET_ERROR
+}
+
 unsafe extern "system" fn wsa_sendto(
     s: usize,
     bufs: *const WSABUF,
@@ -429,16 +528,40 @@ unsafe extern "system" fn wsa_recvfrom(
             s, bufs, count, received, flags, addr, addrlen, ov, completion,
         );
     }
-    if !ov.is_null() || !completion.is_null() {
+    if !completion.is_null() {
         return fail(udp::unsupported());
     }
-    if received.is_null() || flags.is_null() {
+    if flags.is_null() {
         return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
+    }
+    if !ov.is_null() && iocp_for(s).is_none() {
+        return fail(udp::unsupported());
     }
     let slices = match buffers(bufs, count) {
         Ok(b) => b,
         Err(e) => return fail(e),
     };
+    if let Some((port, completion_key)) = ov.as_ref().and_then(|_| iocp_for(s)) {
+        let buffers = slices
+            .iter()
+            .map(|buffer| (buffer.buf.0 as usize, buffer.len as usize))
+            .collect();
+        return queue_iocp_recv(
+            s,
+            buffers,
+            received as usize,
+            flags as usize,
+            addr as usize,
+            addrlen as usize,
+            *flags as i32,
+            ov,
+            port,
+            completion_key,
+        );
+    }
+    if received.is_null() {
+        return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
+    }
     let result = match udp::receive(s, *flags as i32) {
         Some(Ok(result)) => result,
         Some(Err(e)) => return fail(e),

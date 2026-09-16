@@ -36,7 +36,7 @@ association. `proxychains-udp` remains an explicit fixed-target forwarder.
 | --- | --- |
 | Linux/macOS | `connect`, `sendto`/`recvfrom`, `send`/`recv`, `write`/`read`, `sendmsg`/`recvmsg`, `writev`/`readv`, `getpeername`, `close` |
 | Linux | Also `sendmmsg`, and `recvmmsg` without a timeout argument (including `MSG_WAITFORONE`) |
-| Windows | `connect`/`WSAConnect`, `sendto`/`recvfrom`, `send`/`recv`, synchronous `WSASendTo`/`WSARecvFrom`, `WSASend`/`WSARecv` and `WSASendMsg`, `getpeername`, `closesocket` |
+| Windows | `connect`/`WSAConnect`, `sendto`/`recvfrom`, `send`/`recv`, synchronous and IOCP `WSASendTo`/`WSARecvFrom`, `WSASend`/`WSARecv` and `WSASendMsg`, `getpeername`, `closesocket` |
 
 Both connected and unconnected datagram sockets are supported. SOCKS frames can
 contain IPv4, IPv6 or domain destinations; IPv4 and IPv6 relays are supported.
@@ -69,9 +69,11 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
 
 ## Compatibility boundaries
 
-- Windows overlapped/IOCP datagrams, `WSARecvMsg` extension lookup and
-  asynchronous `WSASendMsg` return `WSAEOPNOTSUPP`; completion/cancellation and
-  RIO are not implemented. Synchronous `WSASendMsg` is exposed through
+- Windows `WSARecvMsg` extension lookup and asynchronous `WSASendMsg` return
+  `WSAEOPNOTSUPP`; RIO is not implemented. IOCP `WSASendTo`/`WSARecvFrom`
+  completion is supported for sockets associated with a completion port, with
+  close cancellation reported through the completion packet. Synchronous
+  `WSASendMsg` is exposed through
   `SIO_GET_EXTENSION_FUNCTION_POINTER` for `WSAID_WSASENDMSG` queries.
 - Unix ancillary sends (packet-info, UDP segmentation offload), timed `recvmmsg`
   and `connect(AF_UNSPEC)` disconnect are rejected. Receive control data is marked
@@ -96,6 +98,9 @@ actual DLL/preload library. A local authenticated SOCKS5 server independently
 checks UDP ASSOCIATE, IPv4/IPv6/domain framing, the original bound port, empty
 packets and control-channel closure. The client checks payload/source recovery,
 peek, truncation, nonblocking receive, vectored I/O, socket reuse and failures.
+The Windows run additionally submits relay-backed `WSASendTo` and `WSARecvFrom`
+operations through an actual completion port and checks pending status,
+completion identity, byte counts and payload delivery.
 Other cases cover IPv6 control/relay sockets, rejected associations, invalid
 relay ports and control shutdown. CI and release workflows run this test on
 Windows, Linux and macOS after building the native library.

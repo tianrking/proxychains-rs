@@ -22,6 +22,7 @@ fn native_udp_routing_and_lifecycle() {
         "udp-ipv6",
         "udp-vectored",
         "udp-iocp",
+        "udp-iocp-recv",
         "udp-v6relay",
     ] {
         let ipv6 = mode == "udp-v6relay";
