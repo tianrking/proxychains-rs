@@ -1085,6 +1085,7 @@ fn run_events(args: &Args) -> bool {
         return true;
     };
     let mut offset = 0u64;
+    let mut pending = Vec::new();
     loop {
         let mut file = match std::fs::File::open(&path) {
             Ok(file) => file,
@@ -1099,6 +1100,19 @@ fn run_events(args: &Args) -> bool {
                 return true;
             }
         };
+        let file_len = match file.metadata() {
+            Ok(metadata) => metadata.len(),
+            Err(error) => {
+                eprintln!("proxychains: cannot stat connection log {}: {error}", path.display());
+                return true;
+            }
+        };
+        if file_len < offset {
+            // Handle truncation or log rotation without silently skipping the
+            // beginning of the new event stream.
+            offset = 0;
+            pending.clear();
+        }
         if file.seek(SeekFrom::Start(offset)).is_err() {
             eprintln!("proxychains: cannot seek connection log {}", path.display());
             return true;
@@ -1109,10 +1123,16 @@ fn run_events(args: &Args) -> bool {
             return true;
         }
         offset += bytes.len() as u64;
-        if !bytes.is_empty() {
-            print!("{}", String::from_utf8_lossy(&bytes));
+        pending.extend_from_slice(&bytes);
+        while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = pending.drain(..=end).collect();
+            print!("{}", String::from_utf8_lossy(&line));
         }
         if !args.events_follow {
+            if !pending.is_empty() {
+                print!("{}", String::from_utf8_lossy(&pending));
+                pending.clear();
+            }
             return false;
         }
         std::thread::sleep(Duration::from_millis(200));
