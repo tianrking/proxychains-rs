@@ -75,6 +75,14 @@ fn enumerate_descendant_pids(root_pid: u32) -> Result<Vec<u32>> {
 
 pub type Result<T> = std::result::Result<T, InjectorError>;
 
+fn should_retry_tree_fallback(error: &InjectorError) -> bool {
+    match error {
+        InjectorError::ProcessCreationFailed(_) | InjectorError::WindowsApi(_) => true,
+        InjectorError::InjectionFailed(message) => message.contains("root=true"),
+        _ => false,
+    }
+}
+
 #[cfg(windows)]
 fn quote_arg(arg: &str) -> String {
     if !arg.is_empty() && !arg.chars().any(|c| c == ' ' || c == '\t' || c == '"') {
@@ -315,6 +323,9 @@ impl ProxychainsInjector {
         match self.spawn_inject_tree_debug_wait(process_info) {
             Ok(exit_code) => Ok(exit_code),
             Err(error) => {
+                if !should_retry_tree_fallback(&error) {
+                    return Err(error);
+                }
                 warn!(
                     "Creation-time tree injection failed; retrying with suspended-process polling fallback: {}",
                     error
@@ -671,5 +682,21 @@ mod tests {
             Ok(path) => println!("Found library at: {:?}", path),
             Err(e) => println!("Expected error (library not built): {}", e),
         }
+    }
+
+    #[test]
+    fn tree_fallback_only_retries_root_or_creation_failures() {
+        assert!(should_retry_tree_fallback(
+            &InjectorError::ProcessCreationFailed("debugger rejected".into(),)
+        ));
+        assert!(should_retry_tree_fallback(&InjectorError::InjectionFailed(
+            "PID 10 (root=true): timeout".into(),
+        )));
+        assert!(!should_retry_tree_fallback(
+            &InjectorError::InjectionFailed("PID 11 (root=false): timeout".into(),)
+        ));
+        assert!(!should_retry_tree_fallback(&InjectorError::DllNotFound(
+            "missing".into(),
+        )));
     }
 }
