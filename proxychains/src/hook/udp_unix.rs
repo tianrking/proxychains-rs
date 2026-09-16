@@ -1,7 +1,10 @@
 //! libc datagram wrappers. All fallbacks resolve RTLD_NEXT, never our own exports.
 use super::udp;
 use libc::{c_int, c_void, size_t, sockaddr, socklen_t, ssize_t};
-use std::{io, ptr, time::{Duration, Instant}};
+use std::{
+    io, ptr,
+    time::{Duration, Instant},
+};
 
 macro_rules! original {
     ($name:literal, ($($arg:ty),*) -> $ret:ty) => {{
@@ -205,9 +208,7 @@ pub unsafe fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int {
 #[cfg(target_os = "linux")]
 pub unsafe fn fcntl(s: c_int, command: c_int, argument: *mut c_void) -> c_int {
     let result = original!("fcntl", (c_int, c_int, *mut c_void) -> c_int)(s, command, argument);
-    if result >= 0
-        && (command == libc::F_DUPFD || command == libc::F_DUPFD_CLOEXEC)
-    {
+    if result >= 0 && (command == libc::F_DUPFD || command == libc::F_DUPFD_CLOEXEC) {
         copy_session(s, result);
     }
     result
@@ -243,10 +244,9 @@ pub unsafe fn sendmsg(s: c_int, msg: *const libc::msghdr, flags: c_int) -> ssize
         return original!("sendmsg", (c_int, *const libc::msghdr, c_int) -> ssize_t)(s, msg, flags);
     }
     let msg = &*msg;
-    // Ancillary destination/interface/GSO data cannot be forwarded unchanged to the relay.
-    if msg.msg_controllen != 0 {
-        return fail(udp::unsupported());
-    }
+    // Ancillary destination/interface/ECN metadata describes the native path
+    // and cannot be forwarded through a SOCKS relay. The payload remains valid
+    // as one datagram, so strip metadata rather than making QUIC unusable.
     let iov = match iovecs(msg.msg_iov, msg.msg_iovlen as usize) {
         Ok(iov) => iov,
         Err(e) => return fail(e),
@@ -445,7 +445,10 @@ mod recvmmsg_tests {
             tv_sec: -1,
             tv_nsec: 0,
         };
-        assert_eq!(recvmmsg_deadline(&negative).unwrap_err().raw_os_error(), Some(libc::EINVAL));
+        assert_eq!(
+            recvmmsg_deadline(&negative).unwrap_err().raw_os_error(),
+            Some(libc::EINVAL)
+        );
         let invalid_nanos = libc::timespec {
             tv_sec: 0,
             tv_nsec: 1_000_000_000,

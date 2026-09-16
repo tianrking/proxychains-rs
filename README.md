@@ -2,15 +2,15 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Transparent UDP is available with `proxy_udp` and exactly one SOCKS5 node per
-selected UDP proxy group. A `route_group` rule can choose among named
-single-node SOCKS5 groups; each UDP socket keeps its first selected group.
+Transparent UDP is available with `proxy_udp` and one or more SOCKS5 nodes per
+selected UDP proxy group. New associations fail over across eligible nodes;
+each UDP socket keeps its first selected group and proxy.
 It intercepts supported application socket calls through UDP ASSOCIATE, including
 authenticated IPv4/IPv6/domain datagrams. See [setup and limitations](docs/udp-proxying.md).
-Windows overlapped UDP and general QUIC/HTTP/3 compatibility remain unsupported;
-the synchronous `WSASendMsg` extension pointer is available for applications
-that query it through Winsock.
-synchronous `WSASendMsg` datagrams are supported.
+Windows synchronous and IOCP UDP calls, including `WSASendMsg`/`WSARecvMsg`, are
+covered by native fixtures. A real Quinn QUIC transport handshake and stream
+roundtrip also pass through the transparent SOCKS5 relay in CI; browser,
+MsQuic and general HTTP/3 compatibility remain uncertified.
 
 A modern Rust implementation of classic `proxychains4`, with cross-platform process-level proxy chaining:
 - Linux: `LD_PRELOAD`
@@ -23,12 +23,12 @@ A modern Rust implementation of classic `proxychains4`, with cross-platform proc
 |---|---|---|
 | Linux | `LD_PRELOAD` | Compile-checked; native regression gate added, event-loop compatibility pending |
 | macOS | `DYLD_INSERT_LIBRARIES` | Compile-checked; native regression gate added, protected apps and event loops not certified |
-| Windows | DLL injection + MinHook | Creation-time tree injection verified in code; ConnectEx/IOCP remains incomplete |
+| Windows | DLL injection + MinHook | Creation-time tree injection and UDP IOCP fixtures pass; ConnectEx close-cancellation and RIO remain incomplete |
 
 Author: **tianrking**. See [implementation status](docs/implementation-status.md)
 for verified behavior, commands and unfinished work. This is not system-enforced
 network isolation. `raw` is a no-handshake mode, not an IP tunnel. Arbitrary UDP,
-ICMP, QUIC workflows and complete Agent compatibility are not certified.
+ICMP, browser/MsQuic HTTP/3 workflows and complete Agent compatibility are not certified.
 
 New interfaces: `proxychains4 --pid PID`, `proxychains4 --attach-name FILE.exe`
 (Windows), and `proxychains-udp -f FILE --listen 127.0.0.1:1053 --target 1.1.1.1:53`

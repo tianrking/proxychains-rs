@@ -2,6 +2,10 @@
 //! The test proxy records SOCKS framing and the actual application source port.
 use std::io::{Read, Write};
 use std::net::{TcpListener, UdpSocket};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::time::{Duration, Instant};
 #[cfg(unix)]
 #[path = "support/process.rs"]
@@ -41,7 +45,12 @@ fn native_udp_routing_and_lifecycle() {
         std::fs::write(&config, format!("strict_chain\nproxy_dns\nproxy_udp\n[ProxyList]\nsocks5 {host} {port} user password\n")).unwrap();
         let server = std::thread::spawn(move || {
             // Two successive sockets must each get a fresh control connection.
-            let sockets = if matches!(mode, "udp-iocp-cancel" | "udp-dup" | "udp-recvmmsg-timeout") { 1 } else { 2 };
+            let sockets = if matches!(mode, "udp-iocp-cancel" | "udp-dup" | "udp-recvmmsg-timeout")
+            {
+                1
+            } else {
+                2
+            };
             for _ in 0..sockets {
                 let deadline = Instant::now() + Duration::from_secs(15);
                 let mut control = loop {
@@ -83,7 +92,13 @@ fn native_udp_routing_and_lifecycle() {
                 }
                 reply.extend(relay.local_addr().unwrap().port().to_be_bytes());
                 control.write_all(&reply).unwrap();
-                let rounds = if matches!(mode, "udp-iocp-cancel" | "udp-recvmmsg-timeout") { 1 } else if mode == "udp-dup" { 2 } else { 4 };
+                let rounds = if matches!(mode, "udp-iocp-cancel" | "udp-recvmmsg-timeout") {
+                    1
+                } else if mode == "udp-dup" {
+                    2
+                } else {
+                    4
+                };
                 for round in 0..rounds {
                     let mut packet = [0; 65535];
                     let (n, client) = relay.recv_from(&mut packet).unwrap();
@@ -113,7 +128,11 @@ fn native_udp_routing_and_lifecycle() {
                     if mode == "udp-recvmmsg-timeout" {
                         assert_eq!(&packet[header_len..n], b"batch-timeout");
                     } else if mode == "udp-dup" {
-                        let expected: &[u8] = if round == 0 { b"dup-original" } else { b"dup-clone" };
+                        let expected: &[u8] = if round == 0 {
+                            b"dup-original"
+                        } else {
+                            b"dup-clone"
+                        };
                         assert_eq!(&packet[header_len..n], expected);
                     } else if round == 1 {
                         assert_eq!(n, header_len, "zero-length payload");
@@ -184,6 +203,94 @@ fn native_udp_routing_and_lifecycle() {
     });
     assert_eq!(run(&library, &fixture, &config, "udp-failover"), 23);
     failover_server.join().unwrap();
+
+    // Exercise a real QUIC handshake and bidirectional stream through the
+    // transparent SOCKS5 UDP path. The injected client targets the reserved
+    // address; the relay forwards the inner QUIC datagrams to a local server.
+    let (quic_target, quic_server) = spawn_quic_server();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy_port = listener.local_addr().unwrap().port();
+    std::fs::write(
+        &config,
+        format!("proxy_udp\n[ProxyList]\nsocks5 127.0.0.1 {proxy_port}\n"),
+    )
+    .unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let relay_server = std::thread::spawn(move || {
+        let mut control = accept(&listener);
+        let mut hello = [0; 3];
+        control.read_exact(&mut hello).unwrap();
+        assert_eq!(hello, [5, 1, 0]);
+        control.write_all(&[5, 0]).unwrap();
+        let mut request = [0; 10];
+        control.read_exact(&mut request).unwrap();
+        assert_eq!(request, [5, 3, 0, 1, 0, 0, 0, 0, 0, 0]);
+
+        let relay = UdpSocket::bind("127.0.0.1:0").unwrap();
+        relay
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let forward = UdpSocket::bind("127.0.0.1:0").unwrap();
+        forward
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let mut response = vec![5, 0, 0, 1, 127, 0, 0, 1];
+        response.extend(relay.local_addr().unwrap().port().to_be_bytes());
+        control.write_all(&response).unwrap();
+
+        let client = Arc::new(Mutex::new(None));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let to_server = relay.try_clone().unwrap();
+        let forward_to_server = forward.try_clone().unwrap();
+        let target = quic_target;
+        let client_for_send = Arc::clone(&client);
+        let stopped_for_send = Arc::clone(&stopped);
+        let send_thread = std::thread::spawn(move || {
+            let mut packet = [0; 65535];
+            while !stopped_for_send.load(Ordering::Acquire) {
+                match to_server.recv_from(&mut packet) {
+                    Ok((n, peer)) => {
+                        assert!(n >= 10, "short SOCKS UDP packet");
+                        *client_for_send.lock().unwrap() = Some(peer);
+                        forward_to_server.send_to(&packet[10..n], target).unwrap();
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {}
+                    Err(error) => panic!("relay receive failed: {error}"),
+                }
+            }
+        });
+
+        let to_client = relay.try_clone().unwrap();
+        let client_for_receive = Arc::clone(&client);
+        let stopped_for_receive = Arc::clone(&stopped);
+        let receive_thread = std::thread::spawn(move || {
+            let mut payload = [0; 65535];
+            while !stopped_for_receive.load(Ordering::Acquire) {
+                match forward.recv_from(&mut payload) {
+                    Ok((n, _)) => {
+                        let Some(peer) = *client_for_receive.lock().unwrap() else {
+                            continue;
+                        };
+                        let mut packet = vec![0, 0, 0, 1, 192, 0, 2, 123, 1, 187];
+                        packet.extend_from_slice(&payload[..n]);
+                        to_client.send_to(&packet, peer).unwrap();
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {}
+                    Err(error) => panic!("relay response failed: {error}"),
+                }
+            }
+        });
+
+        assert_eq!(control.read(&mut [0]).unwrap(), 0);
+        stopped.store(true, Ordering::Release);
+        send_thread.join().unwrap();
+        receive_thread.join().unwrap();
+    });
+    assert_eq!(run(&library, &fixture, &config, "quic"), 23);
+    relay_server.join().unwrap();
+    quic_server.join().unwrap();
 
     for response in [
         vec![5, 7, 0, 1, 0, 0, 0, 0, 0, 0],
@@ -297,4 +404,32 @@ fn run(library: &str, fixture: &str, config: &std::path::Path, mode: &str) -> i3
             .env_remove("DYLD_FORCE_FLAT_NAMESPACE");
         process::status(&mut command).code().unwrap()
     }
+}
+
+fn spawn_quic_server() -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+    let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+            let certificate_der = rustls::pki_types::CertificateDer::from(certificate.cert);
+            let private_key =
+                rustls::pki_types::PrivatePkcs8KeyDer::from(certificate.key_pair.serialize_der());
+            let server_config =
+                quinn::ServerConfig::with_single_cert(vec![certificate_der], private_key.into())
+                    .unwrap();
+            let endpoint =
+                quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
+            ready_sender.send(endpoint.local_addr().unwrap()).unwrap();
+            let incoming = endpoint.accept().await.unwrap();
+            let connection = incoming.await.unwrap();
+            let (mut send, mut receive) = connection.accept_bi().await.unwrap();
+            let request = receive.read_to_end(64).await.unwrap();
+            assert_eq!(&request, b"quic-proxy-request");
+            send.write_all(b"quic-proxy-response").await.unwrap();
+            send.finish().unwrap();
+            endpoint.wait_idle().await;
+        });
+    });
+    (ready_receiver.recv().unwrap(), thread)
 }

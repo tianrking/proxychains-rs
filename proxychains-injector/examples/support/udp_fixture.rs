@@ -28,6 +28,10 @@ pub fn run(mode: &str) {
         assert_eq!(source, destination);
         return;
     }
+    if mode == "quic" {
+        run_quic(destination);
+        return;
+    }
     if mode == "udp-control-closed" {
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         socket
@@ -41,7 +45,9 @@ pub fn run(mode: &str) {
     }
     if mode == "udp-dup" {
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-        socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
         let clone = socket.try_clone().unwrap();
         socket.send_to(b"dup-original", destination).unwrap();
         clone.send_to(b"dup-clone", destination).unwrap();
@@ -53,7 +59,10 @@ pub fn run(mode: &str) {
             received.push(buffer[..n].to_vec());
         }
         received.sort();
-        assert_eq!(received, vec![b"dup-clone".to_vec(), b"dup-original".to_vec()]);
+        assert_eq!(
+            received,
+            vec![b"dup-clone".to_vec(), b"dup-original".to_vec()]
+        );
         return;
     }
     #[cfg(target_os = "linux")]
@@ -73,15 +82,8 @@ pub fn run(mode: &str) {
             tv_sec: 0,
             tv_nsec: 100_000_000,
         };
-        let received = unsafe {
-            libc::recvmmsg(
-                socket.as_raw_fd(),
-                &mut message,
-                2,
-                0,
-                &mut timeout,
-            )
-        };
+        let received =
+            unsafe { libc::recvmmsg(socket.as_raw_fd(), &mut message, 2, 0, &mut timeout) };
         assert_eq!(received, 1);
         assert_eq!(message.msg_len as usize, b"batch-timeout".len());
         assert_eq!(&payload[..message.msg_len as usize], b"batch-timeout");
@@ -195,6 +197,88 @@ pub fn run(mode: &str) {
     }
 }
 
+fn run_quic(destination: SocketAddr) {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async move {
+        let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+        let client_crypto = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(SkipServerVerification::new())
+            .with_no_client_auth();
+        endpoint.set_default_client_config(quinn::ClientConfig::new(std::sync::Arc::new(
+            quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto).unwrap(),
+        )));
+        let connection = endpoint
+            .connect(destination, "localhost")
+            .unwrap()
+            .await
+            .expect("quic connect");
+        let (mut send, mut receive) = connection.open_bi().await.unwrap();
+        send.write_all(b"quic-proxy-request").await.unwrap();
+        send.finish().unwrap();
+        let response = receive.read_to_end(64).await.unwrap();
+        assert_eq!(&response, b"quic-proxy-response");
+        connection.close(0u32.into(), b"done");
+        endpoint.wait_idle().await;
+    });
+}
+
+#[derive(Debug)]
+struct SkipServerVerification(std::sync::Arc<rustls::crypto::CryptoProvider>);
+
+impl SkipServerVerification {
+    fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        )))
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+}
+
 #[cfg(windows)]
 fn vectored_send(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> usize {
     use std::os::windows::io::AsRawSocket;
@@ -299,19 +383,20 @@ fn reject_overlapped(socket: &UdpSocket, destination: SocketAddr) {
 fn iocp_send_to(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> usize {
     use std::os::windows::io::AsRawSocket;
     use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Networking::WinSock::{WSAGetLastError, WSASendTo, SOCKET, WSABUF, WSA_IO_PENDING};
-    use windows::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED};
+    use windows::Win32::Networking::WinSock::{
+        WSAGetLastError, WSASendTo, SOCKET, WSABUF, WSA_IO_PENDING,
+    };
+    use windows::Win32::System::IO::{
+        CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
+    };
     let port = unsafe {
-        CreateIoCompletionPort(
-            HANDLE(-1),
-            HANDLE::default(),
-            0x51,
-            1,
-        ).expect("CreateIoCompletionPort")
+        CreateIoCompletionPort(HANDLE(-1), HANDLE::default(), 0x51, 1)
+            .expect("CreateIoCompletionPort")
     };
     let socket_handle = HANDLE(socket.as_raw_socket() as isize);
     unsafe {
-        CreateIoCompletionPort(socket_handle, port, 0x51, 1).expect("associate UDP socket with IOCP");
+        CreateIoCompletionPort(socket_handle, port, 0x51, 1)
+            .expect("associate UDP socket with IOCP");
     }
     let destination = socket2::SockAddr::from(destination);
     let mut overlapped = OVERLAPPED::default();
@@ -353,10 +438,12 @@ fn iocp_sendmsg_to(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> 
     use windows::core::GUID;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Networking::WinSock::{
-        LPWSAOVERLAPPED_COMPLETION_ROUTINE, SOCKET, WSABUF, WSAMSG, WSAGetLastError, WSAIoctl,
-        WSAID_WSASENDMSG, WSA_IO_PENDING,
+        WSAGetLastError, WSAIoctl, LPWSAOVERLAPPED_COMPLETION_ROUTINE, SOCKET, WSABUF,
+        WSAID_WSASENDMSG, WSAMSG, WSA_IO_PENDING,
     };
-    use windows::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED};
+    use windows::Win32::System::IO::{
+        CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
+    };
     const SIO_GET_EXTENSION_FUNCTION_POINTER: u32 = 0xC800_0006;
     type SendMsg = unsafe extern "system" fn(
         SOCKET,
@@ -409,7 +496,19 @@ fn iocp_sendmsg_to(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> 
         dwFlags: 0,
     };
     let mut overlapped = OVERLAPPED::default();
-    assert_eq!(unsafe { sendmsg(raw, &message, 0, std::ptr::null_mut(), &mut overlapped, None) }, -1);
+    assert_eq!(
+        unsafe {
+            sendmsg(
+                raw,
+                &message,
+                0,
+                std::ptr::null_mut(),
+                &mut overlapped,
+                None,
+            )
+        },
+        -1
+    );
     assert_eq!(unsafe { WSAGetLastError() }, WSA_IO_PENDING);
     let mut bytes = 0;
     let mut key = 0;
@@ -431,15 +530,20 @@ fn iocp_sendmsg_to(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> 
 fn iocp_recv_from(socket: &UdpSocket, expected: &[u8]) -> usize {
     use std::os::windows::io::AsRawSocket;
     use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Networking::WinSock::{WSAGetLastError, WSARecvFrom, SOCKET, WSABUF, WSA_IO_PENDING};
-    use windows::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED};
+    use windows::Win32::Networking::WinSock::{
+        WSAGetLastError, WSARecvFrom, SOCKET, WSABUF, WSA_IO_PENDING,
+    };
+    use windows::Win32::System::IO::{
+        CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
+    };
     let port = unsafe {
         CreateIoCompletionPort(HANDLE(-1), HANDLE::default(), 0x52, 1)
             .expect("CreateIoCompletionPort")
     };
     let socket_handle = HANDLE(socket.as_raw_socket() as isize);
     unsafe {
-        CreateIoCompletionPort(socket_handle, port, 0x52, 1).expect("associate UDP socket with IOCP");
+        CreateIoCompletionPort(socket_handle, port, 0x52, 1)
+            .expect("associate UDP socket with IOCP");
     }
     let mut payload = vec![0u8; expected.len().max(64)];
     let buffer = WSABUF {
@@ -488,8 +592,13 @@ fn iocp_recv_from(socket: &UdpSocket, expected: &[u8]) -> usize {
 fn iocp_cancel_recv(socket: &UdpSocket) {
     use std::os::windows::io::AsRawSocket;
     use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Networking::WinSock::{closesocket, WSAGetLastError, WSARecvFrom, SOCKET, WSABUF, WSA_IO_PENDING, WSA_OPERATION_ABORTED};
-    use windows::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED};
+    use windows::Win32::Networking::WinSock::{
+        closesocket, WSAGetLastError, WSARecvFrom, SOCKET, WSABUF, WSA_IO_PENDING,
+        WSA_OPERATION_ABORTED,
+    };
+    use windows::Win32::System::IO::{
+        CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
+    };
     let port = unsafe {
         CreateIoCompletionPort(HANDLE(-1), HANDLE::default(), 0x53, 1)
             .expect("CreateIoCompletionPort")
@@ -544,7 +653,7 @@ fn recvmsg_from(socket: &UdpSocket, expected: &[u8]) -> usize {
     use std::os::windows::io::AsRawSocket;
     use windows::core::GUID;
     use windows::Win32::Networking::WinSock::{
-        LPWSAOVERLAPPED_COMPLETION_ROUTINE, SOCKET, WSABUF, WSAMSG, WSAIoctl,
+        WSAIoctl, LPWSAOVERLAPPED_COMPLETION_ROUTINE, SOCKET, WSABUF, WSAMSG,
     };
     const SIO_GET_EXTENSION_FUNCTION_POINTER: u32 = 0xC800_0006;
     const WSAID_WSARECVMSG: GUID = GUID::from_u128(0xf689d7c8_6f1f_436b_8a53_e54fe351c322);
@@ -591,7 +700,10 @@ fn recvmsg_from(socket: &UdpSocket, expected: &[u8]) -> usize {
         dwFlags: 0,
     };
     let mut received = 0;
-    assert_eq!(unsafe { recvmsg(raw, &mut message, &mut received, std::ptr::null_mut(), None) }, 0);
+    assert_eq!(
+        unsafe { recvmsg(raw, &mut message, &mut received, std::ptr::null_mut(), None) },
+        0
+    );
     assert_eq!(received as usize, expected.len());
     assert_eq!(&payload[..received as usize], expected);
     received as usize
@@ -611,10 +723,12 @@ fn iocp_recvmsg_from(socket: &UdpSocket, expected: &[u8]) -> usize {
     use windows::core::GUID;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Networking::WinSock::{
-        LPWSAOVERLAPPED_COMPLETION_ROUTINE, SOCKET, WSABUF, WSAMSG, WSAGetLastError, WSAIoctl,
-        WSAID_WSARECVMSG, WSA_IO_PENDING,
+        WSAGetLastError, WSAIoctl, LPWSAOVERLAPPED_COMPLETION_ROUTINE, SOCKET, WSABUF,
+        WSAID_WSARECVMSG, WSAMSG, WSA_IO_PENDING,
     };
-    use windows::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED};
+    use windows::Win32::System::IO::{
+        CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
+    };
     const SIO_GET_EXTENSION_FUNCTION_POINTER: u32 = 0xC800_0006;
     type RecvMsg = unsafe extern "system" fn(
         SOCKET,
@@ -634,19 +748,22 @@ fn iocp_recvmsg_from(socket: &UdpSocket, expected: &[u8]) -> usize {
     }
     let mut function: *mut c_void = std::ptr::null_mut();
     let mut returned = 0;
-    assert_eq!(unsafe {
-        WSAIoctl(
-            raw,
-            SIO_GET_EXTENSION_FUNCTION_POINTER,
-            Some((&WSAID_WSARECVMSG as *const GUID).cast()),
-            std::mem::size_of::<GUID>() as u32,
-            Some((&mut function as *mut *mut c_void).cast()),
-            std::mem::size_of::<*mut c_void>() as u32,
-            &mut returned,
-            None,
-            None,
-        )
-    }, 0);
+    assert_eq!(
+        unsafe {
+            WSAIoctl(
+                raw,
+                SIO_GET_EXTENSION_FUNCTION_POINTER,
+                Some((&WSAID_WSARECVMSG as *const GUID).cast()),
+                std::mem::size_of::<GUID>() as u32,
+                Some((&mut function as *mut *mut c_void).cast()),
+                std::mem::size_of::<*mut c_void>() as u32,
+                &mut returned,
+                None,
+                None,
+            )
+        },
+        0
+    );
     let recvmsg: RecvMsg = unsafe { transmute(function) };
     let mut payload = vec![0u8; expected.len().max(64)];
     let mut buffer = WSABUF {
@@ -666,7 +783,18 @@ fn iocp_recvmsg_from(socket: &UdpSocket, expected: &[u8]) -> usize {
         dwFlags: 0,
     };
     let mut overlapped = OVERLAPPED::default();
-    assert_eq!(unsafe { recvmsg(raw, &mut message, std::ptr::null_mut(), &mut overlapped, None) }, -1);
+    assert_eq!(
+        unsafe {
+            recvmsg(
+                raw,
+                &mut message,
+                std::ptr::null_mut(),
+                &mut overlapped,
+                None,
+            )
+        },
+        -1
+    );
     assert_eq!(unsafe { WSAGetLastError() }, WSA_IO_PENDING);
     let mut bytes = 0;
     let mut key = 0;

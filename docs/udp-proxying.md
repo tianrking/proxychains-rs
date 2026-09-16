@@ -78,10 +78,12 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
   `SIO_GET_EXTENSION_FUNCTION_POINTER`. IOCP `WSASendTo`/`WSARecvFrom`
   completion is supported for sockets associated with a completion port, with
   close cancellation reported through the completion packet.
-- Unix ancillary sends (packet-info, UDP segmentation offload) and
-  `connect(AF_UNSPEC)` disconnect are rejected. Timed Linux `recvmmsg` uses one
-  overall deadline and returns partial batches when it expires. Receive control data is marked
-  truncated because relay metadata does not describe the original sender.
+- Unix ancillary sends are accepted with packet-info and ECN metadata stripped;
+  UDP segmentation offload remains unsupported because SOCKS UDP carries one
+  datagram per packet. `connect(AF_UNSPEC)` disconnect is rejected. Timed Linux
+  `recvmmsg` uses one overall deadline and returns partial batches when it
+  expires. Receive control data is marked truncated because relay metadata does
+  not describe the original sender.
 - On Linux, `dup`, `dup2`, `dup3` and `fcntl(F_DUPFD*)` preserve the shared
   SOCKS5 association and remove replaced descriptor state. macOS dyld
   interposition leaves descriptor duplication on the native path. Descriptor passing, sockets inherited across fork/exec, Windows socket duplication, direct syscalls, io_uring,
@@ -89,9 +91,9 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
 - SOCKS fragmentation (`FRAG != 0`) is dropped. The payload must fit a UDP packet
   including the SOCKS header: 10 bytes for IPv4, 22 for IPv6, or 7 plus the domain
   byte length. No IP tunneling or ICMP support is added.
-- QUIC payloads are opaque UDP, but real clients may need unsupported async or
-  offload APIs. This change does **not** certify browser QUIC, MsQuic or general
-  HTTP/3 compatibility.
+- QUIC payloads are opaque UDP. A native Quinn transport fixture verifies one
+  real handshake and bidirectional stream roundtrip through the SOCKS5 relay;
+  browser QUIC, MsQuic, HTTP/3 application behavior and RIO remain uncertified.
 
 This is process-level API interposition, not OS-enforced network isolation.
 

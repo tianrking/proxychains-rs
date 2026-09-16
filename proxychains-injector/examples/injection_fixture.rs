@@ -3,7 +3,10 @@ mod udp_fixture;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).is_some_and(|s| s.starts_with("udp")) {
+    if args
+        .get(1)
+        .is_some_and(|s| s.starts_with("udp") || s == "quic")
+    {
         udp_fixture::run(&args[1]);
         std::process::exit(23);
     }
@@ -13,16 +16,29 @@ fn main() {
             Ok(stream) => stream,
             Err(_) => std::process::exit(24),
         };
-        assert_eq!(stream.read_timeout().unwrap(), None, "hook must restore application timeout");
-        assert_eq!(stream.write_timeout().unwrap(), None, "hook must restore application timeout");
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+        assert_eq!(
+            stream.read_timeout().unwrap(),
+            None,
+            "hook must restore application timeout"
+        );
+        assert_eq!(
+            stream.write_timeout().unwrap(),
+            None,
+            "hook must restore application timeout"
+        );
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
         stream.write_all(b"fixture-request").unwrap();
         let mut response = [0; 14];
         stream.read_exact(&mut response).unwrap();
         assert_eq!(&response, b"proxy-response");
         std::process::exit(23);
     }
-    if matches!(args.get(1).map(String::as_str), Some("tcp-connectex" | "tcp-connectex-iocp")) {
+    if matches!(
+        args.get(1).map(String::as_str),
+        Some("tcp-connectex" | "tcp-connectex-iocp")
+    ) {
         #[cfg(windows)]
         run_tcp_connectex(&args[2], args[1] == "tcp-connectex-iocp");
         #[cfg(not(windows))]
@@ -40,26 +56,30 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_secs(60));
         return;
     }
-    if let Some(marker) = args.get(1) { std::fs::write(marker, b"started").unwrap(); }
+    if let Some(marker) = args.get(1) {
+        std::fs::write(marker, b"started").unwrap();
+    }
     std::process::exit(23);
 }
 
 #[cfg(windows)]
 fn run_tcp_connectex(target: &str, use_iocp: bool) {
+    use socket2::{Domain, Protocol, SockAddr, Socket, Type};
     use std::ffi::c_void;
     use std::io::Read;
     use std::mem::transmute;
     use std::net::SocketAddr;
     use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket};
-    use socket2::{Domain, Protocol, SockAddr, Socket, Type};
     use windows::core::GUID;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Networking::WinSock::{
-        WSAGetLastError, WSAIoctl, SOCKET, WSAID_CONNECTEX, WSA_IO_PENDING,
-        SIO_GET_EXTENSION_FUNCTION_POINTER,
+        WSAGetLastError, WSAIoctl, SIO_GET_EXTENSION_FUNCTION_POINTER, SOCKET, WSAID_CONNECTEX,
+        WSA_IO_PENDING,
     };
-    use windows::Win32::System::IO::{CreateIoCompletionPort, GetOverlappedResult, GetQueuedCompletionStatus, OVERLAPPED};
     use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+    use windows::Win32::System::IO::{
+        CreateIoCompletionPort, GetOverlappedResult, GetQueuedCompletionStatus, OVERLAPPED,
+    };
 
     type ConnectEx = unsafe extern "system" fn(
         SOCKET,
@@ -72,11 +92,17 @@ fn run_tcp_connectex(target: &str, use_iocp: bool) {
     ) -> i32;
 
     let target: SocketAddr = target.parse().expect("ConnectEx target");
-    let socket = Socket::new(Domain::for_address(target), Type::STREAM, Some(Protocol::TCP))
-        .expect("ConnectEx socket");
+    let socket = Socket::new(
+        Domain::for_address(target),
+        Type::STREAM,
+        Some(Protocol::TCP),
+    )
+    .expect("ConnectEx socket");
     socket
         .bind(&SockAddr::from(SocketAddr::new(
-            if target.is_ipv4() { "0.0.0.0" } else { "::" }.parse().unwrap(),
+            if target.is_ipv4() { "0.0.0.0" } else { "::" }
+                .parse()
+                .unwrap(),
             0,
         )))
         .expect("ConnectEx bind");
@@ -104,13 +130,21 @@ fn run_tcp_connectex(target: &str, use_iocp: bool) {
         unsafe { CreateEventW(None, true, false, None).expect("ConnectEx event") }
     };
     let port = if use_iocp {
-        let port = unsafe { CreateIoCompletionPort(HANDLE(-1), HANDLE::default(), 0x56, 1).expect("ConnectEx IOCP") };
-        unsafe { CreateIoCompletionPort(HANDLE(raw.0 as isize), port, 0x56, 1).expect("associate ConnectEx socket") };
+        let port = unsafe {
+            CreateIoCompletionPort(HANDLE(-1), HANDLE::default(), 0x56, 1).expect("ConnectEx IOCP")
+        };
+        unsafe {
+            CreateIoCompletionPort(HANDLE(raw.0 as isize), port, 0x56, 1)
+                .expect("associate ConnectEx socket")
+        };
         Some(port)
     } else {
         None
     };
-    let mut overlapped = OVERLAPPED { hEvent: event, ..Default::default() };
+    let mut overlapped = OVERLAPPED {
+        hEvent: event,
+        ..Default::default()
+    };
     let initial = b"connectex-request";
     let mut sent = 0;
     let destination = SockAddr::from(target);
@@ -139,18 +173,28 @@ fn run_tcp_connectex(target: &str, use_iocp: bool) {
         assert!(std::ptr::eq(completed, &mut overlapped));
         assert_eq!(completed_bytes, initial.len() as u32);
     } else {
-        assert_eq!(unsafe { WaitForSingleObject(event, 10_000) }, windows::Win32::Foundation::WAIT_OBJECT_0);
+        assert_eq!(
+            unsafe { WaitForSingleObject(event, 10_000) },
+            windows::Win32::Foundation::WAIT_OBJECT_0
+        );
     }
     let mut completed = 0;
     unsafe {
-        GetOverlappedResult(HANDLE(raw.0 as isize), &mut overlapped, &mut completed, true)
-            .expect("ConnectEx completion");
+        GetOverlappedResult(
+            HANDLE(raw.0 as isize),
+            &mut overlapped,
+            &mut completed,
+            true,
+        )
+        .expect("ConnectEx completion");
     }
     assert_eq!(completed, initial.len() as u32);
     assert_eq!(sent, initial.len() as u32);
     let mut stream = unsafe { std::net::TcpStream::from_raw_socket(socket.into_raw_socket()) };
     let mut response = [0; 14];
-    stream.read_exact(&mut response).expect("ConnectEx response");
+    stream
+        .read_exact(&mut response)
+        .expect("ConnectEx response");
     assert_eq!(&response, b"proxy-response");
 }
 
@@ -163,8 +207,16 @@ fn run_dns_exa() {
     use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
 
     type GetAddrInfoExA = unsafe extern "system" fn(
-        *const i8, *const i8, u32, *mut c_void, *const c_void, *mut *mut c_void,
-        *mut c_void, *mut c_void, *mut c_void, *mut c_void,
+        *const i8,
+        *const i8,
+        u32,
+        *mut c_void,
+        *const c_void,
+        *mut *mut c_void,
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
     ) -> i32;
     let module = unsafe { GetModuleHandleA(PCSTR(b"ws2_32.dll\0".as_ptr())) }.expect("ws2_32");
     let mut wsa_data = WSADATA::default();
@@ -175,8 +227,18 @@ fn run_dns_exa() {
     let hostname = CString::new("proxychains-remote-dns.invalid").unwrap();
     let mut result = std::ptr::null_mut();
     let code = unsafe {
-        get(hostname.as_ptr(), std::ptr::null(), 0, std::ptr::null_mut(), std::ptr::null(), &mut result,
-            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut())
+        get(
+            hostname.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            &mut result,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
     };
     assert_eq!(code, 0, "GetAddrInfoExA returned {code}");
     assert!(!result.is_null(), "GetAddrInfoExA returned no result");

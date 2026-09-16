@@ -1,13 +1,13 @@
 //! Winsock datagram interposition, including SOCKS5 relay-backed IOCP sends.
 use super::udp;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::io;
 use std::ptr;
-use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
-use windows::Win32::Networking::WinSock::*;
+use std::sync::{Arc, OnceLock};
 use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Networking::WinSock::*;
 use windows::Win32::System::IO::{PostQueuedCompletionStatus, OVERLAPPED};
 
 macro_rules! original {
@@ -351,39 +351,41 @@ unsafe fn queue_iocp_recv(
                         if cancelled.load(Ordering::Acquire) {
                             (0, WSA_OPERATION_ABORTED.0 as usize)
                         } else {
-                        let mut copied = 0usize;
-                        for (buffer, length) in &buffers {
-                            let count = (*length).min(result.payload.len().saturating_sub(copied));
-                            if count != 0 {
-                                unsafe {
-                                    ptr::copy_nonoverlapping(
-                                        result.payload.as_ptr().add(copied),
-                                        *buffer as *mut u8,
-                                        count,
-                                    );
+                            let mut copied = 0usize;
+                            for (buffer, length) in &buffers {
+                                let count =
+                                    (*length).min(result.payload.len().saturating_sub(copied));
+                                if count != 0 {
+                                    unsafe {
+                                        ptr::copy_nonoverlapping(
+                                            result.payload.as_ptr().add(copied),
+                                            *buffer as *mut u8,
+                                            count,
+                                        );
+                                    }
+                                }
+                                copied += count;
+                            }
+                            let mut status = 0usize;
+                            if copied < result.payload.len() {
+                                status = WSAEMSGSIZE.0 as usize;
+                            }
+                            unsafe {
+                                if address != 0 {
+                                    if let Err(error) = store_address(
+                                        result.source,
+                                        address as *mut c_void,
+                                        address_len as *mut i32,
+                                    ) {
+                                        status =
+                                            error.raw_os_error().unwrap_or(WSAEFAULT.0) as usize;
+                                    }
+                                }
+                                if flags != 0 {
+                                    *(flags as *mut u32) = 0;
                                 }
                             }
-                            copied += count;
-                        }
-                        let mut status = 0usize;
-                        if copied < result.payload.len() {
-                            status = WSAEMSGSIZE.0 as usize;
-                        }
-                        unsafe {
-                            if address != 0 {
-                                if let Err(error) = store_address(
-                                    result.source,
-                                    address as *mut c_void,
-                                    address_len as *mut i32,
-                                ) {
-                                    status = error.raw_os_error().unwrap_or(WSAEFAULT.0) as usize;
-                                }
-                            }
-                            if flags != 0 {
-                                *(flags as *mut u32) = 0;
-                            }
-                        }
-                        (copied, status)
+                            (copied, status)
                         }
                     }
                     Some(Err(error)) => (
@@ -439,11 +441,7 @@ unsafe extern "system" fn wsa_sendto(
     if !completion.is_null() {
         return fail(udp::unsupported());
     }
-    let iocp = if ov.is_null() {
-        None
-    } else {
-        iocp_for(s)
-    };
+    let iocp = if ov.is_null() { None } else { iocp_for(s) };
     if !ov.is_null() && iocp.is_none() {
         return fail(udp::unsupported());
     }
@@ -617,7 +615,8 @@ unsafe extern "system" fn wsa_recv(
 }
 
 /// Synchronous `WSARecvMsg` implementation for extension-function callers.
-/// Relay metadata does not carry ancillary data, so control buffers are rejected.
+/// Relay metadata does not carry ancillary data, so receive control buffers
+/// are cleared and reported as truncated when the caller supplied one.
 pub(super) unsafe extern "system" fn wsa_recvmsg(
     s: usize,
     msg: *mut c_void,
@@ -636,9 +635,8 @@ pub(super) unsafe extern "system" fn wsa_recvmsg(
         return fail(udp::unsupported());
     }
     let message = &mut *(msg.cast::<WSAMSG>());
-    if message.Control.len != 0 {
-        return fail(udp::unsupported());
-    }
+    // ECN/PKTINFO control data describes the native path and cannot be
+    // represented by SOCKS UDP. Strip it while preserving the datagram.
     let count = usize::try_from(message.dwBufferCount).ok();
     let Some(count) = count.filter(|&count| count <= 1024) else {
         return fail(io::Error::from_raw_os_error(WSAEMSGSIZE.0));
@@ -676,11 +674,7 @@ pub(super) unsafe extern "system" fn wsa_recvmsg(
     if message.name.is_null() || message.namelen <= 0 {
         return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
     }
-    if let Err(error) = store_address(
-        result.source,
-        message.name.cast(),
-        &mut message.namelen,
-    ) {
+    if let Err(error) = store_address(result.source, message.name.cast(), &mut message.namelen) {
         return fail(error);
     }
     let mut offset = 0usize;
@@ -691,11 +685,7 @@ pub(super) unsafe extern "system" fn wsa_recvmsg(
         }
         let count = length.min(result.payload.len().saturating_sub(offset));
         if count != 0 {
-            ptr::copy_nonoverlapping(
-                result.payload.as_ptr().add(offset),
-                buffer.buf.0,
-                count,
-            );
+            ptr::copy_nonoverlapping(result.payload.as_ptr().add(offset), buffer.buf.0, count);
         }
         offset += count;
     }
@@ -731,9 +721,8 @@ pub(super) unsafe extern "system" fn wsa_sendmsg(
         return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
     }
     let message = &*(msg.cast::<WSAMSG>());
-    if message.Control.len != 0 {
-        return fail(udp::unsupported());
-    }
+    // ECN/PKTINFO control data describes the native path and cannot be
+    // represented by SOCKS UDP. Strip it while preserving the datagram.
     let count = usize::try_from(message.dwBufferCount).ok();
     let Some(count) = count.filter(|&count| count <= 1024) else {
         return fail(io::Error::from_raw_os_error(WSAEMSGSIZE.0));

@@ -19,6 +19,10 @@ tracing.workspace = true
 [dev-dependencies]
 libc.workspace = true
 socket2.workspace = true
+quinn.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+tokio.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.54", features = [
