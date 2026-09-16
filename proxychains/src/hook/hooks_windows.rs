@@ -44,6 +44,7 @@ use super::interpose_windows::{
     original_dns_query_a, original_dns_query_w, original_wsa_ioctl,
     original_getaddrinfoex_overlapped_result,
     original_dns_query_ex,
+    original_dns_query_utf8,
 };
 use super::reload::config_reload_interval;
 
@@ -1457,22 +1458,23 @@ const DNS_QUERY_ASYNC: u32 = 0x0000_1000;
 
 /// Windows DnsQuery_A hook implementation.
 #[cfg(windows)]
-pub unsafe extern "system" fn hook_dns_query_a_impl(
+unsafe fn hook_dns_query_ansi_impl(
     name: *const i8,
     query_type: u16,
     options: u32,
     extra: *mut c_void,
     result: *mut *mut c_void,
     reserved: *mut c_void,
+    original: unsafe fn(*const i8, u16, u32, *mut c_void, *mut *mut c_void, *mut c_void) -> i32,
 ) -> i32 {
     let state = match get_hook_state() {
         Some(s) => s,
-        None => return original_dns_query_a(name, query_type, options, extra, result, reserved),
+        None => return original(name, query_type, options, extra, result, reserved),
     };
     maybe_reload_config(state);
     let config = state.config.lock().clone();
     if !config.proxy_dns || name.is_null() || options & DNS_QUERY_ASYNC != 0 {
-        return original_dns_query_a(name, query_type, options, extra, result, reserved);
+        return original(name, query_type, options, extra, result, reserved);
     }
 
     let hostname = match CStr::from_ptr(name).to_str() {
@@ -1480,7 +1482,7 @@ pub unsafe extern "system" fn hook_dns_query_a_impl(
         Err(_) => return DNS_ERROR_RCODE_NAME_ERROR,
     };
     if hostname.parse::<IpAddr>().is_ok() || crate::dns::lookup_in_hosts(hostname).is_some() {
-        return original_dns_query_a(name, query_type, options, extra, result, reserved);
+        return original(name, query_type, options, extra, result, reserved);
     }
     let dns_resolver = DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
     let fake_ip = match dns_resolver.resolve(hostname) {
@@ -1491,13 +1493,41 @@ pub unsafe extern "system" fn hook_dns_query_a_impl(
         Ok(v) => v,
         Err(_) => return DNS_ERROR_RCODE_NAME_ERROR,
     };
-    original_dns_query_a(
+    original(
         fake_ip_c.as_ptr(),
         query_type,
         options,
         extra,
         result,
         reserved,
+    )
+}
+
+#[cfg(windows)]
+pub unsafe extern "system" fn hook_dns_query_a_impl(
+    name: *const i8,
+    query_type: u16,
+    options: u32,
+    extra: *mut c_void,
+    result: *mut *mut c_void,
+    reserved: *mut c_void,
+) -> i32 {
+    hook_dns_query_ansi_impl(
+        name, query_type, options, extra, result, reserved, original_dns_query_a,
+    )
+}
+
+#[cfg(windows)]
+pub unsafe extern "system" fn hook_dns_query_utf8_impl(
+    name: *const i8,
+    query_type: u16,
+    options: u32,
+    extra: *mut c_void,
+    result: *mut *mut c_void,
+    reserved: *mut c_void,
+) -> i32 {
+    hook_dns_query_ansi_impl(
+        name, query_type, options, extra, result, reserved, original_dns_query_utf8,
     )
 }
 

@@ -104,7 +104,9 @@ name until completion. Callback mode forwards the original callback and
 `OVERLAPPED` pointer unchanged; event mode releases the context when the
 caller invokes `GetAddrInfoExOverlappedResult`. `DnsQuery_A/W` async mode still
 uses the system resolver because its completion lifetime is not exposed by the
-current hook layer. Modern `DnsQueryEx` callback queries are intercepted and
+current hook layer. The synchronous `DnsQuery_UTF8` variant is intercepted with
+the same fake-IP mapping as `DnsQuery_A/W`. Modern `DnsQueryEx` callback queries
+are intercepted and
 retain the fake name until the documented DNS completion callback, while the
 caller's query context is restored before forwarding that callback.
 

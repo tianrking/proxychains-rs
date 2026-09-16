@@ -21,6 +21,7 @@ use super::hooks_windows::{
     hook_create_io_completion_port_impl,
     hook_getaddrinfoex_overlapped_result_impl,
     hook_dns_query_ex_impl,
+    hook_dns_query_utf8_impl,
 };
 
 type ConnectFn = unsafe extern "system" fn(usize, *const c_void, i32) -> i32;
@@ -109,6 +110,7 @@ static ORIGINAL_GETNAMEINFO: OnceLock<GetNameInfoFn> = OnceLock::new();
 static ORIGINAL_WSA_IOCTL: OnceLock<WsaIoctlFn> = OnceLock::new();
 static ORIGINAL_CREATE_IOCP: OnceLock<CreateIoCompletionPortFn> = OnceLock::new();
 static ORIGINAL_DNS_QUERY_A: OnceLock<DnsQueryAFn> = OnceLock::new();
+static ORIGINAL_DNS_QUERY_UTF8: OnceLock<DnsQueryAFn> = OnceLock::new();
 static ORIGINAL_DNS_QUERY_W: OnceLock<DnsQueryWFn> = OnceLock::new();
 static ORIGINAL_DNS_QUERY_EX: OnceLock<DnsQueryExFn> = OnceLock::new();
 
@@ -217,6 +219,15 @@ impl OriginalFunctions {
                 let _ = ORIGINAL_DNS_QUERY_A.set(dns_query_a_fn);
             } else {
                 debug!("DnsQuery_A hook not installed (dnsapi.dll unavailable)");
+            }
+            if let Ok(dns_query_utf8_fn) = install_api_hook_from_module(
+                "dnsapi.dll",
+                "DnsQuery_UTF8",
+                hook_dns_query_utf8_impl as *const () as *mut c_void,
+            ) {
+                let _ = ORIGINAL_DNS_QUERY_UTF8.set(dns_query_utf8_fn);
+            } else {
+                debug!("DnsQuery_UTF8 hook not installed (dnsapi.dll unavailable)");
             }
             if let Ok(dns_query_w_fn) = install_api_hook_from_module(
                 "dnsapi.dll",
@@ -518,6 +529,21 @@ pub unsafe fn original_dns_query_ex(
 ) -> i32 {
     if let Some(f) = ORIGINAL_DNS_QUERY_EX.get() {
         f(request, results, cancel)
+    } else {
+        9003
+    }
+}
+
+pub unsafe fn original_dns_query_utf8(
+    name: *const i8,
+    query_type: u16,
+    options: u32,
+    extra: *mut c_void,
+    result: *mut *mut c_void,
+    reserved: *mut c_void,
+) -> i32 {
+    if let Some(f) = ORIGINAL_DNS_QUERY_UTF8.get() {
+        f(name, query_type, options, extra, result, reserved)
     } else {
         9003
     }
