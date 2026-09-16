@@ -264,6 +264,10 @@ fn iocp_send_to(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> usi
     sent = bytes;
     sent as usize
 }
+#[cfg(not(windows))]
+fn iocp_send_to(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> usize {
+    socket.send_to(data, destination).unwrap()
+}
 #[cfg(unix)]
 fn vectored_send(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> usize {
     use std::os::fd::AsRawFd;
