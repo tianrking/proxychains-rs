@@ -16,6 +16,41 @@ use crate::error::{Error, Result};
 /// This uses `dlsym(RTLD_NEXT, ...)` to get the original function
 /// before our LD_PRELOAD library intercepted it.
 pub fn load_symbol<T>(name: &str) -> Result<T> {
+    #[cfg(target_os = "macos")]
+    {
+        // dyld excludes the interposing image's own imports from replacement.
+        // Direct imports also work during early loader callbacks, before dlsym
+        // and its locks are safe to enter from read/write/close replacements.
+        extern "C" {
+            fn gethostbyname(name: *const c_char) -> *mut libc::hostent;
+            fn gethostbyaddr(addr: *const c_void, len: libc::socklen_t, kind: c_int) -> *mut libc::hostent;
+        }
+        macro_rules! pointer { ($name:ident) => { libc::$name as *const () as *mut c_void }; }
+        let symbol = match name {
+            "connect" => pointer!(connect),
+            "getaddrinfo" => pointer!(getaddrinfo),
+            "freeaddrinfo" => pointer!(freeaddrinfo),
+            "gethostbyname" => gethostbyname as *const () as *mut c_void,
+            "gethostbyaddr" => gethostbyaddr as *const () as *mut c_void,
+            "getnameinfo" => pointer!(getnameinfo),
+            "sendto" => pointer!(sendto),
+            "recvfrom" => pointer!(recvfrom),
+            "send" => pointer!(send),
+            "recv" => pointer!(recv),
+            "read" => pointer!(read),
+            "write" => pointer!(write),
+            "close" => pointer!(close),
+            "getpeername" => pointer!(getpeername),
+            "sendmsg" => pointer!(sendmsg),
+            "recvmsg" => pointer!(recvmsg),
+            "readv" => pointer!(readv),
+            "writev" => pointer!(writev),
+            _ => std::ptr::null_mut(),
+        };
+        if !symbol.is_null() {
+            return Ok(unsafe { std::mem::transmute_copy::<*mut c_void, T>(&symbol) });
+        }
+    }
     let cname = CString::new(name).map_err(|_| {
         Error::Config(format!("Invalid symbol name: {}", name))
     })?;

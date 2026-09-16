@@ -41,10 +41,11 @@ fn native_preload_tcp_and_invalid_config() {
         #[cfg(target_os = "linux")]
         cmd.env("LD_PRELOAD", &library);
         #[cfg(target_os = "macos")]
-        cmd.env("DYLD_INSERT_LIBRARIES", &library).env("DYLD_FORCE_FLAT_NAMESPACE", "1");
+        cmd.env("DYLD_INSERT_LIBRARIES", &library).env_remove("DYLD_FORCE_FLAT_NAMESPACE");
         cmd
     };
     let status = process::status(command().args(["tcp", "192.0.2.123:443"]));
+    assert_eq!(status.code(), Some(23), "native TCP fixture: {status:?}");
     server.join().unwrap(); assert_eq!(status.code(), Some(23));
     assert_eq!(process::status(command().args(["tcp", "192.0.2.123:443"])).code(), Some(24));
     std::fs::write(&config, "[ProxyList]\nsocks5 INVALID_ENTRY\n").unwrap();

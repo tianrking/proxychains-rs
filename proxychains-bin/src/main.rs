@@ -619,7 +619,8 @@ fn set_preload_env(library_path: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         env::set_var("DYLD_INSERT_LIBRARIES", library_path);
-        env::set_var("DYLD_FORCE_FLAT_NAMESPACE", "1");
+        // Explicit dyld interpose tuples preserve normal two-level namespace binding.
+        env::remove_var("DYLD_FORCE_FLAT_NAMESPACE");
         debug!("Set DYLD_INSERT_LIBRARIES={}", library_path);
     }
 

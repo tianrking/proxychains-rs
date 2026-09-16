@@ -236,7 +236,7 @@ fn run(library: &str, fixture: &str, config: &std::path::Path, mode: &str) -> i3
         #[cfg(target_os = "macos")]
         command
             .env("DYLD_INSERT_LIBRARIES", library)
-            .env("DYLD_FORCE_FLAT_NAMESPACE", "1");
+            .env_remove("DYLD_FORCE_FLAT_NAMESPACE");
         process::status(&mut command).code().unwrap()
     }
 }
