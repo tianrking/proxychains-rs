@@ -58,6 +58,7 @@ Recommendation:
 - Proxy groups: `[ProxyList:<group>]` + `--group`
 - Process tree mode: `--tree`
   - Windows: creation-time debugger events inject the root and every child before it resumes
+    - debugger-sensitive launchers automatically retry with suspended-root injection and descendant polling; this compatibility path has a short race window
   - Linux/macOS: inherited preload environment for child processes
 - Discovery/validation:
   - `--list-groups`

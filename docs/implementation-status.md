@@ -47,7 +47,10 @@ Names must resolve to exactly one process. Architecture must match the injector.
 Only future intercepted connections are affected; existing sockets are untouched.
 The suspended launcher waits for explicit hook readiness. Windows `--tree`
 uses debugger creation events to inject each child before it resumes, closing
-the old process-table polling window. The public `spawn_and_inject` API still
+the old process-table polling window. Applications that reject debugger-based
+creation automatically use a suspended-root compatibility fallback; that path
+injects descendants by process-table polling and therefore retains a short
+race window. The public `spawn_and_inject` API still
 injects after launch and does not have the same before-first-instruction
 guarantee. ConnectEx now preserves synchronous calls and provides overlapped
 completion through an event or an associated IOCP. Closing the socket marks a
@@ -72,8 +75,9 @@ packets are rejected. DNS TCP fallback is not provided by this UDP-only command.
 
 ## Remaining work before broad compatibility claims
 
-1. Replace Windows descendant polling with creation-time propagation, including
-   process creation variants, architecture combinations and a safe failure policy.
+1. Extend creation-time Windows propagation across more process-creation variants
+   and architecture combinations, while keeping the compatibility fallback's
+   failure policy explicit.
 2. Complete native asynchronous socket semantics beyond the implemented Windows
    ConnectEx/IOCP path: cancellation ownership, Unix nonblocking connect,
    epoll/kqueue and fd duplication/closure tracking.
