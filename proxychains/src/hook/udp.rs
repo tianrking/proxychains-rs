@@ -66,6 +66,15 @@ pub(crate) unsafe fn socket(handle: Handle) -> ManuallyDrop<Socket> {
 }
 
 pub(crate) unsafe fn enabled(handle: Handle) -> bool {
+    // Borrowed OwnedFd/OwnedSocket constructors forbid the invalid sentinel.
+    #[cfg(unix)]
+    if handle < 0 {
+        return false;
+    }
+    #[cfg(windows)]
+    if handle == usize::MAX {
+        return false;
+    }
     CONFIG.get().is_some_and(|c| c.proxy_udp)
         && !is_internal_network()
         && socket(handle).r#type().is_ok_and(|t| t == Type::DGRAM)
@@ -194,7 +203,14 @@ pub(crate) unsafe fn send(
         let session = sessions().lock().entry(handle).or_default().clone();
         let association = association(&mut session.lock())?;
         let relay = mapped_relay(&socket, &association)?;
-        let sent = socket.send_to_with_flags(&packet, &relay.into(), flags)?;
+        let sent = match socket.peer_addr() {
+            Ok(peer) if peer.as_socket() == Some(relay) => {
+                // BSD/macOS rejects sendto with an address on a connected UDP socket.
+                socket.send_with_flags(&packet, flags)?
+            }
+            Ok(_) => return Err(unsupported()), // A pre-existing direct connection.
+            Err(_) => socket.send_to_with_flags(&packet, &relay.into(), flags)?,
+        };
         if sent != packet.len() {
             return Err(io::Error::new(io::ErrorKind::WriteZero, "partial UDP send"));
         }
