@@ -74,6 +74,9 @@ Recommendation:
 - IPv6 progress:
   - IPv6 targets supported through SOCKS5/HTTP hops
   - SOCKS4/4a does not support IPv6 targets
+- Ordered routing rules:
+  - `route direct|proxy|reject domain|domain_suffix|port|protocol|process VALUE`
+  - The first matching rule wins; unmatched traffic keeps the configured proxy chain.
 
 ## Build
 
@@ -144,6 +147,11 @@ remote_dns_subnet 224
 tcp_read_time_out 15000
 tcp_connect_time_out 8000
 max_chain_retries 8
+
+# Optional ordered routing rules (first match wins):
+# route direct domain_suffix .internal.example
+# route reject port 25
+# route direct protocol udp
 
 # compatibility alias examples:
 # round_robin_chain

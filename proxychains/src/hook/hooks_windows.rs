@@ -18,14 +18,14 @@ use tracing::{debug, error, info, warn};
 use windows::Win32::Networking::WinSock::{
     ADDRINFOA, ADDRINFOW, AF_INET, AF_INET6, IN_ADDR, IN_ADDR_0, IPPROTO_TCP, SOCKADDR,
     SOCKADDR_IN, SOCK_STREAM, SOCKET_ERROR, WSAEALREADY, WSAECONNREFUSED, WSAEFAULT,
-    WSAEINPROGRESS, WSAEINVAL, WSAEWOULDBLOCK, WSAGetLastError, WSAHOST_NOT_FOUND, WSASetLastError,
+    WSAEACCES, WSAEINPROGRESS, WSAEINVAL, WSAEWOULDBLOCK, WSAGetLastError, WSAHOST_NOT_FOUND, WSASetLastError,
     SOCKET, SEND_RECV_FLAGS, send,
 };
 use windows::core::GUID;
 use windows::Win32::System::IO::OVERLAPPED;
 use windows::Win32::System::Threading::SetEvent;
 
-use crate::config::{ChainType, Config, ProxyData, ProxyState};
+use crate::config::{ChainType, Config, ProxyData, ProxyState, RouteAction, RouteProtocol};
 use crate::dns::{is_fake_ip, DnsResolver};
 use crate::error::{Error, Result};
 use crate::net::{get_ip_from_sockaddr, get_ipaddr_from_sockaddr, get_port_from_sockaddr};
@@ -364,10 +364,6 @@ pub unsafe extern "system" fn hook_connect_impl(
     let started = std::time::Instant::now();
     debug!("hook_connect_impl intercepted target {}:{}", target_ip, target_port);
 
-    if config.should_bypass_ip(&target_ip) {
-        return original_connect(sock, addr, len);
-    }
-
     let (dnat_ip, final_port) = config.apply_dnat_ip(&target_ip, target_port);
     let (final_ip, target_domain) = match dnat_ip {
         IpAddr::V4(v4) if is_fake_ip(&v4) => (IpAddr::V4(v4), dns_resolver.get_hostname(&v4)),
@@ -385,6 +381,17 @@ pub unsafe extern "system" fn hook_connect_impl(
         _ => (dnat_ip, None),
     };
     let target_label = target_domain.as_deref().unwrap_or("ip").to_string();
+
+    let route_action = config.route_action(RouteProtocol::Tcp, target_domain.as_deref(), final_port);
+    if route_action == RouteAction::Reject {
+        WSASetLastError(WSAEACCES.0);
+        return SOCKET_ERROR;
+    }
+    if route_action == RouteAction::Direct
+        || (route_action == RouteAction::Proxy && config.should_bypass_ip(&final_ip))
+    {
+        return original_connect(sock, addr, len);
+    }
 
     let target = if let Some(domain) = target_domain {
         TargetAddress::from_both(final_ip, domain)

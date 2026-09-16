@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 use parking_lot::Mutex;
 use socket2::{SockAddr, Socket, Type};
 
-use crate::config::{Config, ProxyType};
+use crate::config::{Config, ProxyType, RouteAction, RouteProtocol};
 use crate::dns::{get_hostname_from_ip, DnsResolver};
 use crate::net::{is_internal_network, InternalNetwork};
 use crate::proxy::{decode_udp_datagram, encode_udp_datagram, TargetAddress, UdpControl};
@@ -177,6 +177,17 @@ pub(crate) unsafe fn connect(handle: Handle, address: SocketAddr) -> Option<io::
     if !enabled(handle) {
         return None;
     }
+    let (route_target, route_port) = target(address);
+    let action = CONFIG
+        .get()
+        .map(|config| config.route_action(RouteProtocol::Udp, route_target.domain(), route_port))
+        .unwrap_or(RouteAction::Proxy);
+    if action == RouteAction::Direct {
+        return None;
+    }
+    if action == RouteAction::Reject {
+        return Some(Err(io::Error::new(io::ErrorKind::PermissionDenied, "UDP route rejected by rule")));
+    }
     // Never switch an established association to direct I/O on reconnect.
     if CONFIG.get().unwrap().should_bypass_ip(&address.ip())
         && !sessions().lock().contains_key(&handle)
@@ -217,7 +228,21 @@ pub(crate) unsafe fn send(
             "UDP destination required",
         )));
     };
-    if existing.is_none() && CONFIG.get().unwrap().should_bypass_ip(&address.ip()) {
+    let (route_target, route_port) = target(address);
+    let action = CONFIG
+        .get()
+        .map(|config| config.route_action(RouteProtocol::Udp, route_target.domain(), route_port))
+        .unwrap_or(RouteAction::Proxy);
+    if action == RouteAction::Direct {
+        return None;
+    }
+    if action == RouteAction::Reject {
+        return Some(Err(io::Error::new(io::ErrorKind::PermissionDenied, "UDP route rejected by rule")));
+    }
+    if existing.is_none()
+        && action == RouteAction::Proxy
+        && CONFIG.get().unwrap().should_bypass_ip(&address.ip())
+    {
         return None;
     }
     let (target_label, target_port) = {

@@ -206,6 +206,65 @@ pub struct DnatRule {
     pub new_port: u16,
 }
 
+/// Protocol selector used by routing rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteProtocol {
+    Tcp,
+    Udp,
+}
+
+/// Action selected by a routing rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteAction {
+    Proxy,
+    Direct,
+    Reject,
+}
+
+/// Ordered process/domain/port routing rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteRule {
+    pub action: RouteAction,
+    pub protocol: Option<RouteProtocol>,
+    pub domain: Option<String>,
+    pub domain_suffix: Option<String>,
+    pub port: Option<u16>,
+    pub process: Option<String>,
+}
+
+impl RouteRule {
+    pub fn matches(
+        &self,
+        protocol: RouteProtocol,
+        domain: Option<&str>,
+        port: u16,
+        process: &str,
+    ) -> bool {
+        if self.protocol.is_some_and(|expected| expected != protocol)
+            || self.port.is_some_and(|expected| expected != port)
+            || self.process.as_deref().is_some_and(|expected| !process.eq_ignore_ascii_case(expected))
+        {
+            return false;
+        }
+        if let Some(expected) = self.domain.as_deref() {
+            if !domain.is_some_and(|actual| actual.eq_ignore_ascii_case(expected)) {
+                return false;
+            }
+        }
+        if let Some(expected) = self.domain_suffix.as_deref() {
+            if !domain.is_some_and(|actual| {
+                let actual = actual.to_ascii_lowercase();
+                let expected = expected.to_ascii_lowercase();
+                actual == expected.trim_start_matches('.')
+                    || actual.ends_with(&format!(".{}", expected.trim_start_matches('.')))
+            }) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 impl DnatRule {
     pub fn new(original: Ipv4Addr, original_port: u16, new: Ipv4Addr, new_port: u16) -> Self {
         Self {
@@ -242,6 +301,8 @@ pub struct Config {
     pub localnets: Vec<LocalNet>,
     /// DNAT rules
     pub dnats: Vec<DnatRule>,
+    /// Ordered routing rules. An unmatched connection keeps proxy behavior.
+    pub route_rules: Vec<RouteRule>,
     /// Proxy list
     pub proxies: Vec<ProxyData>,
 }
@@ -260,6 +321,7 @@ impl Default for Config {
             max_chain_retries: 8,
             localnets: Vec::new(),
             dnats: Vec::new(),
+            route_rules: Vec::new(),
             proxies: Vec::new(),
         }
     }
@@ -332,6 +394,23 @@ impl Config {
     /// Check if configuration has any proxies
     pub fn has_proxies(&self) -> bool {
         !self.proxies.is_empty()
+    }
+
+    /// Select the first matching route rule, defaulting to proxying.
+    pub fn route_action(
+        &self,
+        protocol: RouteProtocol,
+        domain: Option<&str>,
+        port: u16,
+    ) -> RouteAction {
+        let process = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+            .unwrap_or_default();
+        self.route_rules
+            .iter()
+            .find(|rule| rule.matches(protocol, domain, port, &process))
+            .map_or(RouteAction::Proxy, |rule| rule.action)
     }
 }
 

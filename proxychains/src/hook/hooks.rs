@@ -17,7 +17,7 @@ use parking_lot::Mutex;
 use tracing::{debug, error, info, trace};
 
 use crate::chain::ChainManager;
-use crate::config::Config;
+use crate::config::{Config, RouteAction, RouteProtocol};
 use crate::dns::is_fake_ip;
 use crate::error::Result;
 use crate::ConfigParser;
@@ -300,12 +300,6 @@ pub unsafe fn hook_connect(
     let target_port = get_port_from_sockaddr(addr);
     let started = Instant::now();
 
-    // Check if we should bypass this connection
-    if state.config.should_bypass_ip(&target_ip) {
-        debug!("Bypassing proxy for local address: {}:{}", target_ip, target_port);
-        return original_connect(sock, addr, len);
-    }
-
     // Apply DNAT if configured
     let (dnat_ip, final_port) = state.config.apply_dnat_ip(&target_ip, target_port);
 
@@ -329,6 +323,23 @@ pub unsafe fn hook_connect(
     let target_label = target_domain
         .clone()
         .unwrap_or_else(|| final_ip.to_string());
+
+    let route_action = state
+        .config
+        .route_action(RouteProtocol::Tcp, target_domain.as_deref(), final_port);
+    if route_action == RouteAction::Reject {
+        #[cfg(target_os = "linux")]
+        { *libc::__errno_location() = libc::EACCES; }
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+        { *libc::__error() = libc::EACCES; }
+        return -1;
+    }
+    if route_action == RouteAction::Direct
+        || (route_action == RouteAction::Proxy && state.config.should_bypass_ip(&final_ip))
+    {
+        debug!("Bypassing proxy for local address: {}:{}", final_ip, final_port);
+        return original_connect(sock, addr, len);
+    }
 
     // Check if proxy DNS is enabled and we have a domain
     if state.config.proxy_dns && target_domain.is_some() {

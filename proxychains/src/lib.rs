@@ -42,7 +42,7 @@ pub mod trace;
 
 // Re-exports for convenience
 pub use chain::{ChainManager, ChainError};
-pub use config::{Config, ConfigParser, ProxyData, ProxyType, ChainType};
+pub use config::{Config, ConfigParser, ProxyData, ProxyType, ChainType, RouteAction, RouteProtocol, RouteRule};
 pub use dns::{DnsResolver, DnsCache};
 pub use error::{Error, Result};
 

@@ -74,6 +74,9 @@ Windows overlapped/IOCP UDP 尚不支持，也不代表所有 QUIC/HTTP/3 应用
 - IPv6 进展：
   - IPv6 目标可通过 SOCKS5/HTTP 跳转
   - SOCKS4/4a 不支持 IPv6 目标
+- 有序分流规则：
+  - `route direct|proxy|reject domain|domain_suffix|port|protocol|process VALUE`
+  - 第一条匹配规则生效，未匹配的连接保持原代理链行为。
 
 ## 编译
 
@@ -142,6 +145,11 @@ remote_dns_subnet 224
 tcp_read_time_out 15000
 tcp_connect_time_out 8000
 max_chain_retries 8
+
+# 可选的有序分流规则（第一条匹配生效）：
+# route direct domain_suffix .internal.example
+# route reject port 25
+# route direct protocol udp
 
 # 兼容别名示例：
 # round_robin_chain

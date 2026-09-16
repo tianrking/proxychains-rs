@@ -294,6 +294,9 @@ impl ConfigParser {
             "dnat" => {
                 self.parse_dnat(value, config)?;
             }
+            "route" => {
+                self.parse_route(value, config)?;
+            }
             _ => {} // Ignore unknown options
         }
 
@@ -346,6 +349,44 @@ impl ConfigParser {
         let (new_addr, new_port) = parse_addr_port(parts[1])?;
 
         config.dnats.push(DnatRule::new(orig_addr, orig_port, new_addr, new_port));
+        Ok(())
+    }
+
+    /// Parse an ordered route rule: route ACTION MATCHER VALUE.
+    fn parse_route(&self, value: &str, config: &mut Config) -> Result<()> {
+        let parts: Vec<&str> = value.split_whitespace().collect();
+        if parts.len() != 3 {
+            return Err(Error::Config("Invalid route format; expected route ACTION MATCHER VALUE".into()));
+        }
+        let action = match parts[0].to_ascii_lowercase().as_str() {
+            "proxy" => RouteAction::Proxy,
+            "direct" => RouteAction::Direct,
+            "reject" | "deny" => RouteAction::Reject,
+            _ => return Err(Error::Config(format!("Invalid route action: {}", parts[0]))),
+        };
+        let mut rule = RouteRule {
+            action,
+            protocol: None,
+            domain: None,
+            domain_suffix: None,
+            port: None,
+            process: None,
+        };
+        match parts[1].to_ascii_lowercase().as_str() {
+            "domain" => rule.domain = Some(parts[2].trim_end_matches('.').to_string()),
+            "domain_suffix" | "suffix" => rule.domain_suffix = Some(parts[2].trim_end_matches('.').to_string()),
+            "port" => rule.port = Some(parts[2].parse().map_err(|_| Error::Config(format!("Invalid route port: {}", parts[2])))?),
+            "process" | "process_name" => rule.process = Some(parts[2].to_string()),
+            "protocol" => {
+                rule.protocol = Some(match parts[2].to_ascii_lowercase().as_str() {
+                    "tcp" => RouteProtocol::Tcp,
+                    "udp" => RouteProtocol::Udp,
+                    _ => return Err(Error::Config(format!("Invalid route protocol: {}", parts[2]))),
+                });
+            }
+            _ => return Err(Error::Config(format!("Invalid route matcher: {}", parts[1]))),
+        }
+        config.route_rules.push(rule);
         Ok(())
     }
 
@@ -539,6 +580,26 @@ socks5 127.0.0.1 1080
         assert_eq!(config.chain_type, ChainType::LoadBalance);
         assert!(config.proxy_dns);
 
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_parse_route_rules_in_order() {
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("proxychains_routes_{}.conf", ts));
+        fs::write(&path, r#"
+route direct domain_suffix .internal.example
+route reject port 25
+route direct protocol udp
+[ProxyList]
+socks5 127.0.0.1 1080
+"#).unwrap();
+        let config = ConfigParser::new().with_path(path.clone()).parse().unwrap();
+        assert_eq!(config.route_rules.len(), 3);
+        assert_eq!(config.route_action(RouteProtocol::Tcp, Some("git.internal.example"), 443), RouteAction::Direct);
+        assert_eq!(config.route_action(RouteProtocol::Tcp, Some("mail.example"), 25), RouteAction::Reject);
+        assert_eq!(config.route_action(RouteProtocol::Udp, Some("dns.example"), 53), RouteAction::Direct);
+        assert_eq!(config.route_action(RouteProtocol::Tcp, Some("example.com"), 443), RouteAction::Proxy);
         let _ = fs::remove_file(path);
     }
 
