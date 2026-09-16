@@ -993,6 +993,15 @@ pub unsafe extern "system" fn hook_getaddrinfoexw_impl(
             pname_handle,
         );
     }
+    // A temporary fake-IP name cannot outlive an asynchronous resolver call.
+    // Preserve the system's buffer/completion contract until a lifetime-safe
+    // completion wrapper is available.
+    if !overlapped.is_null() || !completion_routine.is_null() {
+        return original_getaddrinfoexw(
+            pname, pservice, namespace, pnspid, hints, ppresult, timeout,
+            overlapped, completion_routine, pname_handle,
+        );
+    }
     let dns_resolver = DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
 
     if pname.is_null() {
@@ -1070,6 +1079,12 @@ pub unsafe extern "system" fn hook_getaddrinfoexa_impl(
     maybe_reload_config(state);
     let config = state.config.lock().clone();
     if !config.proxy_dns {
+        return original_getaddrinfoexa(
+            pname, pservice, namespace, pnspid, hints, ppresult, timeout,
+            overlapped, completion_routine, pname_handle,
+        );
+    }
+    if !overlapped.is_null() || !completion_routine.is_null() {
         return original_getaddrinfoexa(
             pname, pservice, namespace, pnspid, hints, ppresult, timeout,
             overlapped, completion_routine, pname_handle,
