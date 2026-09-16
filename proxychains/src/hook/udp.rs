@@ -472,7 +472,8 @@ pub(crate) unsafe fn receive(handle: Handle, flags: i32) -> Option<io::Result<Re
     }
     let session = sessions().lock().get(&handle)?.clone();
     let _internal = InternalNetwork::enter();
-    Some((|| {
+    let started = Instant::now();
+    let result = (|| {
         #[cfg(unix)]
         let allowed = libc::MSG_PEEK | libc::MSG_DONTWAIT | libc::MSG_TRUNC;
         #[cfg(windows)]
@@ -535,7 +536,49 @@ pub(crate) unsafe fn receive(handle: Handle, flags: i32) -> Option<io::Result<Re
             // RFC 1928: drop unsupported fragments and malformed/foreign packets.
             discard_peek(&socket, native_flags, &mut packet)?;
         }
-    })())
+    })();
+    let proxy_label = session_proxy_label(handle);
+    match &result {
+        Ok(received) => {
+            let target = received.source.ip().to_string();
+            crate::trace::record(crate::trace::ConnectionEvent {
+                schema_version: "1.0",
+                timestamp_ms: crate::trace::now_ms(),
+                pid: crate::trace::process_id(),
+                process: crate::trace::process_name(),
+                session_id: crate::trace::session_id(),
+                event: "udp_receive",
+                protocol: "udp",
+                target: &target,
+                port: received.source.port(),
+                proxy: proxy_label,
+                stage: "data",
+                ok: true,
+                elapsed_ms: Some(started.elapsed().as_millis()),
+                error: None,
+            });
+        }
+        Err(error_value) => {
+            let message = error_value.to_string();
+            crate::trace::record(crate::trace::ConnectionEvent {
+                schema_version: "1.0",
+                timestamp_ms: crate::trace::now_ms(),
+                pid: crate::trace::process_id(),
+                process: crate::trace::process_name(),
+                session_id: crate::trace::session_id(),
+                event: "udp_receive",
+                protocol: "udp",
+                target: "unknown",
+                port: 0,
+                proxy: proxy_label,
+                stage: "data",
+                ok: false,
+                elapsed_ms: Some(started.elapsed().as_millis()),
+                error: Some(&message),
+            });
+        }
+    }
+    Some(result)
 }
 
 fn discard_peek(socket: &Socket, flags: i32, packet: &mut [MaybeUninit<u8>]) -> io::Result<()> {
