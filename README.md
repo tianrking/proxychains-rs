@@ -150,6 +150,10 @@ credentials or payload bytes. Use
 waits for a log file that has not been created yet. Logging is best-effort: a
 busy or unavailable log file never blocks a connection hook.
 
+When a command is launched through the CLI, a session ID is generated
+automatically and inherited by its child processes. Set `PROXYCHAINS_SESSION_ID`
+before launching to provide your own correlation key.
+
 A profile is a small `KEY = VALUE` file. Supported keys are `command`,
 `args` (whitespace-separated), `cwd`, `config`, `group`, and `env.NAME`:
 Relative `cwd` and `config` paths are resolved from the profile's directory,

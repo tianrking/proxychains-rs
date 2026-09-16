@@ -951,6 +951,14 @@ struct ProbeNode {
 
 /// Set proxychains-specific environment variables
 fn set_proxychains_env(config: &Config, args: &Args) {
+    // A session identifier lets JSONL events from a launched process tree be
+    // correlated without requiring every child to invent its own identifier.
+    // Preserve an explicitly supplied value so profiles and integrations can
+    // provide a stable external correlation key.
+    if env::var_os("PROXYCHAINS_SESSION_ID").is_none() {
+        env::set_var("PROXYCHAINS_SESSION_ID", default_session_id());
+    }
+
     if args.quiet {
         env::set_var("PROXYCHAINS_QUIET_MODE", "1");
     }
@@ -970,6 +978,13 @@ fn set_proxychains_env(config: &Config, args: &Args) {
     if let Some(ref path) = args.log_file {
         env::set_var("PROXYCHAINS_LOG_FILE", path);
     }
+}
+
+fn default_session_id() -> String {
+    let elapsed = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}-{}", process::id(), elapsed.as_nanos())
 }
 
 fn apply_profile(args: &mut Args, path: &PathBuf) -> Result<(), String> {
@@ -1423,6 +1438,13 @@ mod tests {
         assert_eq!(args.config, Some(path.parent().unwrap().join("config/proxychains.conf")));
         assert_eq!(args.launch_env, vec![("RUST_LOG".into(), "info".into())]);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn default_session_id_contains_process_identity() {
+        let session_id = default_session_id();
+        assert!(session_id.starts_with(&format!("{}-", process::id())));
+        assert!(session_id.len() > process::id().to_string().len() + 1);
     }
 
     #[test]
