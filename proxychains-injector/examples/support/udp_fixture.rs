@@ -108,7 +108,9 @@ pub fn run(mode: &str) {
             }
         }
         #[cfg(windows)]
-        reject_overlapped(&socket, destination);
+        if mode != "udp-iocp" {
+            reject_overlapped(&socket, destination);
+        }
     }
 }
 
