@@ -1178,6 +1178,9 @@ pub unsafe extern "system" fn hook_getaddrinfoexa_impl(
 }
 
 const DNS_ERROR_RCODE_NAME_ERROR: i32 = 9003;
+// dnsapi.h: DNS_QUERY_ASYNC requests retain the query name until the callback.
+// A stack/temporary fake-IP string cannot safely cross that asynchronous boundary.
+const DNS_QUERY_ASYNC: u32 = 0x0000_1000;
 
 /// Windows DnsQuery_A hook implementation.
 #[cfg(windows)]
@@ -1195,7 +1198,7 @@ pub unsafe extern "system" fn hook_dns_query_a_impl(
     };
     maybe_reload_config(state);
     let config = state.config.lock().clone();
-    if !config.proxy_dns || name.is_null() {
+    if !config.proxy_dns || name.is_null() || options & DNS_QUERY_ASYNC != 0 {
         return original_dns_query_a(name, query_type, options, extra, result, reserved);
     }
 
@@ -1241,7 +1244,7 @@ pub unsafe extern "system" fn hook_dns_query_w_impl(
     };
     maybe_reload_config(state);
     let config = state.config.lock().clone();
-    if !config.proxy_dns || name.is_null() {
+    if !config.proxy_dns || name.is_null() || options & DNS_QUERY_ASYNC != 0 {
         return original_dns_query_w(name, query_type, options, extra, result, reserved);
     }
 
