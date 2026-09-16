@@ -69,7 +69,7 @@ Recommendation:
   - Shared proxy health cooldown (`proxy_health_cooldown_ms`) prevents repeated
     attempts against a failing node across new connections and UDP associations;
     existing TCP streams and UDP sockets are never migrated.
-  - `--log-file FILE` (best-effort JSONL connection events from intercepted hooks)
+  - `--log-file FILE` (best-effort JSONL connection events with process, timing and selected UDP proxy fields)
   - `--events --log-file FILE [--events-follow]` (view recorded events)
 - DNS:
   - `proxy_dns`

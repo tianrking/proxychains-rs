@@ -24,6 +24,8 @@ pub struct ConnectionEvent<'a> {
     pub protocol: &'a str,
     pub target: &'a str,
     pub port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
     pub stage: &'a str,
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -107,6 +109,7 @@ mod tests {
             protocol: "tcp",
             target: "example.test",
             port: 443,
+            proxy: Some("127.0.0.1:1080".to_string()),
             stage: "target",
             ok: true,
             elapsed_ms: Some(3),
@@ -114,6 +117,7 @@ mod tests {
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("example.test"));
+        assert!(json.contains("127.0.0.1:1080"));
         assert!(!json.contains("password"));
     }
 }

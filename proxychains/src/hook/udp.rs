@@ -5,6 +5,7 @@ use std::io;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use parking_lot::Mutex;
 use socket2::{SockAddr, Socket, Type};
@@ -142,6 +143,7 @@ pub(crate) fn unsupported() -> io::Error {
 }
 
 fn association(session: &mut Session, requested_group: Option<&str>) -> io::Result<Arc<UdpControl>> {
+    let started = Instant::now();
     if let Some(association) = &session.association {
         if requested_group.is_some() && requested_group != session.proxy_group.as_deref() {
             return Err(io::Error::new(
@@ -219,9 +221,10 @@ fn association(session: &mut Session, requested_group: Option<&str>) -> io::Resu
                 protocol: "udp",
                 target: "unknown",
                 port: 0,
+                proxy: None,
                 stage: "udp_associate",
                 ok: false,
-                elapsed_ms: None,
+                elapsed_ms: Some(started.elapsed().as_millis()),
                 error: Some(&message),
             });
             return Err(error(error_value));
@@ -237,9 +240,10 @@ fn association(session: &mut Session, requested_group: Option<&str>) -> io::Resu
         protocol: "udp",
         target: "unknown",
         port: 0,
+        proxy: Some(format!("{}:{}", proxy.host, proxy.port)),
         stage: "udp_associate",
         ok: true,
-        elapsed_ms: None,
+        elapsed_ms: Some(started.elapsed().as_millis()),
         error: None,
     });
     let association = Arc::new(association);
@@ -326,6 +330,7 @@ pub(crate) unsafe fn send(
         return None;
     }
     let _internal = InternalNetwork::enter();
+    let started = Instant::now();
     let socket = socket(handle);
     let existing = sessions().lock().get(&handle).cloned();
     let peer = existing.as_ref().and_then(|s| s.lock().peer);
@@ -392,7 +397,8 @@ pub(crate) unsafe fn send(
             schema_version: "1.0", timestamp_ms: crate::trace::now_ms(), pid: crate::trace::process_id(),
             process: crate::trace::process_name(), session_id: crate::trace::session_id(),
             event: "udp_send", protocol: "udp", target: &target_label, port: target_port,
-            stage: "data", ok: true, elapsed_ms: None, error: None,
+            proxy: None,
+            stage: "data", ok: true, elapsed_ms: Some(started.elapsed().as_millis()), error: None,
         }),
         Err(error_value) => {
             let message = error_value.to_string();
@@ -400,7 +406,8 @@ pub(crate) unsafe fn send(
                 schema_version: "1.0", timestamp_ms: crate::trace::now_ms(), pid: crate::trace::process_id(),
                 process: crate::trace::process_name(), session_id: crate::trace::session_id(),
                 event: "udp_send", protocol: "udp", target: &target_label, port: target_port,
-                stage: "data", ok: false, elapsed_ms: None, error: Some(&message),
+                proxy: None,
+                stage: "data", ok: false, elapsed_ms: Some(started.elapsed().as_millis()), error: Some(&message),
             });
         }
     }
