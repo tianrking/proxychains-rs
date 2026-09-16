@@ -41,7 +41,7 @@ association. `proxychains-udp` remains an explicit fixed-target forwarder.
 | --- | --- |
 | Linux/macOS | `connect`, `sendto`/`recvfrom`, `send`/`recv`, `write`/`read`, `sendmsg`/`recvmsg`, `writev`/`readv`, `getpeername`, `close` |
 | Linux | Also `sendmmsg`, and `recvmmsg` with an overall timeout (including `MSG_WAITFORONE`) |
-| Windows | `connect`/`WSAConnect`, `sendto`/`recvfrom`, `send`/`recv`, synchronous and IOCP `WSASendTo`/`WSARecvFrom`, `WSASend`/`WSARecv`, synchronous and IOCP `WSASendMsg`/`WSARecvMsg`, `getpeername`, `closesocket` |
+| Windows | `connect`/`WSAConnect`, `sendto`/`recvfrom`, `send`/`recv`, synchronous, IOCP and completion-routine `WSASendTo`/`WSARecvFrom`, `WSASend`/`WSARecv`, synchronous, IOCP and completion-routine `WSASendMsg`/`WSARecvMsg`, `getpeername`, `closesocket` |
 
 Both connected and unconnected datagram sockets are supported. SOCKS frames can
 contain IPv4, IPv6 or domain destinations; IPv4 and IPv6 relays are supported.
@@ -75,7 +75,8 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
 ## Compatibility boundaries
 
 - Windows asynchronous `WSASendMsg`/`WSARecvMsg` is supported for sockets
-  associated with a completion port. RIO is deliberately rejected with
+  associated with a completion port or using an overlapped completion routine;
+  the same applies to `WSASendTo`/`WSARecvFrom`. RIO is deliberately rejected with
   `WSAEOPNOTSUPP` until a complete RIO data plane exists, preventing direct
   registered-I/O function pointers from bypassing the proxy. Synchronous and
   asynchronous message extension functions are exposed through

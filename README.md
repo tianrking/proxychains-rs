@@ -7,8 +7,8 @@ selected UDP proxy group. New associations fail over across eligible nodes;
 each UDP socket keeps its first selected group and proxy.
 It intercepts supported application socket calls through UDP ASSOCIATE, including
 authenticated IPv4/IPv6/domain datagrams. See [setup and limitations](docs/udp-proxying.md).
-Windows synchronous and IOCP UDP calls, including `WSASendMsg`/`WSARecvMsg`, are
-covered by native fixtures. A real Quinn+h3 HTTP/3 GET and response also pass
+Windows synchronous, IOCP, and overlapped completion-routine UDP calls,
+including `WSASendMsg`/`WSARecvMsg`, are covered by native fixtures. A real Quinn+h3 HTTP/3 GET and response also pass
 through the transparent SOCKS5 relay in CI; browser and MsQuic compatibility
 remain uncertified.
 
@@ -23,7 +23,7 @@ A modern Rust implementation of classic `proxychains4`, with cross-platform proc
 |---|---|---|
 | Linux | `LD_PRELOAD` | Compile-checked; native regression gate added, event-loop compatibility pending |
 | macOS | `DYLD_INSERT_LIBRARIES` | Compile-checked; native regression gate added, protected apps and event loops not certified |
-| Windows | DLL injection + MinHook | Creation-time tree injection, UDP IOCP fixtures, and ConnectEx close-cancellation fixtures pass; RIO remains incomplete |
+| Windows | DLL injection + MinHook | Creation-time tree injection, UDP IOCP/completion-routine fixtures, and ConnectEx close-cancellation fixtures pass; RIO remains incomplete |
 
 Author: **tianrking**. See [implementation status](docs/implementation-status.md)
 for verified behavior, commands and unfinished work. This is not system-enforced
