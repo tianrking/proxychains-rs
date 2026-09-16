@@ -1260,6 +1260,7 @@ fn execute_command(args: &Args, config: &Config) -> Result<i32, String> {
 // ============================================================================
 
 /// Get the directory containing the current binary
+#[cfg(unix)]
 fn get_binary_dir() -> Option<PathBuf> {
     env::current_exe()
         .ok()

@@ -49,7 +49,7 @@ mod tests {
     #[test]
     fn test_raw_connect() {
         let proxy = ProxyData::default();
-        let connector = RawConnector::new(&proxy, Duration::from_secs(5));
+        let _connector = RawConnector::new(&proxy, Duration::from_secs(5));
         // Raw connector should always succeed
         // (no actual stream needed for this test)
     }
