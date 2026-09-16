@@ -373,8 +373,55 @@ unsafe extern "system" fn wsa_sendmsg(
     ov: *mut c_void,
     completion: *mut c_void,
 ) -> i32 {
-    if udp::enabled(s) {
+    if !udp::enabled(s) {
+        return WSASENDMSG.get().unwrap()(s, msg, flags, sent, ov, completion);
+    }
+    // This hook handles the synchronous WSAMSG form. Overlapped completion
+    // ownership stays with the application's IOCP and is intentionally
+    // rejected until the full asynchronous relay lifecycle is implemented.
+    if msg.is_null() || sent.is_null() || !ov.is_null() || !completion.is_null() {
         return fail(udp::unsupported());
     }
-    WSASENDMSG.get().unwrap()(s, msg, flags, sent, ov, completion)
+    let message = &*(msg.cast::<WSAMSG>());
+    if message.Control.len != 0 {
+        return fail(udp::unsupported());
+    }
+    let count = usize::try_from(message.dwBufferCount).ok();
+    let Some(count) = count.filter(|&count| count <= 1024) else {
+        return fail(io::Error::from_raw_os_error(WSAEMSGSIZE.0));
+    };
+    if count != 0 && message.lpBuffers.is_null() {
+        return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
+    }
+    let buffers = std::slice::from_raw_parts(message.lpBuffers, count);
+    let mut data = Vec::new();
+    for buffer in buffers {
+        let length = usize::try_from(buffer.len).unwrap_or(usize::MAX);
+        if length > 65507usize.saturating_sub(data.len()) || (length != 0 && buffer.buf.is_null()) {
+            return fail(io::Error::from_raw_os_error(WSAEMSGSIZE.0));
+        }
+        let bytes = std::slice::from_raw_parts(buffer.buf.0.cast_const(), length);
+        data.extend_from_slice(bytes);
+    }
+    let address = if message.name.is_null() {
+        None
+    } else {
+        let length = usize::try_from(message.namelen).ok();
+        let Some(length) = length else {
+            return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
+        };
+        udp::parse_address(message.name.cast(), length)
+    };
+    let native_flags = match i32::try_from(flags) {
+        Ok(flags) => flags,
+        Err(_) => return fail(udp::unsupported()),
+    };
+    match udp::send(s, &data, address, native_flags) {
+        Some(Ok(length)) => {
+            *sent = length as u32;
+            0
+        }
+        Some(Err(error)) => fail(error),
+        None => WSASENDMSG.get().unwrap()(s, msg, flags, sent, ov, completion),
+    }
 }

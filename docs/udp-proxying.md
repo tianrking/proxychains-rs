@@ -36,7 +36,7 @@ association. `proxychains-udp` remains an explicit fixed-target forwarder.
 | --- | --- |
 | Linux/macOS | `connect`, `sendto`/`recvfrom`, `send`/`recv`, `write`/`read`, `sendmsg`/`recvmsg`, `writev`/`readv`, `getpeername`, `close` |
 | Linux | Also `sendmmsg`, and `recvmmsg` without a timeout argument (including `MSG_WAITFORONE`) |
-| Windows | `connect`/`WSAConnect`, `sendto`/`recvfrom`, `send`/`recv`, synchronous `WSASendTo`/`WSARecvFrom` and `WSASend`/`WSARecv`, `getpeername`, `closesocket` |
+| Windows | `connect`/`WSAConnect`, `sendto`/`recvfrom`, `send`/`recv`, synchronous `WSASendTo`/`WSARecvFrom`, `WSASend`/`WSARecv` and `WSASendMsg`, `getpeername`, `closesocket` |
 
 Both connected and unconnected datagram sockets are supported. SOCKS frames can
 contain IPv4, IPv6 or domain destinations; IPv4 and IPv6 relays are supported.
@@ -68,8 +68,8 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
 ## Compatibility boundaries
 
 - Windows overlapped/IOCP datagrams, UDP extension-function queries and
-  `WSASendMsg` return `WSAEOPNOTSUPP`; completion/cancellation and RIO are not
-  implemented.
+  asynchronous `WSASendMsg` return `WSAEOPNOTSUPP`; completion/cancellation and
+  RIO are not implemented.
 - Unix ancillary sends (packet-info, UDP segmentation offload), timed `recvmmsg`
   and `connect(AF_UNSPEC)` disconnect are rejected. Receive control data is marked
   truncated because relay metadata does not describe the original sender.
