@@ -166,6 +166,41 @@ pub unsafe fn close(s: c_int) -> c_int {
     udp::forget(s);
     original!("close", (c_int) -> c_int)(s)
 }
+
+fn copy_session(oldfd: c_int, newfd: c_int) {
+    udp::duplicate_session(oldfd, newfd);
+}
+
+pub unsafe fn dup(oldfd: c_int) -> c_int {
+    let newfd = original!("dup", (c_int) -> c_int)(oldfd);
+    if newfd >= 0 {
+        copy_session(oldfd, newfd);
+    }
+    newfd
+}
+
+pub unsafe fn dup2(oldfd: c_int, newfd: c_int) -> c_int {
+    if oldfd != newfd {
+        udp::remove_session(newfd);
+    }
+    let result = original!("dup2", (c_int, c_int) -> c_int)(oldfd, newfd);
+    if result >= 0 && oldfd != newfd {
+        copy_session(oldfd, result);
+    }
+    result
+}
+
+#[cfg(target_os = "linux")]
+pub unsafe fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int {
+    if oldfd != newfd {
+        udp::remove_session(newfd);
+    }
+    let result = original!("dup3", (c_int, c_int, c_int) -> c_int)(oldfd, newfd, flags);
+    if result >= 0 && oldfd != newfd {
+        copy_session(oldfd, result);
+    }
+    result
+}
 pub unsafe fn getpeername(s: c_int, addr: *mut sockaddr, len: *mut socklen_t) -> c_int {
     if let Some(peer) = udp::logical_peer(s) {
         if addr.is_null() || len.is_null() {

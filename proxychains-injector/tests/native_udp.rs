@@ -15,7 +15,8 @@ fn native_udp_routing_and_lifecycle() {
     let dir = std::env::temp_dir().join(format!("proxychains-native-udp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let config = dir.join("udp.conf");
-    for mode in [
+    #[allow(unused_mut)]
+    let mut modes = vec![
         "udp",
         "udp-connected",
         "udp-domain",
@@ -28,7 +29,10 @@ fn native_udp_routing_and_lifecycle() {
         "udp-iocp-recvmsg",
         "udp-iocp-cancel",
         "udp-v6relay",
-    ] {
+    ];
+    #[cfg(unix)]
+    modes.push("udp-dup");
+    for mode in modes {
         let ipv6 = mode == "udp-v6relay";
         let host = if ipv6 { "::1" } else { "127.0.0.1" };
         let listener = TcpListener::bind((host, 0)).unwrap();
@@ -37,7 +41,7 @@ fn native_udp_routing_and_lifecycle() {
         std::fs::write(&config, format!("strict_chain\nproxy_dns\nproxy_udp\n[ProxyList]\nsocks5 {host} {port} user password\n")).unwrap();
         let server = std::thread::spawn(move || {
             // Two successive sockets must each get a fresh control connection.
-            let sockets = if mode == "udp-iocp-cancel" { 1 } else { 2 };
+            let sockets = if matches!(mode, "udp-iocp-cancel" | "udp-dup") { 1 } else { 2 };
             for _ in 0..sockets {
                 let deadline = Instant::now() + Duration::from_secs(15);
                 let mut control = loop {
@@ -79,7 +83,7 @@ fn native_udp_routing_and_lifecycle() {
                 }
                 reply.extend(relay.local_addr().unwrap().port().to_be_bytes());
                 control.write_all(&reply).unwrap();
-                let rounds = if mode == "udp-iocp-cancel" { 1 } else { 4 };
+                let rounds = if mode == "udp-iocp-cancel" { 1 } else if mode == "udp-dup" { 2 } else { 4 };
                 for round in 0..rounds {
                     let mut packet = [0; 65535];
                     let (n, client) = relay.recv_from(&mut packet).unwrap();
@@ -106,7 +110,10 @@ fn native_udp_routing_and_lifecycle() {
                         }
                     };
                     assert_eq!(&packet[header_len - 2..header_len], &443u16.to_be_bytes());
-                    if round == 1 {
+                    if mode == "udp-dup" {
+                        let expected: &[u8] = if round == 0 { b"dup-original" } else { b"dup-clone" };
+                        assert_eq!(&packet[header_len..n], expected);
+                    } else if round == 1 {
                         assert_eq!(n, header_len, "zero-length payload");
                     } else {
                         assert_eq!(

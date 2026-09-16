@@ -78,10 +78,10 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
 - Unix ancillary sends (packet-info, UDP segmentation offload), timed `recvmmsg`
   and `connect(AF_UNSPEC)` disconnect are rejected. Receive control data is marked
   truncated because relay metadata does not describe the original sender.
-- Socket duplication, descriptor passing, sockets inherited across fork/exec,
-  direct syscalls, io_uring, static executables and APIs outside the table are
-  unsupported. A duplicate handle does not carry hook state; use independent
-  sockets instead.
+- On Unix, `dup`, `dup2` and Linux `dup3` preserve the shared SOCKS5 association
+  and remove replaced descriptor state. Descriptor passing, sockets inherited
+  across fork/exec, Windows socket duplication, direct syscalls, io_uring,
+  static executables and APIs outside the table remain unsupported.
 - SOCKS fragmentation (`FRAG != 0`) is dropped. The payload must fit a UDP packet
   including the SOCKS header: 10 bytes for IPv4, 22 for IPv6, or 7 plus the domain
   byte length. No IP tunneling or ICMP support is added.
@@ -106,7 +106,8 @@ The `native_udp` integration test launches an ordinary UDP program through the
 actual DLL/preload library. A local authenticated SOCKS5 server independently
 checks UDP ASSOCIATE, IPv4/IPv6/domain framing, the original bound port, empty
 packets and control-channel closure. The client checks payload/source recovery,
-peek, truncation, nonblocking receive, vectored I/O, socket reuse and failures.
+peek, truncation, nonblocking receive, vectored I/O, Unix descriptor duplication,
+socket reuse and failures.
 The Windows run additionally submits relay-backed `WSASendTo`, `WSARecvFrom`,
 `WSASendMsg` and `WSARecvMsg` operations through an actual completion port and
 checks pending status, completion identity, byte counts and payload delivery.

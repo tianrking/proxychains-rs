@@ -27,6 +27,21 @@ pub fn run(mode: &str) {
         assert!(socket.recv_from(&mut [0; 64]).is_err());
         return;
     }
+    if mode == "udp-dup" {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let clone = socket.try_clone().unwrap();
+        socket.send_to(b"dup-original", destination).unwrap();
+        clone.send_to(b"dup-clone", destination).unwrap();
+        let mut buffer = [0; 64];
+        let (n, source) = socket.recv_from(&mut buffer).unwrap();
+        assert_eq!(&buffer[..n], b"dup-original");
+        assert_eq!(source, destination);
+        let (n, source) = clone.recv_from(&mut buffer).unwrap();
+        assert_eq!(&buffer[..n], b"dup-clone");
+        assert_eq!(source, destination);
+        return;
+    }
     for _ in 0..2 {
         let socket = UdpSocket::bind(if mode == "udp-v6relay" {
             "[::1]:0"

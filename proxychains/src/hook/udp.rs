@@ -76,6 +76,17 @@ fn sessions() -> &'static Mutex<Sessions> {
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+pub(crate) fn duplicate_session(old: Handle, new: Handle) {
+    let mut all = sessions().lock();
+    if let Some(session) = all.get(&old).cloned() {
+        all.insert(new, session);
+    }
+}
+
+pub(crate) fn remove_session(handle: Handle) {
+    sessions().lock().remove(&handle);
+}
+
 /// Borrow a valid OS handle without taking ownership.
 pub(crate) unsafe fn socket(handle: Handle) -> ManuallyDrop<Socket> {
     #[cfg(unix)]
