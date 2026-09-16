@@ -20,10 +20,10 @@ use windows::Win32::Networking::WinSock::{
     ADDRINFOA, ADDRINFOW, AF_INET, AF_INET6, IN_ADDR, IN_ADDR_0, IPPROTO_TCP, SOCKADDR,
     SOCKADDR_IN, SOCK_STREAM, SOCKET_ERROR, WSAEALREADY, WSAECONNREFUSED, WSAEFAULT,
     WSAEACCES, WSAEINPROGRESS, WSAEINVAL, WSAEWOULDBLOCK, WSAGetLastError, WSAHOST_NOT_FOUND, WSASetLastError,
-    SOCKET, SEND_RECV_FLAGS, WSAID_WSASENDMSG, send,
+    WSA_IO_PENDING, SOCKET, SEND_RECV_FLAGS, WSAID_WSASENDMSG, send,
 };
 use windows::core::GUID;
-use windows::Win32::System::IO::OVERLAPPED;
+use windows::Win32::System::IO::{PostQueuedCompletionStatus, OVERLAPPED};
 use windows::Win32::System::Threading::SetEvent;
 
 use crate::chain::{mark_proxy_failure, mark_proxy_success, proxy_is_available};
@@ -535,8 +535,9 @@ const WSAID_WSARECVMSG: GUID = GUID::from_u128(0xf689d7c8_6f1f_436b_8a53_e54fe35
 
 /// ConnectEx replacement used when applications query extension function pointers via WSAIoctl.
 ///
-/// This implementation is intentionally synchronous:
-/// - It supports optional initial send buffer semantics (`lpSendBuffer` + `dwSendDataLength`).
+/// It preserves synchronous ConnectEx when no OVERLAPPED is supplied. With an
+/// OVERLAPPED, proxy establishment and the optional initial send run on a
+/// worker and complete through the caller's event and/or IOCP association.
 #[cfg(windows)]
 pub unsafe extern "system" fn hook_connect_ex_impl(
     sock: usize,
@@ -556,29 +557,86 @@ pub unsafe extern "system" fn hook_connect_ex_impl(
         *bytes_sent = 0;
     }
 
-    let ret = hook_connect_impl(sock, name, namelen);
-    if ret == SOCKET_ERROR {
-        0
+    if overlapped.is_null() {
+        return connect_ex_sync(sock, name, namelen, send_buf, send_len, bytes_sent);
+    }
+    if name.is_null() || namelen <= 0 {
+        WSASetLastError(WSAEINVAL.0);
+        return 0;
+    }
+    let name_bytes = std::slice::from_raw_parts(name.cast::<u8>(), namelen as usize).to_vec();
+    let send_bytes = if send_len == 0 {
+        Vec::new()
     } else {
-        if send_len > 0 {
-            let send_slice =
-                std::slice::from_raw_parts(send_buf as *const u8, send_len as usize);
-            let sent = send(SOCKET(sock), send_slice, SEND_RECV_FLAGS(0));
-            if sent == SOCKET_ERROR {
-                return 0;
+        std::slice::from_raw_parts(send_buf.cast::<u8>(), send_len as usize).to_vec()
+    };
+    let overlapped_ptr = overlapped as usize;
+    let bytes_sent_ptr = bytes_sent as usize;
+    let iocp = super::udp_windows::iocp_for(sock);
+    let ov = &mut *(overlapped as *mut OVERLAPPED);
+    ov.Internal = 0x103;
+    ov.InternalHigh = 0;
+    let spawned = std::thread::Builder::new()
+        .name("proxychains-connectex".to_string())
+        .spawn(move || unsafe {
+            let result = hook_connect_impl(sock, name_bytes.as_ptr().cast(), name_bytes.len() as i32);
+            let mut status = 0usize;
+            let mut bytes = 0usize;
+            if result == SOCKET_ERROR {
+                status = WSAGetLastError().0 as usize;
+            } else if !send_bytes.is_empty() {
+                let sent = send(SOCKET(sock), &send_bytes, SEND_RECV_FLAGS(0));
+                if sent == SOCKET_ERROR {
+                    status = WSAGetLastError().0 as usize;
+                } else {
+                    bytes = sent as usize;
+                }
             }
-            if !bytes_sent.is_null() {
-                *bytes_sent = sent as u32;
+            if bytes_sent_ptr != 0 {
+                *(bytes_sent_ptr as *mut u32) = bytes as u32;
             }
-        }
-        if !overlapped.is_null() {
-            let ov = &mut *(overlapped as *mut OVERLAPPED);
+            let ov = &mut *(overlapped_ptr as *mut OVERLAPPED);
+            ov.Internal = status;
+            ov.InternalHigh = bytes;
             if !ov.hEvent.is_invalid() {
                 let _ = SetEvent(ov.hEvent);
             }
-        }
-        1
+            if let Some((port, key)) = iocp {
+                let _ = PostQueuedCompletionStatus(port, bytes as u32, key, Some(ov));
+            }
+        });
+    if spawned.is_err() {
+        WSASetLastError(WSAEWOULDBLOCK.0);
+        return 0;
     }
+    WSASetLastError(WSA_IO_PENDING.0);
+    0
+}
+
+#[cfg(windows)]
+unsafe fn connect_ex_sync(
+    sock: usize,
+    name: *const c_void,
+    namelen: i32,
+    send_buf: *const c_void,
+    send_len: u32,
+    bytes_sent: *mut u32,
+) -> i32 {
+    let ret = hook_connect_impl(sock, name, namelen);
+    if ret == SOCKET_ERROR {
+        return 0;
+    }
+    if send_len > 0 {
+        let send_slice = std::slice::from_raw_parts(send_buf.cast::<u8>(), send_len as usize);
+        let sent = send(SOCKET(sock), send_slice, SEND_RECV_FLAGS(0));
+        if sent == SOCKET_ERROR {
+            return 0;
+        }
+        if !bytes_sent.is_null() {
+            *bytes_sent = sent as u32;
+        }
+    }
+    1
 }
 
 /// WSAIoctl hook implementation.

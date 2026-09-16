@@ -44,7 +44,50 @@ fn native_readiness_and_failure_cleanup() {
     assert!(by_name.is_ok(), "unique executable attachment: {by_name:?}");
     assert!(ambiguous.is_err(), "multiple processes require explicit PID");
     verify_tcp_routing(&good, &fixture, &config);
+    verify_tcp_connectex(&good, &fixture, &config, "tcp-connectex");
+    verify_tcp_connectex(&good, &fixture, &config, "tcp-connectex-iocp");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+fn verify_tcp_connectex(injector: &ProxychainsInjector, fixture: &str, config: &std::path::Path, mode: &str) {
+    use std::io::{Read, Write};
+    use std::time::{Duration, Instant};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    std::fs::write(config, format!("strict_chain\nproxy_dns\n[ProxyList]\nhttp 127.0.0.1 {port}\n")).unwrap();
+    std::thread::sleep(Duration::from_millis(1100));
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+                Err(e) => panic!("ConnectEx client did not reach mock proxy: {e}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let mut header = Vec::new();
+        while !header.ends_with(b"\r\n\r\n") {
+            let mut byte = [0]; stream.read_exact(&mut byte).unwrap(); header.push(byte[0]);
+            assert!(header.len() < 8192);
+        }
+        assert!(header.starts_with(b"CONNECT 192.0.2.123:443 HTTP/1.0\r\n"), "{}", String::from_utf8_lossy(&header));
+        stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+        let mut request = [0; 17];
+        stream.read_exact(&mut request).unwrap();
+        assert_eq!(&request, b"connectex-request");
+        stream.write_all(b"proxy-response").unwrap();
+    });
+    let info = ProcessInfo {
+        pid: None,
+        name: None,
+        command: fixture.into(),
+        args: vec![mode.into(), "192.0.2.123:443".into()],
+    };
+    assert_eq!(injector.spawn_inject_wait(&info).unwrap(), 23);
+    server.join().unwrap();
 }
 
 fn verify_tcp_routing(injector: &ProxychainsInjector, fixture: &str, config: &std::path::Path) {

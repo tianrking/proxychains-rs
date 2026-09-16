@@ -22,10 +22,127 @@ fn main() {
         assert_eq!(&response, b"proxy-response");
         std::process::exit(23);
     }
+    if matches!(args.get(1).map(String::as_str), Some("tcp-connectex" | "tcp-connectex-iocp")) {
+        #[cfg(windows)]
+        run_tcp_connectex(&args[2], args[1] == "tcp-connectex-iocp");
+        #[cfg(not(windows))]
+        std::process::exit(24);
+        std::process::exit(23);
+    }
     if args.get(1).map(String::as_str) == Some("sleep") {
         std::thread::sleep(std::time::Duration::from_secs(60));
         return;
     }
     if let Some(marker) = args.get(1) { std::fs::write(marker, b"started").unwrap(); }
     std::process::exit(23);
+}
+
+#[cfg(windows)]
+fn run_tcp_connectex(target: &str, use_iocp: bool) {
+    use std::ffi::c_void;
+    use std::io::Read;
+    use std::mem::transmute;
+    use std::net::SocketAddr;
+    use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket};
+    use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+    use windows::core::GUID;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Networking::WinSock::{
+        WSAGetLastError, WSAIoctl, SOCKET, WSAID_CONNECTEX, WSA_IO_PENDING,
+        SIO_GET_EXTENSION_FUNCTION_POINTER,
+    };
+    use windows::Win32::System::IO::{CreateIoCompletionPort, GetOverlappedResult, GetQueuedCompletionStatus, OVERLAPPED};
+    use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+
+    type ConnectEx = unsafe extern "system" fn(
+        SOCKET,
+        *const c_void,
+        i32,
+        *const c_void,
+        u32,
+        *mut u32,
+        *mut OVERLAPPED,
+    ) -> i32;
+
+    let target: SocketAddr = target.parse().expect("ConnectEx target");
+    let socket = Socket::new(Domain::for_address(target), Type::STREAM, Some(Protocol::TCP))
+        .expect("ConnectEx socket");
+    socket
+        .bind(&SockAddr::from(SocketAddr::new(
+            if target.is_ipv4() { "0.0.0.0" } else { "::" }.parse().unwrap(),
+            0,
+        )))
+        .expect("ConnectEx bind");
+    let raw = SOCKET(socket.as_raw_socket() as usize);
+    let mut function: *mut c_void = std::ptr::null_mut();
+    let mut returned = 0;
+    let result = unsafe {
+        WSAIoctl(
+            raw,
+            SIO_GET_EXTENSION_FUNCTION_POINTER,
+            Some((&WSAID_CONNECTEX as *const GUID).cast()),
+            std::mem::size_of::<GUID>() as u32,
+            Some((&mut function as *mut *mut c_void).cast()),
+            std::mem::size_of::<*mut c_void>() as u32,
+            &mut returned,
+            None,
+            None,
+        )
+    };
+    assert_eq!(result, 0);
+    let connect_ex: ConnectEx = unsafe { transmute(function) };
+    let event = if use_iocp {
+        HANDLE::default()
+    } else {
+        unsafe { CreateEventW(None, true, false, None).expect("ConnectEx event") }
+    };
+    let port = if use_iocp {
+        let port = unsafe { CreateIoCompletionPort(HANDLE(-1), HANDLE::default(), 0x56, 1).expect("ConnectEx IOCP") };
+        unsafe { CreateIoCompletionPort(HANDLE(raw.0 as isize), port, 0x56, 1).expect("associate ConnectEx socket") };
+        Some(port)
+    } else {
+        None
+    };
+    let mut overlapped = OVERLAPPED { hEvent: event, ..Default::default() };
+    let initial = b"connectex-request";
+    let mut sent = 0;
+    let destination = SockAddr::from(target);
+    let result = unsafe {
+        connect_ex(
+            raw,
+            destination.as_ptr().cast(),
+            destination.len(),
+            initial.as_ptr().cast(),
+            initial.len() as u32,
+            &mut sent,
+            &mut overlapped,
+        )
+    };
+    assert_eq!(result, 0);
+    assert_eq!(unsafe { WSAGetLastError() }, WSA_IO_PENDING);
+    if let Some(port) = port {
+        let mut completed_bytes = 0;
+        let mut key = 0;
+        let mut completed = std::ptr::null_mut();
+        unsafe {
+            GetQueuedCompletionStatus(port, &mut completed_bytes, &mut key, &mut completed, 10_000)
+                .expect("ConnectEx IOCP completion");
+        }
+        assert_eq!(key, 0x56);
+        assert!(std::ptr::eq(completed, &mut overlapped));
+        assert_eq!(completed_bytes, initial.len() as u32);
+    } else {
+        assert_eq!(unsafe { WaitForSingleObject(event, 10_000) }, windows::Win32::Foundation::WAIT_OBJECT_0);
+    }
+    let mut completed = 0;
+    unsafe {
+        GetOverlappedResult(HANDLE(raw.0 as isize), &mut overlapped, &mut completed, true)
+            .expect("ConnectEx completion");
+    }
+    assert_eq!(completed, initial.len() as u32);
+    assert_eq!(sent, initial.len() as u32);
+    let mut stream = unsafe { std::net::TcpStream::from_raw_socket(socket.into_raw_socket()) };
+    let mut response = [0; 14];
+    stream.read_exact(&mut response).expect("ConnectEx response");
+    assert_eq!(&response, b"proxy-response");
 }

@@ -91,6 +91,12 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
 
 This is process-level API interposition, not OS-enforced network isolation.
 
+The Windows `ConnectEx` extension is intercepted as well. Calls without an
+`OVERLAPPED` complete synchronously; overlapped calls return
+`WSA_IO_PENDING`, preserve the optional initial send buffer, and complete via
+the caller's event or the socket's associated IOCP. Closing a socket does not
+cancel an already queued ConnectEx worker.
+
 ## Native validation
 
 The `native_udp` integration test launches an ordinary UDP program through the

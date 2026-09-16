@@ -49,7 +49,9 @@ The suspended launcher waits for explicit hook readiness. Windows `--tree`
 uses debugger creation events to inject each child before it resumes, closing
 the old process-table polling window. The public `spawn_and_inject` API still
 injects after launch and does not have the same before-first-instruction
-guarantee. ConnectEx/IOCP support is not certified.
+guarantee. ConnectEx now preserves synchronous calls and provides overlapped
+completion through an event or an associated IOCP; cancellation and migration
+of an already pending ConnectEx operation remain unsupported.
 
 Explicit UDP forwarding through a configuration containing exactly one SOCKS5 node:
 
@@ -69,8 +71,9 @@ packets are rejected. DNS TCP fallback is not provided by this UDP-only command.
 
 1. Replace Windows descendant polling with creation-time propagation, including
    process creation variants, architecture combinations and a safe failure policy.
-2. Implement native asynchronous socket semantics: Windows ConnectEx/IOCP,
-   Unix nonblocking connect, epoll/kqueue and fd duplication/closure tracking.
+2. Complete native asynchronous socket semantics beyond the implemented Windows
+   ConnectEx/IOCP path: cancellation ownership, Unix nonblocking connect,
+   epoll/kqueue and fd duplication/closure tracking.
 3. Add an OS enforcement/data-plane backend for UDP interception and prevention
    of bypass: Windows WFP/TUN, Linux namespaces/firewall/TUN, macOS supported
    Network Extension mechanisms. These require their own implementation and

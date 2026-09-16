@@ -58,7 +58,7 @@ pub(super) fn forget_iocp(socket: usize) {
     }
 }
 
-fn iocp_for(socket: usize) -> Option<(HANDLE, usize)> {
+pub(super) fn iocp_for(socket: usize) -> Option<(HANDLE, usize)> {
     iocp_associations().lock().get(&socket).copied()
 }
 
