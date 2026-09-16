@@ -28,6 +28,8 @@ original!(WSASEND, WsaSend, (usize, *const WSABUF, u32, *mut u32, u32, *mut c_vo
 original!(WSARECV, WsaRecv, (usize, *const WSABUF, u32, *mut u32, *mut u32, *mut c_void, *mut c_void) -> i32);
 original!(WSASENDMSG, WsaSendMsg, (usize, *const c_void, u32, *mut u32, *mut c_void, *mut c_void) -> i32);
 
+type WsaCompletionRoutine = unsafe extern "system" fn(u32, u32, *mut OVERLAPPED, u32);
+
 static IOCP_ASSOCIATIONS: OnceLock<parking_lot::Mutex<HashMap<usize, (HANDLE, usize)>>> =
     OnceLock::new();
 static IOCP_PENDING: OnceLock<parking_lot::Mutex<HashMap<(usize, usize), Arc<AtomicBool>>>> =
@@ -269,6 +271,7 @@ unsafe fn queue_iocp_send(
     overlapped: *mut c_void,
     port: HANDLE,
     completion_key: usize,
+    completion: usize,
 ) -> i32 {
     let overlapped = overlapped.cast::<OVERLAPPED>();
     (*overlapped).Internal = 0x103;
@@ -301,12 +304,17 @@ unsafe fn queue_iocp_send(
                 let overlapped = &mut *(overlapped_ptr as *mut OVERLAPPED);
                 overlapped.Internal = status;
                 overlapped.InternalHigh = bytes;
-                let _ = PostQueuedCompletionStatus(
-                    port,
-                    bytes as u32,
-                    completion_key,
-                    Some(overlapped as *mut OVERLAPPED),
-                );
+                if completion != 0 {
+                    let callback: WsaCompletionRoutine = std::mem::transmute(completion);
+                    callback(status as u32, bytes as u32, overlapped, 0);
+                } else {
+                    let _ = PostQueuedCompletionStatus(
+                        port,
+                        bytes as u32,
+                        completion_key,
+                        Some(overlapped as *mut OVERLAPPED),
+                    );
+                }
             }
             iocp_pending().lock().remove(&pending_key);
         });
@@ -332,6 +340,7 @@ unsafe fn queue_iocp_recv(
     overlapped: *mut c_void,
     port: HANDLE,
     completion_key: usize,
+    completion: usize,
 ) -> i32 {
     let overlapped = overlapped.cast::<OVERLAPPED>();
     (*overlapped).Internal = 0x103;
@@ -402,12 +411,17 @@ unsafe fn queue_iocp_recv(
                 let overlapped = &mut *(overlapped_ptr as *mut OVERLAPPED);
                 overlapped.Internal = status;
                 overlapped.InternalHigh = bytes;
-                let _ = PostQueuedCompletionStatus(
-                    port,
-                    bytes as u32,
-                    completion_key,
-                    Some(overlapped as *mut OVERLAPPED),
-                );
+                if completion != 0 {
+                    let callback: WsaCompletionRoutine = std::mem::transmute(completion);
+                    callback(status as u32, bytes as u32, overlapped, 0);
+                } else {
+                    let _ = PostQueuedCompletionStatus(
+                        port,
+                        bytes as u32,
+                        completion_key,
+                        Some(overlapped as *mut OVERLAPPED),
+                    );
+                }
             }
             iocp_pending().lock().remove(&pending_key);
         });
@@ -438,11 +452,11 @@ unsafe extern "system" fn wsa_sendto(
             s, bufs, count, sent, flags, addr, addrlen, ov, completion,
         );
     }
-    if !completion.is_null() {
-        return fail(udp::unsupported());
+    if !completion.is_null() && ov.is_null() {
+        return fail(io::Error::from_raw_os_error(WSAEINVAL.0));
     }
     let iocp = if ov.is_null() { None } else { iocp_for(s) };
-    if !ov.is_null() && iocp.is_none() {
+    if !ov.is_null() && iocp.is_none() && completion.is_null() {
         return fail(udp::unsupported());
     }
     if sent.is_null() && ov.is_null() {
@@ -470,7 +484,9 @@ unsafe extern "system" fn wsa_sendto(
             None => return fail(io::Error::from_raw_os_error(WSAEFAULT.0)),
         }
     };
-    if let Some((port, completion_key)) = iocp {
+    if let Some((port, completion_key)) = iocp.or_else(|| {
+        (!completion.is_null()).then_some((HANDLE::default(), 0))
+    }) {
         return queue_iocp_send(
             s,
             data,
@@ -480,6 +496,7 @@ unsafe extern "system" fn wsa_sendto(
             ov,
             port,
             completion_key,
+            completion as usize,
         );
     }
     let result = sendto(
@@ -527,20 +544,22 @@ unsafe extern "system" fn wsa_recvfrom(
             s, bufs, count, received, flags, addr, addrlen, ov, completion,
         );
     }
-    if !completion.is_null() {
-        return fail(udp::unsupported());
+    if !completion.is_null() && ov.is_null() {
+        return fail(io::Error::from_raw_os_error(WSAEINVAL.0));
     }
     if flags.is_null() {
         return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
     }
-    if !ov.is_null() && iocp_for(s).is_none() {
+    if !ov.is_null() && iocp_for(s).is_none() && completion.is_null() {
         return fail(udp::unsupported());
     }
     let slices = match buffers(bufs, count) {
         Ok(b) => b,
         Err(e) => return fail(e),
     };
-    if let Some((port, completion_key)) = ov.as_ref().and_then(|_| iocp_for(s)) {
+    if let Some((port, completion_key)) = ov.as_ref().and_then(|_| iocp_for(s)).or_else(|| {
+        (!completion.is_null()).then_some((HANDLE::default(), 0))
+    }) {
         let buffers = slices
             .iter()
             .map(|buffer| (buffer.buf.0 as usize, buffer.len as usize))
@@ -556,6 +575,7 @@ unsafe extern "system" fn wsa_recvfrom(
             ov,
             port,
             completion_key,
+            completion as usize,
         );
     }
     if received.is_null() {
@@ -627,11 +647,11 @@ pub(super) unsafe extern "system" fn wsa_recvmsg(
     if !udp::enabled(s) {
         return fail(udp::unsupported());
     }
-    if msg.is_null() || !completion.is_null() {
+    if msg.is_null() || (!completion.is_null() && ov.is_null()) {
         return fail(udp::unsupported());
     }
     let iocp = if ov.is_null() { None } else { iocp_for(s) };
-    if !ov.is_null() && iocp.is_none() {
+    if !ov.is_null() && iocp.is_none() && completion.is_null() {
         return fail(udp::unsupported());
     }
     let message = &mut *(msg.cast::<WSAMSG>());
@@ -645,7 +665,9 @@ pub(super) unsafe extern "system" fn wsa_recvmsg(
         return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
     }
     let buffers = std::slice::from_raw_parts(message.lpBuffers, count);
-    if let Some((port, completion_key)) = iocp {
+    if let Some((port, completion_key)) = iocp.or_else(|| {
+        (!completion.is_null()).then_some((HANDLE::default(), 0))
+    }) {
         let buffers = buffers
             .iter()
             .map(|buffer| (buffer.buf.0 as usize, buffer.len as usize))
@@ -661,6 +683,7 @@ pub(super) unsafe extern "system" fn wsa_recvmsg(
             ov,
             port,
             completion_key,
+            completion as usize,
         );
     }
     if received.is_null() {
@@ -710,11 +733,11 @@ pub(super) unsafe extern "system" fn wsa_sendmsg(
     if !udp::enabled(s) {
         return WSASENDMSG.get().unwrap()(s, msg, flags, sent, ov, completion);
     }
-    if msg.is_null() || !completion.is_null() {
+    if msg.is_null() || (!completion.is_null() && ov.is_null()) {
         return fail(udp::unsupported());
     }
     let iocp = if ov.is_null() { None } else { iocp_for(s) };
-    if !ov.is_null() && iocp.is_none() {
+    if !ov.is_null() && iocp.is_none() && completion.is_null() {
         return fail(udp::unsupported());
     }
     if sent.is_null() && ov.is_null() {
@@ -753,7 +776,9 @@ pub(super) unsafe extern "system" fn wsa_sendmsg(
         Ok(flags) => flags,
         Err(_) => return fail(udp::unsupported()),
     };
-    if let Some((port, completion_key)) = iocp {
+    if let Some((port, completion_key)) = iocp.or_else(|| {
+        (!completion.is_null()).then_some((HANDLE::default(), 0))
+    }) {
         return queue_iocp_send(
             s,
             data,
@@ -763,6 +788,7 @@ pub(super) unsafe extern "system" fn wsa_sendmsg(
             ov,
             port,
             completion_key,
+            completion as usize,
         );
     }
     match udp::send(s, &data, address, native_flags) {

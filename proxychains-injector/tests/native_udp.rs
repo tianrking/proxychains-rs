@@ -31,6 +31,8 @@ fn native_udp_routing_and_lifecycle() {
         "udp-iocp-recv",
         "udp-recvmsg",
         "udp-iocp-recvmsg",
+        #[cfg(windows)]
+        "udp-completion",
         "udp-iocp-cancel",
         "udp-v6relay",
     ];

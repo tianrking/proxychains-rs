@@ -125,6 +125,9 @@ pub fn run(mode: &str) {
                 iocp_send_to(&socket, data, destination)
             } else if mode == "udp-iocp-sendmsg" && round == 0 {
                 iocp_sendmsg_to(&socket, data, destination)
+            } else if mode == "udp-completion" && round == 0 {
+                completion_send_recv(&socket, data, destination);
+                data.len()
             } else if mode == "udp-vectored" {
                 vectored_send(&socket, data, destination)
             } else if connected {
@@ -148,6 +151,9 @@ pub fn run(mode: &str) {
             if mode == "udp-iocp-recvmsg" && round == 0 {
                 let n = iocp_recvmsg_from(&socket, data);
                 assert_eq!(n, data.len());
+                continue;
+            }
+            if mode == "udp-completion" && round == 0 {
                 continue;
             }
             if mode == "udp-iocp-cancel" && round == 0 {
@@ -196,6 +202,98 @@ pub fn run(mode: &str) {
             reject_overlapped(&socket, destination);
         }
     }
+}
+
+#[cfg(windows)]
+fn completion_send_recv(socket: &UdpSocket, data: &[u8], destination: SocketAddr) {
+    use std::os::windows::io::AsRawSocket;
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+    use windows::Win32::Networking::WinSock::{
+        WSAGetLastError, WSARecvFrom, WSASendTo, SOCKET, WSABUF, WSA_IO_PENDING,
+    };
+    use windows::Win32::System::IO::OVERLAPPED;
+
+    static CALLED: AtomicBool = AtomicBool::new(false);
+    static ERROR: AtomicU32 = AtomicU32::new(u32::MAX);
+    static BYTES: AtomicU32 = AtomicU32::new(0);
+    static OVERLAPPED_PTR: AtomicUsize = AtomicUsize::new(0);
+    unsafe extern "system" fn completion(
+        error: u32,
+        bytes: u32,
+        overlapped: *mut OVERLAPPED,
+        _flags: u32,
+    ) {
+        ERROR.store(error, Ordering::Release);
+        BYTES.store(bytes, Ordering::Release);
+        OVERLAPPED_PTR.store(overlapped as usize, Ordering::Release);
+        CALLED.store(true, Ordering::Release);
+    }
+    let raw = SOCKET(socket.as_raw_socket() as usize);
+    let destination = socket2::SockAddr::from(destination);
+    let mut buffer = WSABUF {
+        len: data.len() as u32,
+        buf: windows::core::PSTR(data.as_ptr().cast_mut()),
+    };
+    let mut overlapped = OVERLAPPED::default();
+    CALLED.store(false, Ordering::Release);
+    ERROR.store(u32::MAX, Ordering::Release);
+    let result = unsafe {
+        WSASendTo(
+            raw,
+            std::slice::from_mut(&mut buffer),
+            None,
+            0,
+            Some(destination.as_ptr().cast()),
+            destination.len() as i32,
+            Some(&mut overlapped),
+            Some(completion),
+        )
+    };
+    assert_eq!(result, -1);
+    assert_eq!(unsafe { WSAGetLastError() }, WSA_IO_PENDING);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !CALLED.load(Ordering::Acquire) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(CALLED.load(Ordering::Acquire), "WSASendTo completion not called");
+    assert_eq!(ERROR.load(Ordering::Acquire), 0);
+    assert_eq!(BYTES.load(Ordering::Acquire) as usize, data.len());
+    assert_eq!(OVERLAPPED_PTR.load(Ordering::Acquire), &mut overlapped as *mut _ as usize);
+
+    let mut payload = vec![0u8; data.len().max(64)];
+    let mut recv_buffer = WSABUF {
+        len: payload.len() as u32,
+        buf: windows::core::PSTR(payload.as_mut_ptr()),
+    };
+    let mut flags = 0;
+    let mut source = [0u8; 128];
+    let mut source_len = source.len() as i32;
+    let mut recv_overlapped = OVERLAPPED::default();
+    CALLED.store(false, Ordering::Release);
+    ERROR.store(u32::MAX, Ordering::Release);
+    let result = unsafe {
+        WSARecvFrom(
+            raw,
+            std::slice::from_mut(&mut recv_buffer),
+            None,
+            &mut flags,
+            Some(source.as_mut_ptr().cast()),
+            Some(&mut source_len),
+            Some(&mut recv_overlapped),
+            Some(completion),
+        )
+    };
+    assert_eq!(result, -1);
+    assert_eq!(unsafe { WSAGetLastError() }, WSA_IO_PENDING);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !CALLED.load(Ordering::Acquire) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(CALLED.load(Ordering::Acquire), "WSARecvFrom completion not called");
+    assert_eq!(ERROR.load(Ordering::Acquire), 0);
+    assert_eq!(BYTES.load(Ordering::Acquire) as usize, data.len());
+    assert_eq!(OVERLAPPED_PTR.load(Ordering::Acquire), &mut recv_overlapped as *mut _ as usize);
+    assert_eq!(&payload[..data.len()], data);
 }
 
 fn run_quic(destination: SocketAddr) {
