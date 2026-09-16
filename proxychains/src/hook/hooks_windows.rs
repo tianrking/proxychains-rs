@@ -42,6 +42,41 @@ use super::interpose_windows::{
 };
 use super::reload::config_reload_interval;
 
+type LookupCompletionRoutine = unsafe extern "system" fn(u32, u32, *mut c_void);
+
+struct AsyncDnsWContext {
+    fake_name: Vec<u16>,
+    callback: LookupCompletionRoutine,
+}
+
+struct AsyncDnsAContext {
+    fake_name: CString,
+    callback: LookupCompletionRoutine,
+}
+
+static ASYNC_DNS_W: OnceLock<Mutex<HashMap<usize, AsyncDnsWContext>>> = OnceLock::new();
+static ASYNC_DNS_A: OnceLock<Mutex<HashMap<usize, AsyncDnsAContext>>> = OnceLock::new();
+
+fn async_dns_w() -> &'static Mutex<HashMap<usize, AsyncDnsWContext>> {
+    ASYNC_DNS_W.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn async_dns_a() -> &'static Mutex<HashMap<usize, AsyncDnsAContext>> {
+    ASYNC_DNS_A.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+unsafe extern "system" fn async_dns_w_complete(error: u32, bytes: u32, overlapped: *mut c_void) {
+    if let Some(context) = async_dns_w().lock().remove(&(overlapped as usize)) {
+        (context.callback)(error, bytes, overlapped);
+    }
+}
+
+unsafe extern "system" fn async_dns_a_complete(error: u32, bytes: u32, overlapped: *mut c_void) {
+    if let Some(context) = async_dns_a().lock().remove(&(overlapped as usize)) {
+        (context.callback)(error, bytes, overlapped);
+    }
+}
+
 /// Global state for the hook library (Windows).
 pub struct HookState {
     pub config: Mutex<Config>,
@@ -1007,6 +1042,105 @@ pub unsafe extern "system" fn hook_getaddrinfow_impl(
     0
 }
 
+#[cfg(windows)]
+unsafe fn hook_getaddrinfoexw_async(
+    config: &Config,
+    pname: *const u16,
+    pservice: *const u16,
+    namespace: u32,
+    pnspid: *mut c_void,
+    hints: *const c_void,
+    ppresult: *mut *mut c_void,
+    timeout: *mut c_void,
+    overlapped: *mut c_void,
+    completion_routine: *mut c_void,
+    pname_handle: *mut c_void,
+) -> i32 {
+    if pname.is_null() {
+        return WSAEINVAL.0;
+    }
+    let hostname = match parse_wide_string(pname) {
+        Ok(value) => value,
+        Err(_) => return WSAEINVAL.0,
+    };
+    if hostname.parse::<IpAddr>().is_ok() || crate::dns::lookup_in_hosts(&hostname).is_some() {
+        return original_getaddrinfoexw(
+            pname, pservice, namespace, pnspid, hints, ppresult, timeout, overlapped,
+            completion_routine, pname_handle,
+        );
+    }
+    let fake_ip = match DnsResolver::new(config.proxy_dns, config.remote_dns_subnet).resolve(&hostname) {
+        Ok(ip) => ip,
+        Err(_) => return WSAHOST_NOT_FOUND.0,
+    };
+    let fake_name: Vec<u16> = fake_ip.to_string().encode_utf16().chain(std::iter::once(0)).collect();
+    let callback: LookupCompletionRoutine = mem::transmute(completion_routine);
+    let key = overlapped as usize;
+    let mut contexts = async_dns_w().lock();
+    contexts.insert(key, AsyncDnsWContext { fake_name, callback });
+    let fake_ptr = contexts.get(&key).expect("inserted async DNS context").fake_name.as_ptr();
+    drop(contexts);
+    let result = original_getaddrinfoexw(
+        fake_ptr, pservice, namespace, pnspid, hints, ppresult, timeout, overlapped,
+        async_dns_w_complete as *mut c_void, pname_handle,
+    );
+    if result != 0 && result != WSA_IO_PENDING.0 {
+        async_dns_w().lock().remove(&key);
+    }
+    result
+}
+
+#[cfg(windows)]
+unsafe fn hook_getaddrinfoexa_async(
+    config: &Config,
+    pname: *const i8,
+    pservice: *const i8,
+    namespace: u32,
+    pnspid: *mut c_void,
+    hints: *const c_void,
+    ppresult: *mut *mut c_void,
+    timeout: *mut c_void,
+    overlapped: *mut c_void,
+    completion_routine: *mut c_void,
+    pname_handle: *mut c_void,
+) -> i32 {
+    if pname.is_null() {
+        return WSAEINVAL.0;
+    }
+    let hostname = match CStr::from_ptr(pname).to_str() {
+        Ok(value) if !value.is_empty() => value,
+        _ => return WSAEINVAL.0,
+    };
+    if hostname.parse::<IpAddr>().is_ok() || crate::dns::lookup_in_hosts(hostname).is_some() {
+        return original_getaddrinfoexa(
+            pname, pservice, namespace, pnspid, hints, ppresult, timeout, overlapped,
+            completion_routine, pname_handle,
+        );
+    }
+    let fake_ip = match DnsResolver::new(config.proxy_dns, config.remote_dns_subnet).resolve(hostname) {
+        Ok(ip) => ip,
+        Err(_) => return WSAHOST_NOT_FOUND.0,
+    };
+    let fake_name = match CString::new(fake_ip.to_string()) {
+        Ok(value) => value,
+        Err(_) => return WSAEINVAL.0,
+    };
+    let callback: LookupCompletionRoutine = mem::transmute(completion_routine);
+    let key = overlapped as usize;
+    let mut contexts = async_dns_a().lock();
+    contexts.insert(key, AsyncDnsAContext { fake_name, callback });
+    let fake_ptr = contexts.get(&key).expect("inserted async DNS context").fake_name.as_ptr();
+    drop(contexts);
+    let result = original_getaddrinfoexa(
+        fake_ptr, pservice, namespace, pnspid, hints, ppresult, timeout, overlapped,
+        async_dns_a_complete as *mut c_void, pname_handle,
+    );
+    if result != 0 && result != WSA_IO_PENDING.0 {
+        async_dns_a().lock().remove(&key);
+    }
+    result
+}
+
 /// Windows GetAddrInfoExW hook implementation.
 #[cfg(windows)]
 pub unsafe extern "system" fn hook_getaddrinfoexw_impl(
@@ -1054,9 +1188,24 @@ pub unsafe extern "system" fn hook_getaddrinfoexw_impl(
             pname_handle,
         );
     }
-    // A temporary fake-IP name cannot outlive an asynchronous resolver call.
-    // Preserve the system's buffer/completion contract until a lifetime-safe
-    // completion wrapper is available.
+    // Event-based async calls have no completion callback where we can release
+    // the owned fake name. Keep those on the system resolver. Callback-based
+    // calls are wrapped below and retain the fake name until completion.
+    if !completion_routine.is_null() && !overlapped.is_null() {
+        return hook_getaddrinfoexw_async(
+            &config,
+            pname,
+            pservice,
+            namespace,
+            pnspid,
+            hints,
+            ppresult,
+            timeout,
+            overlapped,
+            completion_routine,
+            pname_handle,
+        );
+    }
     if !overlapped.is_null() || !completion_routine.is_null() {
         return original_getaddrinfoexw(
             pname, pservice, namespace, pnspid, hints, ppresult, timeout,
@@ -1143,6 +1292,21 @@ pub unsafe extern "system" fn hook_getaddrinfoexa_impl(
         return original_getaddrinfoexa(
             pname, pservice, namespace, pnspid, hints, ppresult, timeout,
             overlapped, completion_routine, pname_handle,
+        );
+    }
+    if !completion_routine.is_null() && !overlapped.is_null() {
+        return hook_getaddrinfoexa_async(
+            &config,
+            pname,
+            pservice,
+            namespace,
+            pnspid,
+            hints,
+            ppresult,
+            timeout,
+            overlapped,
+            completion_routine,
+            pname_handle,
         );
     }
     if !overlapped.is_null() || !completion_routine.is_null() {
@@ -1453,6 +1617,27 @@ mod tests {
         assert_eq!(result, 0);
         assert!(!replacement.is_null());
         assert_eq!(returned as usize, std::mem::size_of::<*mut c_void>());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_async_dns_callback_releases_owned_context() {
+        static CALLED: AtomicBool = AtomicBool::new(false);
+        unsafe extern "system" fn callback(_error: u32, _bytes: u32, _overlapped: *mut c_void) {
+            CALLED.store(true, Ordering::Release);
+        }
+        CALLED.store(false, Ordering::Release);
+        let key = usize::MAX - 2;
+        async_dns_w().lock().insert(
+            key,
+            AsyncDnsWContext {
+                fake_name: vec![b'1' as u16, 0],
+                callback,
+            },
+        );
+        unsafe { async_dns_w_complete(0, 0, key as *mut c_void) };
+        assert!(CALLED.load(Ordering::Acquire));
+        assert!(!async_dns_w().lock().contains_key(&key));
     }
 
     #[cfg(windows)]

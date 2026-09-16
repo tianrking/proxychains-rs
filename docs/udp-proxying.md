@@ -99,6 +99,12 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
   HTTP/3 GET and response through the SOCKS5 relay; browser QUIC, MsQuic and
   RIO remain uncertified.
 
+On Windows, callback-based asynchronous `GetAddrInfoExA/W` calls retain the
+proxy-DNS fake name until the caller's completion routine runs, then forward
+the original callback and `OVERLAPPED` pointer unchanged. Event-based async
+lookup and `DnsQuery_A/W` async mode still use the system resolver because
+their completion lifetime is not exposed by the current hook layer.
+
 This is process-level API interposition, not OS-enforced network isolation.
 
 The Windows `ConnectEx` extension is intercepted as well. Calls without an
