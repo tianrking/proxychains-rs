@@ -907,6 +907,18 @@ fn set_proxychains_env(config: &Config, args: &Args) {
 
 fn apply_profile(args: &mut Args, path: &PathBuf) -> Result<(), String> {
     let contents = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let profile_dir = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let resolve_path = |value: &str| {
+        let candidate = PathBuf::from(value);
+        if candidate.is_absolute() {
+            candidate
+        } else {
+            profile_dir.join(candidate)
+        }
+    };
     let mut profile = LaunchProfile::default();
     for (line_number, raw) in contents.lines().enumerate() {
         let line = raw.trim();
@@ -921,8 +933,8 @@ fn apply_profile(args: &mut Args, path: &PathBuf) -> Result<(), String> {
         match key {
             "command" => profile.command = value.to_string(),
             "args" => profile.args = value.split_whitespace().map(str::to_string).collect(),
-            "cwd" => profile.cwd = Some(PathBuf::from(value)),
-            "config" => profile.config = Some(PathBuf::from(value)),
+            "cwd" => profile.cwd = Some(resolve_path(value)),
+            "config" => profile.config = Some(resolve_path(value)),
             "group" => profile.group = Some(value.to_string()),
             key if key.strip_prefix("env.").is_some_and(|name| !name.is_empty()) => {
                 profile.env.push((key[4..].to_string(), value.to_string()));
@@ -1312,11 +1324,13 @@ mod tests {
     #[test]
     fn profile_loads_command_context_without_shell_expansion() {
         let path = std::env::temp_dir().join(format!("proxychains-profile-{}.conf", std::process::id()));
-        std::fs::write(&path, "command = cargo\nargs = test --locked\ncwd = .\ngroup = work\nenv.RUST_LOG = info\n").unwrap();
+        std::fs::write(&path, "command = cargo\nargs = test --locked\ncwd = project\nconfig = config/proxychains.conf\ngroup = work\nenv.RUST_LOG = info\n").unwrap();
         let mut args = Args::try_parse_from(["proxychains4", "--profile", path.to_str().unwrap()]).unwrap();
         apply_profile(&mut args, &path).unwrap();
         assert_eq!(args.command, vec!["cargo", "test", "--locked"]);
         assert_eq!(args.group.as_deref(), Some("work"));
+        assert_eq!(args.launch_cwd, Some(path.parent().unwrap().join("project")));
+        assert_eq!(args.config, Some(path.parent().unwrap().join("config/proxychains.conf")));
         assert_eq!(args.launch_env, vec![("RUST_LOG".into(), "info".into())]);
         let _ = std::fs::remove_file(path);
     }

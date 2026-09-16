@@ -146,6 +146,8 @@ best-effort: a busy or unavailable log file never blocks a connection hook.
 
 A profile is a small `KEY = VALUE` file. Supported keys are `command`,
 `args` (whitespace-separated), `cwd`, `config`, `group`, and `env.NAME`:
+Relative `cwd` and `config` paths are resolved from the profile's directory,
+so the profile remains portable when launched from another directory.
 
 ```text
 command = cargo

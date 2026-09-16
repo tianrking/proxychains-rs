@@ -142,7 +142,8 @@ JSONL。记录包含进程号、目标、阶段、结果和时延，不包含代
 日志文件忙或不可用时不会阻塞连接 hook。
 
 启动配置是简单的 `KEY = VALUE` 文件，支持 `command`、空格分隔的 `args`、
-`cwd`、`config`、`group` 和 `env.NAME`：
+`cwd`、`config`、`group` 和 `env.NAME`。相对的 `cwd`、`config` 路径均按
+profile 文件所在目录解析，从其他目录启动也能保持一致：
 
 ```text
 command = cargo
