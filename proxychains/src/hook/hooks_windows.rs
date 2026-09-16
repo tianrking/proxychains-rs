@@ -16,19 +16,17 @@ use std::time::Instant;
 use parking_lot::Mutex;
 use rand::seq::SliceRandom;
 use tracing::{debug, error, info, warn};
-use windows::Win32::Foundation::{HANDLE, DNS_REQUEST_PENDING};
-use windows::Win32::NetworkManagement::Dns::{
-    DNS_QUERY_REQUEST, DNS_QUERY_RESULT,
-};
-use windows::Win32::Networking::WinSock::{
-    ADDRINFOA, ADDRINFOW, AF_INET, AF_INET6, IN_ADDR, IN_ADDR_0, IPPROTO_TCP, SOCKADDR,
-    SOCKADDR_IN, SOCK_STREAM, SOCKET_ERROR, WSAEALREADY, WSAECONNREFUSED, WSAEFAULT,
-    WSAEACCES, WSAEINPROGRESS, WSAEINVAL, WSAEWOULDBLOCK, WSAGetLastError, WSAHOST_NOT_FOUND, WSASetLastError,
-    WSA_IO_PENDING, SOCKET, SEND_RECV_FLAGS, WSAID_WSASENDMSG, send,
-};
 use windows::core::GUID;
-use windows::Win32::System::IO::{PostQueuedCompletionStatus, OVERLAPPED};
+use windows::Win32::Foundation::{DNS_REQUEST_PENDING, HANDLE};
+use windows::Win32::NetworkManagement::Dns::{DNS_QUERY_REQUEST, DNS_QUERY_RESULT};
+use windows::Win32::Networking::WinSock::{
+    send, WSAGetLastError, WSASetLastError, ADDRINFOA, ADDRINFOW, AF_INET, AF_INET6, IN_ADDR,
+    IN_ADDR_0, IPPROTO_TCP, SEND_RECV_FLAGS, SOCKADDR, SOCKADDR_IN, SOCKET, SOCKET_ERROR,
+    SOCK_STREAM, WSAEACCES, WSAEALREADY, WSAECONNREFUSED, WSAEFAULT, WSAEINPROGRESS, WSAEINVAL,
+    WSAEWOULDBLOCK, WSAHOST_NOT_FOUND, WSAID_WSASENDMSG, WSA_IO_PENDING,
+};
 use windows::Win32::System::Threading::SetEvent;
+use windows::Win32::System::IO::{PostQueuedCompletionStatus, OVERLAPPED};
 
 use crate::chain::{mark_proxy_failure, mark_proxy_success, proxy_is_available, HealthProtocol};
 use crate::config::{ChainType, Config, ProxyData, ProxyState, RouteAction, RouteProtocol};
@@ -39,12 +37,10 @@ use crate::proxy::{tunnel_through_proxy, TargetAddress};
 use crate::ConfigParser;
 
 use super::interpose_windows::{
-    init_original_functions, original_connect, original_freeaddrinfo, original_getaddrinfo,
-    original_getaddrinfoexa, original_getaddrinfoexw, original_getaddrinfow, original_gethostbyname, original_getnameinfo,
-    original_dns_query_a, original_dns_query_w, original_wsa_ioctl,
-    original_getaddrinfoex_overlapped_result,
-    original_dns_query_ex,
-    original_dns_query_utf8,
+    init_original_functions, original_connect, original_dns_query_a, original_dns_query_ex,
+    original_dns_query_utf8, original_dns_query_w, original_freeaddrinfo, original_getaddrinfo,
+    original_getaddrinfoex_overlapped_result, original_getaddrinfoexa, original_getaddrinfoexw,
+    original_getaddrinfow, original_gethostbyname, original_getnameinfo, original_wsa_ioctl,
 };
 use super::reload::config_reload_interval;
 
@@ -162,7 +158,8 @@ pub(super) fn cancel_connect_ex(socket: usize) {
             if !pending.completed.swap(true, Ordering::AcqRel) {
                 unsafe {
                     let ov = &mut *(pending.overlapped as *mut OVERLAPPED);
-                    ov.Internal = windows::Win32::Networking::WinSock::WSA_OPERATION_ABORTED.0 as usize;
+                    ov.Internal =
+                        windows::Win32::Networking::WinSock::WSA_OPERATION_ABORTED.0 as usize;
                     ov.InternalHigh = 0;
                     if !pending.event.is_invalid() {
                         let _ = SetEvent(pending.event);
@@ -269,13 +266,23 @@ unsafe fn connect_socket_to_proxy(sock: usize, proxy: &ProxyData) -> Result<()> 
     let ret = original_connect(sock, sockaddr.as_ptr().cast(), sockaddr.len() as i32);
     if ret == SOCKET_ERROR {
         let error = WSAGetLastError().0;
-        if error == WSAEWOULDBLOCK.0 || error == WSAEINPROGRESS.0 || error == WSAEALREADY.0 { return Ok(()); }
+        if error == WSAEWOULDBLOCK.0 || error == WSAEINPROGRESS.0 || error == WSAEALREADY.0 {
+            return Ok(());
+        }
         if let std::net::SocketAddr::V4(v4) = addr {
             if error == 10047 || error == WSAEINVAL.0 || error == WSAEFAULT.0 {
-                let mapped = socket2::SockAddr::from(std::net::SocketAddr::new(v4.ip().to_ipv6_mapped().into(), v4.port()));
-                if original_connect(sock, mapped.as_ptr().cast(), mapped.len() as i32) == 0 { return Ok(()); }
+                let mapped = socket2::SockAddr::from(std::net::SocketAddr::new(
+                    v4.ip().to_ipv6_mapped().into(),
+                    v4.port(),
+                ));
+                if original_connect(sock, mapped.as_ptr().cast(), mapped.len() as i32) == 0 {
+                    return Ok(());
+                }
                 let retry = WSAGetLastError().0;
-                if retry == WSAEWOULDBLOCK.0 || retry == WSAEINPROGRESS.0 || retry == WSAEALREADY.0 { return Ok(()); }
+                if retry == WSAEWOULDBLOCK.0 || retry == WSAEINPROGRESS.0 || retry == WSAEALREADY.0
+                {
+                    return Ok(());
+                }
                 return Err(Error::Io(std::io::Error::from_raw_os_error(retry)));
             }
         }
@@ -304,7 +311,11 @@ unsafe fn connect_chain_on_socket(
     let stream_ref: &mut std::net::TcpStream = &mut *stream;
     let old_read = stream_ref.read_timeout().map_err(|e| (Error::Io(e), 0))?;
     let old_write = stream_ref.write_timeout().map_err(|e| (Error::Io(e), 0))?;
-    struct RestoreTimeouts(ManuallyDrop<std::net::TcpStream>, Option<std::time::Duration>, Option<std::time::Duration>);
+    struct RestoreTimeouts(
+        ManuallyDrop<std::net::TcpStream>,
+        Option<std::time::Duration>,
+        Option<std::time::Duration>,
+    );
     impl Drop for RestoreTimeouts {
         fn drop(&mut self) {
             let _ = self.0.set_read_timeout(self.1);
@@ -313,13 +324,20 @@ unsafe fn connect_chain_on_socket(
     }
     // Restore the exact handle: Winsock duplicated handles can have separate
     // timeout values. ManuallyDrop borrows ownership without closing the socket.
-    let _restore = RestoreTimeouts(ManuallyDrop::new(std::net::TcpStream::from_raw_socket(sock as u64)), old_read, old_write);
-    stream_ref.set_read_timeout(Some(timeout)).map_err(|e| (Error::Io(e), 0))?;
-    stream_ref.set_write_timeout(Some(timeout)).map_err(|e| (Error::Io(e), 0))?;
+    let _restore = RestoreTimeouts(
+        ManuallyDrop::new(std::net::TcpStream::from_raw_socket(sock as u64)),
+        old_read,
+        old_write,
+    );
+    stream_ref
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| (Error::Io(e), 0))?;
+    stream_ref
+        .set_write_timeout(Some(timeout))
+        .map_err(|e| (Error::Io(e), 0))?;
 
     if selected.len() == 1 {
-        if let Err(e) =
-            tunnel_through_proxy(stream_ref, &selected[0], target, target_port, timeout)
+        if let Err(e) = tunnel_through_proxy(stream_ref, &selected[0], target, target_port, timeout)
         {
             return Err((e, 0));
         }
@@ -341,13 +359,9 @@ unsafe fn connect_chain_on_socket(
         current = next;
     }
 
-    if let Err(e) = tunnel_through_proxy(
-        stream_ref,
-        &selected[current],
-        target,
-        target_port,
-        timeout,
-    ) {
+    if let Err(e) =
+        tunnel_through_proxy(stream_ref, &selected[current], target, target_port, timeout)
+    {
         return Err((e, current));
     }
 
@@ -393,10 +407,8 @@ fn select_indices(state: &HookState, proxies: &[ProxyData]) -> Option<Vec<usize>
             if alive_indices.is_empty() {
                 return None;
             }
-            let idx = state
-                .load_balance_counter
-                .fetch_add(1, Ordering::Relaxed)
-                % alive_indices.len();
+            let idx =
+                state.load_balance_counter.fetch_add(1, Ordering::Relaxed) % alive_indices.len();
             Some(vec![alive_indices[idx]])
         }
         ChainType::Failover => alive_indices.first().copied().map(|i| vec![i]),
@@ -446,13 +458,13 @@ fn parse_wide_string(ptr: *const u16) -> std::result::Result<String, ()> {
 
 /// Windows connect hook implementation.
 #[cfg(windows)]
-pub unsafe extern "system" fn hook_connect_impl(
-    sock: usize,
-    addr: *const c_void,
-    len: i32,
-) -> i32 {
-    if crate::net::is_internal_network() { return original_connect(sock, addr, len); }
-    if let Some(result) = super::udp_windows::connect(sock, addr, len) { return result; }
+pub unsafe extern "system" fn hook_connect_impl(sock: usize, addr: *const c_void, len: i32) -> i32 {
+    if crate::net::is_internal_network() {
+        return original_connect(sock, addr, len);
+    }
+    if let Some(result) = super::udp_windows::connect(sock, addr, len) {
+        return result;
+    }
     let state = match get_hook_state() {
         Some(s) => s,
         None => return original_connect(sock, addr, len),
@@ -471,7 +483,10 @@ pub unsafe extern "system" fn hook_connect_impl(
     };
     let target_port = get_port_from_sockaddr(addr);
     let started = std::time::Instant::now();
-    debug!("hook_connect_impl intercepted target {}:{}", target_ip, target_port);
+    debug!(
+        "hook_connect_impl intercepted target {}:{}",
+        target_ip, target_port
+    );
 
     let (dnat_ip, final_port) = config.apply_dnat_ip(&target_ip, target_port);
     let (final_ip, target_domain) = match dnat_ip {
@@ -491,7 +506,8 @@ pub unsafe extern "system" fn hook_connect_impl(
     };
     let target_label = target_domain.as_deref().unwrap_or("ip").to_string();
 
-    let route_action = config.route_action(RouteProtocol::Tcp, target_domain.as_deref(), final_port);
+    let route_action =
+        config.route_action(RouteProtocol::Tcp, target_domain.as_deref(), final_port);
     if route_action == RouteAction::Reject {
         WSASetLastError(WSAEACCES.0);
         return SOCKET_ERROR;
@@ -530,7 +546,10 @@ pub unsafe extern "system" fn hook_connect_impl(
                 WSASetLastError(WSAECONNREFUSED.0);
                 return SOCKET_ERROR;
             };
-            let chosen = indices.iter().map(|&i| proxies[i].clone()).collect::<Vec<_>>();
+            let chosen = indices
+                .iter()
+                .map(|&i| proxies[i].clone())
+                .collect::<Vec<_>>();
             (indices, chosen)
         } else {
             let proxies = state.proxy_states.lock();
@@ -538,7 +557,10 @@ pub unsafe extern "system" fn hook_connect_impl(
                 WSASetLastError(WSAECONNREFUSED.0);
                 return SOCKET_ERROR;
             };
-            let chosen = indices.iter().map(|&i| proxies[i].clone()).collect::<Vec<_>>();
+            let chosen = indices
+                .iter()
+                .map(|&i| proxies[i].clone())
+                .collect::<Vec<_>>();
             (indices, chosen)
         };
         match connect_chain_on_socket(
@@ -579,7 +601,11 @@ pub unsafe extern "system" fn hook_connect_impl(
                     if route_proxies.is_some() {
                         if let Some(p) = selected_proxies.get(failed_hop) {
                             if !matches!(e, Error::Blocked) {
-                                mark_proxy_failure(p, HealthProtocol::Tcp, config.proxy_health_cooldown);
+                                mark_proxy_failure(
+                                    p,
+                                    HealthProtocol::Tcp,
+                                    config.proxy_health_cooldown,
+                                );
                             }
                         }
                     } else {
@@ -588,7 +614,11 @@ pub unsafe extern "system" fn hook_connect_impl(
                             p.state = if matches!(e, Error::Blocked) {
                                 ProxyState::Blocked
                             } else {
-                                mark_proxy_failure(p, HealthProtocol::Tcp, config.proxy_health_cooldown);
+                                mark_proxy_failure(
+                                    p,
+                                    HealthProtocol::Tcp,
+                                    config.proxy_health_cooldown,
+                                );
                                 ProxyState::Down
                             };
                         }
@@ -699,7 +729,8 @@ pub unsafe extern "system" fn hook_connect_ex_impl(
     let spawned = std::thread::Builder::new()
         .name("proxychains-connectex".to_string())
         .spawn(move || unsafe {
-            let result = hook_connect_impl(sock, name_bytes.as_ptr().cast(), name_bytes.len() as i32);
+            let result =
+                hook_connect_impl(sock, name_bytes.as_ptr().cast(), name_bytes.len() as i32);
             let mut status = 0usize;
             let mut bytes = 0usize;
             if pending.cancelled.load(Ordering::Acquire) {
@@ -791,8 +822,7 @@ pub unsafe extern "system" fn hook_wsa_ioctl_impl(
     {
         let requested = *(in_buffer as *const GUID);
         if requested == WSAID_WSASENDMSG || requested == WSAID_WSARECVMSG {
-            if out_buffer.is_null()
-                || out_buffer_len < std::mem::size_of::<*const c_void>() as u32
+            if out_buffer.is_null() || out_buffer_len < std::mem::size_of::<*const c_void>() as u32
             {
                 WSASetLastError(WSAEFAULT.0);
                 return SOCKET_ERROR;
@@ -816,7 +846,8 @@ pub unsafe extern "system" fn hook_wsa_ioctl_impl(
 
     if super::udp::enabled(sock)
         && (io_control_code == SIO_GET_EXTENSION_FUNCTION_POINTER
-            || io_control_code == windows::Win32::Networking::WinSock::SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER)
+            || io_control_code
+                == windows::Win32::Networking::WinSock::SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER)
     {
         // Do not expose unwrapped message or registered-I/O entry points.
         WSASetLastError(windows::Win32::Networking::WinSock::WSAEOPNOTSUPP.0);
@@ -876,7 +907,9 @@ pub unsafe extern "system" fn hook_getaddrinfo_impl(
     phints: *const c_void,
     ppresult: *mut *mut c_void,
 ) -> i32 {
-    if crate::net::is_internal_network() { return original_getaddrinfo(pnode, pservice, phints, ppresult); }
+    if crate::net::is_internal_network() {
+        return original_getaddrinfo(pnode, pservice, phints, ppresult);
+    }
     let state = match get_hook_state() {
         Some(s) => s,
         None => return original_getaddrinfo(pnode, pservice, phints, ppresult),
@@ -921,7 +954,10 @@ pub unsafe extern "system" fn hook_getaddrinfo_impl(
     let fake_ip = match dns_resolver.resolve(hostname) {
         Ok(ip) => ip,
         Err(e) => {
-            error!("Failed to resolve {} in hook_getaddrinfo_impl: {}", hostname, e);
+            error!(
+                "Failed to resolve {} in hook_getaddrinfo_impl: {}",
+                hostname, e
+            );
             return WSAHOST_NOT_FOUND.0;
         }
     };
@@ -980,7 +1016,9 @@ pub unsafe extern "system" fn hook_getaddrinfow_impl(
     phints: *const c_void,
     ppresult: *mut *mut c_void,
 ) -> i32 {
-    if crate::net::is_internal_network() { return original_getaddrinfow(pnode, pservice, phints, ppresult); }
+    if crate::net::is_internal_network() {
+        return original_getaddrinfow(pnode, pservice, phints, ppresult);
+    }
     let state = match get_hook_state() {
         Some(s) => s,
         None => return original_getaddrinfow(pnode, pservice, phints, ppresult),
@@ -1025,7 +1063,10 @@ pub unsafe extern "system" fn hook_getaddrinfow_impl(
     let fake_ip = match dns_resolver.resolve(&hostname) {
         Ok(ip) => ip,
         Err(e) => {
-            error!("Failed to resolve {} in hook_getaddrinfow_impl: {}", hostname, e);
+            error!(
+                "Failed to resolve {} in hook_getaddrinfow_impl: {}",
+                hostname, e
+            );
             return WSAHOST_NOT_FOUND.0;
         }
     };
@@ -1072,7 +1113,10 @@ pub unsafe extern "system" fn hook_getaddrinfow_impl(
         },
     );
 
-    debug!("Assigned fake IP {} for {} (GetAddrInfoW)", fake_ip, hostname);
+    debug!(
+        "Assigned fake IP {} for {} (GetAddrInfoW)",
+        fake_ip, hostname
+    );
     0
 }
 
@@ -1099,25 +1143,59 @@ unsafe fn hook_getaddrinfoexw_async(
     };
     if hostname.parse::<IpAddr>().is_ok() || crate::dns::lookup_in_hosts(&hostname).is_some() {
         return original_getaddrinfoexw(
-            pname, pservice, namespace, pnspid, hints, ppresult, timeout, overlapped,
-            completion_routine, pname_handle,
+            pname,
+            pservice,
+            namespace,
+            pnspid,
+            hints,
+            ppresult,
+            timeout,
+            overlapped,
+            completion_routine,
+            pname_handle,
         );
     }
-    let fake_ip = match DnsResolver::new(config.proxy_dns, config.remote_dns_subnet).resolve(&hostname) {
-        Ok(ip) => ip,
-        Err(_) => return WSAHOST_NOT_FOUND.0,
-    };
-    let fake_name: Vec<u16> = fake_ip.to_string().encode_utf16().chain(std::iter::once(0)).collect();
+    let fake_ip =
+        match DnsResolver::new(config.proxy_dns, config.remote_dns_subnet).resolve(&hostname) {
+            Ok(ip) => ip,
+            Err(_) => return WSAHOST_NOT_FOUND.0,
+        };
+    let fake_name: Vec<u16> = fake_ip
+        .to_string()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     let callback = (!completion_routine.is_null())
         .then(|| mem::transmute::<*mut c_void, LookupCompletionRoutine>(completion_routine));
     let key = overlapped as usize;
     let mut contexts = async_dns_w().lock();
-    contexts.insert(key, AsyncDnsWContext { fake_name, callback });
-    let fake_ptr = contexts.get(&key).expect("inserted async DNS context").fake_name.as_ptr();
+    contexts.insert(
+        key,
+        AsyncDnsWContext {
+            fake_name,
+            callback,
+        },
+    );
+    let fake_ptr = contexts
+        .get(&key)
+        .expect("inserted async DNS context")
+        .fake_name
+        .as_ptr();
     drop(contexts);
     let result = original_getaddrinfoexw(
-        fake_ptr, pservice, namespace, pnspid, hints, ppresult, timeout, overlapped,
-        if callback.is_some() { async_dns_w_complete as *mut c_void } else { std::ptr::null_mut() },
+        fake_ptr,
+        pservice,
+        namespace,
+        pnspid,
+        hints,
+        ppresult,
+        timeout,
+        overlapped,
+        if callback.is_some() {
+            async_dns_w_complete as *mut c_void
+        } else {
+            std::ptr::null_mut()
+        },
         pname_handle,
     );
     if result != 0 && result != WSA_IO_PENDING.0 {
@@ -1149,14 +1227,23 @@ unsafe fn hook_getaddrinfoexa_async(
     };
     if hostname.parse::<IpAddr>().is_ok() || crate::dns::lookup_in_hosts(hostname).is_some() {
         return original_getaddrinfoexa(
-            pname, pservice, namespace, pnspid, hints, ppresult, timeout, overlapped,
-            completion_routine, pname_handle,
+            pname,
+            pservice,
+            namespace,
+            pnspid,
+            hints,
+            ppresult,
+            timeout,
+            overlapped,
+            completion_routine,
+            pname_handle,
         );
     }
-    let fake_ip = match DnsResolver::new(config.proxy_dns, config.remote_dns_subnet).resolve(hostname) {
-        Ok(ip) => ip,
-        Err(_) => return WSAHOST_NOT_FOUND.0,
-    };
+    let fake_ip =
+        match DnsResolver::new(config.proxy_dns, config.remote_dns_subnet).resolve(hostname) {
+            Ok(ip) => ip,
+            Err(_) => return WSAHOST_NOT_FOUND.0,
+        };
     let fake_name = match CString::new(fake_ip.to_string()) {
         Ok(value) => value,
         Err(_) => return WSAEINVAL.0,
@@ -1165,12 +1252,33 @@ unsafe fn hook_getaddrinfoexa_async(
         .then(|| mem::transmute::<*mut c_void, LookupCompletionRoutine>(completion_routine));
     let key = overlapped as usize;
     let mut contexts = async_dns_a().lock();
-    contexts.insert(key, AsyncDnsAContext { fake_name, callback });
-    let fake_ptr = contexts.get(&key).expect("inserted async DNS context").fake_name.as_ptr();
+    contexts.insert(
+        key,
+        AsyncDnsAContext {
+            fake_name,
+            callback,
+        },
+    );
+    let fake_ptr = contexts
+        .get(&key)
+        .expect("inserted async DNS context")
+        .fake_name
+        .as_ptr();
     drop(contexts);
     let result = original_getaddrinfoexa(
-        fake_ptr, pservice, namespace, pnspid, hints, ppresult, timeout, overlapped,
-        if callback.is_some() { async_dns_a_complete as *mut c_void } else { std::ptr::null_mut() },
+        fake_ptr,
+        pservice,
+        namespace,
+        pnspid,
+        hints,
+        ppresult,
+        timeout,
+        overlapped,
+        if callback.is_some() {
+            async_dns_a_complete as *mut c_void
+        } else {
+            std::ptr::null_mut()
+        },
         pname_handle,
     );
     if result != 0 && result != WSA_IO_PENDING.0 {
@@ -1214,16 +1322,23 @@ pub unsafe extern "system" fn hook_dns_query_ex_impl(
     }
     let hostname = match parse_wide_string(request.QueryName.0) {
         Ok(value) => value,
-        Err(_) => return original_dns_query_ex(request as *const _ as *const c_void, results, cancel),
+        Err(_) => {
+            return original_dns_query_ex(request as *const _ as *const c_void, results, cancel)
+        }
     };
     if hostname.parse::<IpAddr>().is_ok() || crate::dns::lookup_in_hosts(&hostname).is_some() {
         return original_dns_query_ex(request as *const _ as *const c_void, results, cancel);
     }
-    let fake_ip = match DnsResolver::new(config.proxy_dns, config.remote_dns_subnet).resolve(&hostname) {
-        Ok(ip) => ip,
-        Err(_) => return WSAHOST_NOT_FOUND.0,
-    };
-    let fake_name: Vec<u16> = fake_ip.to_string().encode_utf16().chain(std::iter::once(0)).collect();
+    let fake_ip =
+        match DnsResolver::new(config.proxy_dns, config.remote_dns_subnet).resolve(&hostname) {
+            Ok(ip) => ip,
+            Err(_) => return WSAHOST_NOT_FOUND.0,
+        };
+    let fake_name: Vec<u16> = fake_ip
+        .to_string()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     let mut forwarded = *request;
     forwarded.QueryName = windows::core::PCWSTR(fake_name.as_ptr());
     let Some(callback) = request.pQueryCompletionCallback else {
@@ -1316,8 +1431,16 @@ pub unsafe extern "system" fn hook_getaddrinfoexw_impl(
     }
     if !completion_routine.is_null() {
         return original_getaddrinfoexw(
-            pname, pservice, namespace, pnspid, hints, ppresult, timeout,
-            overlapped, completion_routine, pname_handle,
+            pname,
+            pservice,
+            namespace,
+            pnspid,
+            hints,
+            ppresult,
+            timeout,
+            overlapped,
+            completion_routine,
+            pname_handle,
         );
     }
     let dns_resolver = DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
@@ -1389,8 +1512,16 @@ pub unsafe extern "system" fn hook_getaddrinfoexa_impl(
         Some(s) => s,
         None => {
             return original_getaddrinfoexa(
-                pname, pservice, namespace, pnspid, hints, ppresult, timeout,
-                overlapped, completion_routine, pname_handle,
+                pname,
+                pservice,
+                namespace,
+                pnspid,
+                hints,
+                ppresult,
+                timeout,
+                overlapped,
+                completion_routine,
+                pname_handle,
             )
         }
     };
@@ -1398,8 +1529,16 @@ pub unsafe extern "system" fn hook_getaddrinfoexa_impl(
     let config = state.config.lock().clone();
     if !config.proxy_dns {
         return original_getaddrinfoexa(
-            pname, pservice, namespace, pnspid, hints, ppresult, timeout,
-            overlapped, completion_routine, pname_handle,
+            pname,
+            pservice,
+            namespace,
+            pnspid,
+            hints,
+            ppresult,
+            timeout,
+            overlapped,
+            completion_routine,
+            pname_handle,
         );
     }
     if !overlapped.is_null() {
@@ -1419,8 +1558,16 @@ pub unsafe extern "system" fn hook_getaddrinfoexa_impl(
     }
     if !completion_routine.is_null() {
         return original_getaddrinfoexa(
-            pname, pservice, namespace, pnspid, hints, ppresult, timeout,
-            overlapped, completion_routine, pname_handle,
+            pname,
+            pservice,
+            namespace,
+            pnspid,
+            hints,
+            ppresult,
+            timeout,
+            overlapped,
+            completion_routine,
+            pname_handle,
         );
     }
     if pname.is_null() {
@@ -1432,8 +1579,16 @@ pub unsafe extern "system" fn hook_getaddrinfoexa_impl(
     };
     if hostname.parse::<IpAddr>().is_ok() || crate::dns::lookup_in_hosts(hostname).is_some() {
         return original_getaddrinfoexa(
-            pname, pservice, namespace, pnspid, hints, ppresult, timeout,
-            overlapped, completion_routine, pname_handle,
+            pname,
+            pservice,
+            namespace,
+            pnspid,
+            hints,
+            ppresult,
+            timeout,
+            overlapped,
+            completion_routine,
+            pname_handle,
         );
     }
     let dns_resolver = DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
@@ -1446,8 +1601,16 @@ pub unsafe extern "system" fn hook_getaddrinfoexa_impl(
         Err(_) => return WSAEINVAL.0,
     };
     original_getaddrinfoexa(
-        fake.as_ptr(), pservice, namespace, pnspid, hints, ppresult, timeout,
-        overlapped, completion_routine, pname_handle,
+        fake.as_ptr(),
+        pservice,
+        namespace,
+        pnspid,
+        hints,
+        ppresult,
+        timeout,
+        overlapped,
+        completion_routine,
+        pname_handle,
     )
 }
 
@@ -1513,7 +1676,13 @@ pub unsafe extern "system" fn hook_dns_query_a_impl(
     reserved: *mut c_void,
 ) -> i32 {
     hook_dns_query_ansi_impl(
-        name, query_type, options, extra, result, reserved, original_dns_query_a,
+        name,
+        query_type,
+        options,
+        extra,
+        result,
+        reserved,
+        original_dns_query_a,
     )
 }
 
@@ -1527,7 +1696,13 @@ pub unsafe extern "system" fn hook_dns_query_utf8_impl(
     reserved: *mut c_void,
 ) -> i32 {
     hook_dns_query_ansi_impl(
-        name, query_type, options, extra, result, reserved, original_dns_query_utf8,
+        name,
+        query_type,
+        options,
+        extra,
+        result,
+        reserved,
+        original_dns_query_utf8,
     )
 }
 
@@ -1640,7 +1815,10 @@ pub unsafe extern "system" fn hook_gethostbyname_impl(name: *const i8) -> *mut c
     let fake_ip = match dns_resolver.resolve(hostname) {
         Ok(ip) => ip,
         Err(e) => {
-            error!("Failed to resolve {} in hook_gethostbyname_impl: {}", hostname, e);
+            error!(
+                "Failed to resolve {} in hook_gethostbyname_impl: {}",
+                hostname, e
+            );
             WSASetLastError(WSAHOST_NOT_FOUND.0);
             return std::ptr::null_mut();
         }
@@ -1781,7 +1959,10 @@ mod tests {
     #[test]
     fn test_dns_query_ex_callback_restores_context_and_releases_owned_name() {
         static CALLED: AtomicBool = AtomicBool::new(false);
-        unsafe extern "system" fn callback(context: *const c_void, _results: *mut DNS_QUERY_RESULT) {
+        unsafe extern "system" fn callback(
+            context: *const c_void,
+            _results: *mut DNS_QUERY_RESULT,
+        ) {
             assert_eq!(context as usize, 0x1234);
             CALLED.store(true, Ordering::Release);
         }
@@ -1806,7 +1987,10 @@ mod tests {
     #[test]
     fn test_connectex_close_marks_pending_completion_aborted() {
         let mut overlapped = OVERLAPPED::default();
-        let key = (usize::MAX - 1, (&mut overlapped as *mut OVERLAPPED) as usize);
+        let key = (
+            usize::MAX - 1,
+            (&mut overlapped as *mut OVERLAPPED) as usize,
+        );
         let pending = Arc::new(ConnectExPending {
             cancelled: AtomicBool::new(false),
             completed: AtomicBool::new(false),
@@ -1826,9 +2010,10 @@ mod tests {
     }
 }
 
-/// Capture socket-to-IOCP associations for the future asynchronous UDP relay.
-/// The association is recorded only; UDP completion semantics remain explicitly
-/// unsupported until send/receive cancellation and completion ownership exist.
+/// Capture socket-to-IOCP associations for the asynchronous UDP relay.
+/// The association is consumed by the UDP interposer to publish proxied
+/// send/receive completions through the caller's IOCP. Cancellation ownership
+/// is tracked separately per `(socket, OVERLAPPED)` operation.
 #[cfg(windows)]
 pub unsafe extern "system" fn hook_create_io_completion_port_impl(
     file_handle: HANDLE,
