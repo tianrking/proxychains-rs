@@ -415,19 +415,44 @@ fn spawn_quic_server() -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
             let certificate_der = rustls::pki_types::CertificateDer::from(certificate.cert);
             let private_key =
                 rustls::pki_types::PrivatePkcs8KeyDer::from(certificate.key_pair.serialize_der());
-            let server_config =
-                quinn::ServerConfig::with_single_cert(vec![certificate_der], private_key.into())
-                    .unwrap();
+            let mut crypto = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![certificate_der], private_key.into())
+            .unwrap();
+            crypto.alpn_protocols = vec![b"h3".to_vec()];
+            let server_config = quinn::ServerConfig::with_crypto(std::sync::Arc::new(
+                quinn::crypto::rustls::QuicServerConfig::try_from(crypto).unwrap(),
+            ));
             let endpoint =
                 quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
             ready_sender.send(endpoint.local_addr().unwrap()).unwrap();
             let incoming = endpoint.accept().await.unwrap();
             let connection = incoming.await.unwrap();
-            let (mut send, mut receive) = connection.accept_bi().await.unwrap();
-            let request = receive.read_to_end(64).await.unwrap();
-            assert_eq!(&request, b"quic-proxy-request");
-            send.write_all(b"quic-proxy-response").await.unwrap();
-            send.finish().unwrap();
+            let mut h3: h3::server::Connection<_, bytes::Bytes> =
+                h3::server::Connection::new(h3_quinn::Connection::new(connection))
+                .await
+                .expect("http3 server init");
+            let resolver = h3
+                .accept()
+                .await
+                .expect("http3 request accept")
+                .expect("http3 request stream");
+            let (request, mut stream) = resolver.resolve_request().await.unwrap();
+            assert_eq!(request.method(), http::Method::GET);
+            assert_eq!(request.uri().path(), "/quic");
+            stream
+                .send_response(http::Response::builder().status(200).body(()).unwrap())
+                .await
+                .unwrap();
+            stream
+                .send_data("http3-proxy-response".into())
+                .await
+                .unwrap();
+            stream.finish().await.unwrap();
             endpoint.wait_idle().await;
         });
     });

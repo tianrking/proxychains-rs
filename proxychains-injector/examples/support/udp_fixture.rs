@@ -1,5 +1,6 @@
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::{Duration, Instant};
+use bytes::Buf;
 
 pub fn run(mode: &str) {
     let destination: SocketAddr = match mode {
@@ -201,10 +202,11 @@ fn run_quic(destination: SocketAddr) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async move {
         let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
-        let client_crypto = rustls::ClientConfig::builder()
+        let mut client_crypto = rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(SkipServerVerification::new())
             .with_no_client_auth();
+        client_crypto.alpn_protocols = vec![b"h3".to_vec()];
         endpoint.set_default_client_config(quinn::ClientConfig::new(std::sync::Arc::new(
             quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto).unwrap(),
         )));
@@ -213,12 +215,28 @@ fn run_quic(destination: SocketAddr) {
             .unwrap()
             .await
             .expect("quic connect");
-        let (mut send, mut receive) = connection.open_bi().await.unwrap();
-        send.write_all(b"quic-proxy-request").await.unwrap();
-        send.finish().unwrap();
-        let response = receive.read_to_end(64).await.unwrap();
-        assert_eq!(&response, b"quic-proxy-response");
-        connection.close(0u32.into(), b"done");
+        let (mut driver, mut client) = h3::client::new(h3_quinn::Connection::new(connection.clone()))
+            .await
+            .expect("http3 client init");
+        let request = async move {
+            let mut stream = client
+                .send_request(http::Request::get("https://proxychains.test/quic").body(()).unwrap())
+                .await
+                .expect("http3 request");
+            let response = stream.recv_response().await.expect("http3 response");
+            assert_eq!(response.status(), http::StatusCode::OK);
+            let body = stream
+                .recv_data()
+                .await
+                .expect("http3 response body")
+                .expect("http3 response data");
+            assert_eq!(body.chunk(), b"http3-proxy-response");
+            connection.close(0u32.into(), b"done");
+        };
+        let drive = async move {
+            std::future::poll_fn(|cx| driver.poll_close(cx)).await;
+        };
+        tokio::join!(request, drive);
         endpoint.wait_idle().await;
     });
 }

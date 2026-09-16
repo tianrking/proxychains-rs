@@ -91,9 +91,9 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
 - SOCKS fragmentation (`FRAG != 0`) is dropped. The payload must fit a UDP packet
   including the SOCKS header: 10 bytes for IPv4, 22 for IPv6, or 7 plus the domain
   byte length. No IP tunneling or ICMP support is added.
-- QUIC payloads are opaque UDP. A native Quinn transport fixture verifies one
-  real handshake and bidirectional stream roundtrip through the SOCKS5 relay;
-  browser QUIC, MsQuic, HTTP/3 application behavior and RIO remain uncertified.
+- QUIC payloads are opaque UDP. A native Quinn+h3 fixture verifies a real
+  HTTP/3 GET and response through the SOCKS5 relay; browser QUIC, MsQuic and
+  RIO remain uncertified.
 
 This is process-level API interposition, not OS-enforced network isolation.
 

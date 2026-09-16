@@ -8,9 +8,9 @@ each UDP socket keeps its first selected group and proxy.
 It intercepts supported application socket calls through UDP ASSOCIATE, including
 authenticated IPv4/IPv6/domain datagrams. See [setup and limitations](docs/udp-proxying.md).
 Windows synchronous and IOCP UDP calls, including `WSASendMsg`/`WSARecvMsg`, are
-covered by native fixtures. A real Quinn QUIC transport handshake and stream
-roundtrip also pass through the transparent SOCKS5 relay in CI; browser,
-MsQuic and general HTTP/3 compatibility remain uncertified.
+covered by native fixtures. A real Quinn+h3 HTTP/3 GET and response also pass
+through the transparent SOCKS5 relay in CI; browser and MsQuic compatibility
+remain uncertified.
 
 A modern Rust implementation of classic `proxychains4`, with cross-platform process-level proxy chaining:
 - Linux: `LD_PRELOAD`

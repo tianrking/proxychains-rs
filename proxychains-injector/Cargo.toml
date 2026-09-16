@@ -18,8 +18,12 @@ tracing.workspace = true
 
 [dev-dependencies]
 libc.workspace = true
+bytes.workspace = true
 socket2.workspace = true
 quinn.workspace = true
+h3.workspace = true
+h3-quinn.workspace = true
+http.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
 tokio.workspace = true
