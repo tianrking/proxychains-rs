@@ -399,7 +399,7 @@ impl Config {
         !self.proxies.is_empty()
     }
 
-    /// Select the first matching route rule, defaulting to proxying.
+    /// Select the first matching route rule for the current executable.
     pub fn route_action(
         &self,
         protocol: RouteProtocol,
@@ -410,10 +410,32 @@ impl Config {
             .ok()
             .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
             .unwrap_or_default();
+        self.route_action_for_process(protocol, domain, port, &process)
+    }
+
+    /// Select the first matching route rule for an explicit process name.
+    pub fn route_action_for_process(
+        &self,
+        protocol: RouteProtocol,
+        domain: Option<&str>,
+        port: u16,
+        process: &str,
+    ) -> RouteAction {
+        self.matching_route_rule(protocol, domain, port, process)
+            .map_or(RouteAction::Proxy, |rule| rule.action)
+    }
+
+    /// Return the first matching route rule, if any.
+    pub fn matching_route_rule(
+        &self,
+        protocol: RouteProtocol,
+        domain: Option<&str>,
+        port: u16,
+        process: &str,
+    ) -> Option<&RouteRule> {
         self.route_rules
             .iter()
-            .find(|rule| rule.matches(protocol, domain, port, &process))
-            .map_or(RouteAction::Proxy, |rule| rule.action)
+            .find(|rule| rule.matches(protocol, domain, port, process))
     }
 }
 

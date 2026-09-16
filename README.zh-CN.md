@@ -60,6 +60,7 @@ Windows overlapped/IOCP UDP 尚不支持，也不代表所有 QUIC/HTTP/3 应用
   - `--probe`（快速探测每个节点连通性与时延）
   - `--probe-json`（机器可读 JSON 输出）
   - `--doctor`（端到端协议和目标诊断）
+  - `--explain HOST:PORT`（显示命中的分流规则和最终动作）
   - 共享代理健康冷却（`proxy_health_cooldown_ms`）：让新连接自动避开
     近期失败的节点；已经建立的连接不会被迁移。
   - `--log-file FILE`（把已捕获的 TCP/UDP 连接结果写入 JSONL）
@@ -128,6 +129,7 @@ proxychains4 -f ./proxychains.conf --probe --probe-timeout-ms 1200
 proxychains4 -f ./proxychains.conf --probe --probe-json
 proxychains4 -f ./proxychains.conf --doctor --doctor-target example.com:80
 proxychains4 -f ./proxychains.conf --doctor --doctor-target example.com:80 --doctor-udp-echo 1.1.1.1:53 --doctor-json
+proxychains4 -f ./proxychains.conf --explain git.internal.example:443 --explain-process git.exe
 proxychains4 -f ./proxychains.conf --tree curl https://ifconfig.me
 proxychains4 --profile ./profiles/build.profile
 ```

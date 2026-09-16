@@ -60,6 +60,7 @@ Recommendation:
   - `--probe` (quick per-node reachability/latency check)
   - `--probe-json` (machine-readable probe output)
   - `--doctor` (end-to-end protocol and target diagnostics)
+  - `--explain HOST:PORT` (show the matched route rule and effective action)
   - Shared proxy health cooldown (`proxy_health_cooldown_ms`) prevents repeated
     attempts against a failing node across new connections; it applies to TCP
     chain selection and Windows hooks, while existing streams are never migrated.
@@ -129,6 +130,7 @@ proxychains4 -f ./proxychains.conf --probe --probe-timeout-ms 1200
 proxychains4 -f ./proxychains.conf --probe --probe-json
 proxychains4 -f ./proxychains.conf --doctor --doctor-target example.com:80
 proxychains4 -f ./proxychains.conf --doctor --doctor-target example.com:80 --doctor-udp-echo 1.1.1.1:53 --doctor-json
+proxychains4 -f ./proxychains.conf --explain git.internal.example:443 --explain-process git.exe
 proxychains4 -f ./proxychains.conf --tree curl https://ifconfig.me
 proxychains4 --profile ./profiles/build.profile
 ```

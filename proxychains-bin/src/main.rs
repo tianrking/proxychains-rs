@@ -21,7 +21,7 @@ use time::OffsetDateTime;
 use tracing::{debug, error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use proxychains::config::ProxyType;
+use proxychains::config::{ProxyType, RouteAction, RouteProtocol};
 use proxychains::proxy::{connect_to_proxy, tunnel_through_proxy, TargetAddress, UdpAssociation};
 use proxychains::{Config, ConfigParser};
 
@@ -88,6 +88,18 @@ struct Args {
     #[arg(long)]
     doctor_json: bool,
 
+    /// Explain which routing rule would handle HOST:PORT and exit
+    #[arg(long, value_name = "HOST:PORT")]
+    explain: Option<String>,
+
+    /// Protocol used by --explain (tcp or udp)
+    #[arg(long, default_value = "tcp", requires = "explain")]
+    explain_protocol: String,
+
+    /// Process name used by --explain for process matching rules
+    #[arg(long, requires = "explain")]
+    explain_process: Option<String>,
+
     /// Write hook connection events as JSONL to this file
     #[arg(long, value_name = "FILE")]
     log_file: Option<PathBuf>,
@@ -118,7 +130,7 @@ struct Args {
 
     /// The command to run
     #[arg(
-        required_unless_present_any = ["list_groups", "check", "probe", "doctor", "events", "profile", "pid", "attach_name"],
+        required_unless_present_any = ["list_groups", "check", "probe", "doctor", "explain", "events", "profile", "pid", "attach_name"],
         trailing_var_arg = true
     )]
     command: Vec<String>,
@@ -248,6 +260,11 @@ fn main() {
         process::exit(if failed == 0 { 0 } else { 2 });
     }
 
+    if args.explain.is_some() {
+        let failed = print_route_explanation(&config, &args);
+        process::exit(if failed { 1 } else { 0 });
+    }
+
     if args.pid.is_some() || args.attach_name.is_some() {
         set_proxychains_env(&config, &args);
         #[cfg(windows)]
@@ -347,6 +364,56 @@ fn print_check_summary(config: &Config, args: &Args) {
             auth
         );
     }
+}
+
+fn print_route_explanation(config: &Config, args: &Args) -> bool {
+    let Some(raw_target) = args.explain.as_deref() else {
+        return true;
+    };
+    let (host, port) = match parse_doctor_target(raw_target) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("proxychains: {error}");
+            return true;
+        }
+    };
+    let protocol = match args.explain_protocol.to_ascii_lowercase().as_str() {
+        "tcp" => RouteProtocol::Tcp,
+        "udp" => RouteProtocol::Udp,
+        other => {
+            eprintln!("proxychains: invalid --explain-protocol {other:?}; use tcp or udp");
+            return true;
+        }
+    };
+    let current_process = env::current_exe()
+        .ok()
+        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    let process = args
+        .explain_process
+        .as_deref()
+        .unwrap_or(current_process.as_str());
+    let domain = host.parse::<std::net::IpAddr>().is_err().then_some(host.as_str());
+    let action = config.route_action_for_process(protocol, domain, port, process);
+    println!("Target: {host}:{port}");
+    println!("Protocol: {:?}", protocol);
+    println!("Process: {}", if process.is_empty() { "(unknown)" } else { process });
+    if let Some(rule) = config.matching_route_rule(protocol, domain, port, process) {
+        println!("Matched rule: {:?}", rule);
+    } else {
+        println!("Matched rule: (none; default proxy)");
+    }
+    println!("Rule action: {:?}", action);
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if action == RouteAction::Proxy && config.should_bypass_ip(&ip) {
+            println!("Effective action: Direct (local address bypass)");
+        } else {
+            println!("Effective action: {:?}", action);
+        }
+    } else {
+        println!("Effective action: {:?} (IP bypass depends on resolved address)", action);
+    }
+    false
 }
 
 fn run_probe(config: &Config, args: &Args) -> usize {
@@ -1278,6 +1345,23 @@ mod tests {
         assert_eq!(parse_doctor_target("[::1]:53").unwrap(), ("::1".into(), 53));
         assert!(parse_doctor_target("missing-port").is_err());
         assert!(parse_doctor_target("host:0").is_ok());
+    }
+
+    #[test]
+    fn explain_arguments_parse_without_command() {
+        let args = Args::try_parse_from([
+            "proxychains4",
+            "--explain",
+            "example.com:443",
+            "--explain-protocol",
+            "udp",
+            "--explain-process",
+            "curl.exe",
+        ])
+        .unwrap();
+        assert_eq!(args.explain.as_deref(), Some("example.com:443"));
+        assert_eq!(args.explain_protocol, "udp");
+        assert_eq!(args.explain_process.as_deref(), Some("curl.exe"));
     }
 
     #[test]

@@ -13,6 +13,7 @@ does not imply verification on an unavailable operating system or application.
 | Unix socket lifecycle and event-loop compatibility | Premature close and flag loss fixed; event-loop compatibility pending | Linux/macOS compile checks pass; native preload fixture added but not run locally; replacing an fd still does not preserve epoll/kqueue registrations |
 | UDP and IPv6 transport | SOCKS5 UDP transport, explicit forwarder and opt-in transparent UDP hooks implemented | Windows native UDP fixture passes, including IPv6 relay, domains, authentication, vectored I/O and failures; see [UDP scope](udp-proxying.md); async Windows UDP and general QUIC remain unsupported |
 | Shared proxy health and cooldown | Implemented for chain manager and Windows hook selection | Unit tests cover cross-manager suppression, bounded expiry, success recovery and config parsing; cross-target Windows compile check passes |
+| Route explanation CLI | Implemented (`--explain`) | CLI parser test and explicit rule/action output; process and local-address behavior remain subject to observed hook context |
 | Agent compatibility and diagnostic bridge | Pending | Exact installed Agent versions and workflows |
 | System-enforced network isolation | Pending | Platform-specific enforcement and independent observation |
 | Reproducible builds and release | Author/repository corrected, lockfile tracked, native CI gates added | Local Windows builds; new remote CI and signed release certification remain pending |
