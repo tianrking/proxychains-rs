@@ -23,6 +23,7 @@ fn native_udp_routing_and_lifecycle() {
         "udp-vectored",
         "udp-iocp",
         "udp-iocp-recv",
+        "udp-iocp-cancel",
         "udp-v6relay",
     ] {
         let ipv6 = mode == "udp-v6relay";
@@ -33,7 +34,8 @@ fn native_udp_routing_and_lifecycle() {
         std::fs::write(&config, format!("strict_chain\nproxy_dns\nproxy_udp\n[ProxyList]\nsocks5 {host} {port} user password\n")).unwrap();
         let server = std::thread::spawn(move || {
             // Two successive sockets must each get a fresh control connection.
-            for _ in 0..2 {
+            let sockets = if mode == "udp-iocp-cancel" { 1 } else { 2 };
+            for _ in 0..sockets {
                 let deadline = Instant::now() + Duration::from_secs(15);
                 let mut control = loop {
                     match listener.accept() {
@@ -74,7 +76,8 @@ fn native_udp_routing_and_lifecycle() {
                 }
                 reply.extend(relay.local_addr().unwrap().port().to_be_bytes());
                 control.write_all(&reply).unwrap();
-                for round in 0..4 {
+                let rounds = if mode == "udp-iocp-cancel" { 1 } else { 4 };
+                for round in 0..rounds {
                     let mut packet = [0; 65535];
                     let (n, client) = relay.recv_from(&mut packet).unwrap();
                     assert_eq!(&packet[..3], &[0, 0, 0]);
@@ -109,6 +112,9 @@ fn native_udp_routing_and_lifecycle() {
                             "keep the application's bound socket"
                         );
                         assert_eq!(&packet[header_len + 2..n], b"native-udp-payload");
+                    }
+                    if mode == "udp-iocp-cancel" {
+                        std::thread::sleep(Duration::from_millis(250));
                     }
                     // Reject a fragment without exposing framing or terminating the receive.
                     let mut fragment = packet[..n].to_vec();

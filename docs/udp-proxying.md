@@ -101,6 +101,8 @@ peek, truncation, nonblocking receive, vectored I/O, socket reuse and failures.
 The Windows run additionally submits relay-backed `WSASendTo` and `WSARecvFrom`
 operations through an actual completion port and checks pending status,
 completion identity, byte counts and payload delivery.
+The Windows matrix also closes a socket while an IOCP receive is pending and
+checks that the completion is reported as `WSA_OPERATION_ABORTED`.
 Other cases cover IPv6 control/relay sockets, rejected associations, invalid
 relay ports and control shutdown. CI and release workflows run this test on
 Windows, Linux and macOS after building the native library.

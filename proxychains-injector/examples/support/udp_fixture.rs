@@ -75,6 +75,10 @@ pub fn run(mode: &str) {
                 assert_eq!(n, data.len());
                 continue;
             }
+            if mode == "udp-iocp-cancel" && round == 0 {
+                iocp_cancel_recv(&socket);
+                return;
+            }
             let mut buffer = [0; 64];
             if round == 0 {
                 let (n, from) = socket.peek_from(&mut buffer).unwrap();
@@ -326,6 +330,59 @@ fn iocp_recv_from(socket: &UdpSocket, expected: &[u8]) -> usize {
     assert_eq!(&payload[..n], expected);
     n
 }
+#[cfg(windows)]
+fn iocp_cancel_recv(socket: &UdpSocket) {
+    use std::os::windows::io::AsRawSocket;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Networking::WinSock::{closesocket, WSAGetLastError, WSARecvFrom, SOCKET, WSABUF, WSA_IO_PENDING, WSA_OPERATION_ABORTED};
+    use windows::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED};
+    let port = unsafe {
+        CreateIoCompletionPort(HANDLE(-1), HANDLE::default(), 0x53, 1)
+            .expect("CreateIoCompletionPort")
+    };
+    let raw = SOCKET(socket.as_raw_socket() as usize);
+    unsafe {
+        CreateIoCompletionPort(HANDLE(socket.as_raw_socket() as isize), port, 0x53, 1)
+            .expect("associate UDP socket with IOCP");
+    }
+    let mut payload = [0u8; 64];
+    let buffer = WSABUF {
+        len: payload.len() as u32,
+        buf: windows::core::PSTR(payload.as_mut_ptr()),
+    };
+    let mut flags = 0;
+    let mut storage = [0u8; 128];
+    let mut storage_len = storage.len() as i32;
+    let mut overlapped = OVERLAPPED::default();
+    let result = unsafe {
+        WSARecvFrom(
+            raw,
+            std::slice::from_ref(&buffer),
+            None,
+            &mut flags,
+            Some(storage.as_mut_ptr().cast()),
+            Some(&mut storage_len),
+            Some(&mut overlapped),
+            None,
+        )
+    };
+    assert_eq!(result, -1);
+    assert_eq!(unsafe { WSAGetLastError() }, WSA_IO_PENDING);
+    assert_eq!(unsafe { closesocket(raw) }, 0);
+    let mut bytes = 0;
+    let mut key = 0;
+    let mut completed = std::ptr::null_mut();
+    unsafe {
+        GetQueuedCompletionStatus(port, &mut bytes, &mut key, &mut completed, 5000)
+            .expect("cancelled UDP IOCP completion");
+    }
+    assert_eq!(bytes, 0);
+    assert_eq!(key, 0x53);
+    assert!(std::ptr::eq(completed, &mut overlapped));
+    assert_eq!(overlapped.Internal, WSA_OPERATION_ABORTED.0 as usize);
+}
+#[cfg(not(windows))]
+fn iocp_cancel_recv(_socket: &UdpSocket) {}
 #[cfg(not(windows))]
 fn iocp_send_to(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> usize {
     socket.send_to(data, destination).unwrap()
