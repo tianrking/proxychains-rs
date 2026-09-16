@@ -12,6 +12,9 @@ use tracing_subscriber::FmtSubscriber;
 
 use proxychains::{ConfigParser, hook::init_hooks};
 
+#[cfg(unix)]
+mod udp_exports;
+
 /// Initialize the library (common code for all platforms)
 fn init_library() -> bool {
     // Initialize logging

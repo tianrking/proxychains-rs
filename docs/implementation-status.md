@@ -11,7 +11,7 @@ does not imply verification on an unavailable operating system or application.
 | DNS mapping and configuration lifecycle | Core fixes implemented | Custom subnet, concurrency, exhaustion and explicit missing path tests |
 | Injection readiness and process attachment | Implemented, Windows fixture passes | Invalid DLL/config, successful attach, corrected-config retry, name ambiguity, real TCP payload and failed proxy |
 | Unix socket lifecycle and event-loop compatibility | Premature close and flag loss fixed; event-loop compatibility pending | Linux/macOS compile checks pass; native preload fixture added but not run locally; replacing an fd still does not preserve epoll/kqueue registrations |
-| UDP and IPv6 transport | SOCKS5 UDP transport and explicit forwarding CLI implemented; IPv6 first-hop helper fixed | Windows packet and two-client relay fixtures pass; arbitrary application UDP, QUIC workflows, ICMP and raw IP remain unsupported |
+| UDP and IPv6 transport | SOCKS5 UDP transport, explicit forwarder and opt-in transparent UDP hooks implemented | Windows native UDP fixture passes, including IPv6 relay, domains, authentication, vectored I/O and failures; see [UDP scope](udp-proxying.md); async Windows UDP and general QUIC remain unsupported |
 | Agent compatibility and diagnostic bridge | Pending | Exact installed Agent versions and workflows |
 | System-enforced network isolation | Pending | Platform-specific enforcement and independent observation |
 | Reproducible builds and release | Author/repository corrected, lockfile tracked, native CI gates added | Local Windows builds; new remote CI and signed release certification remain pending |

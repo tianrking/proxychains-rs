@@ -1,5 +1,12 @@
+#[path = "support/udp_fixture.rs"]
+mod udp_fixture;
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|s| s.starts_with("udp")) {
+        udp_fixture::run(&args[1]);
+        std::process::exit(23);
+    }
     if args.get(1).map(String::as_str) == Some("tcp") {
         use std::io::{Read, Write};
         let mut stream = match std::net::TcpStream::connect(&args[2]) {

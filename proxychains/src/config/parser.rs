@@ -261,6 +261,7 @@ impl ConfigParser {
             }
             "quiet_mode" => config.quiet_mode = true,
             "proxy_dns" => config.proxy_dns = true,
+            "proxy_udp" => config.proxy_udp = true,
             // Compatibility aliases from proxychains-ng.
             "proxy_dns_old" => config.proxy_dns = true,
             "proxy_dns_daemon" => config.proxy_dns = true,

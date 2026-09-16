@@ -183,6 +183,7 @@ impl OriginalFunctions {
                 debug!("DnsQuery_W hook not installed (dnsapi.dll unavailable)");
             }
 
+            super::udp_windows::install()?;
             MinHook::enable_all_hooks().map_err(|s| mh_to_error("enable_all_hooks", s))?;
         }
 

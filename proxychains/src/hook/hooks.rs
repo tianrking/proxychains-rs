@@ -230,6 +230,7 @@ unsafe fn store_fake_addrinfo_result(
 
 /// Initialize the hook library
 pub fn init_hooks(config: Config) -> Result<()> {
+    super::udp::init(&config)?;
     // Initialize original functions first
     init_original_functions()?;
 
@@ -279,6 +280,7 @@ pub unsafe fn hook_connect(
 ) -> c_int {
     trace!("hook_connect called: sock={}", sock);
     if crate::net::is_internal_network() { return original_connect(sock, addr, len); }
+    if let Some(result) = super::udp_unix::connect(sock, addr, len) { return result; }
 
     // Check if initialized
     let state = match get_hook_state() {

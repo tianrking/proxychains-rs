@@ -107,6 +107,7 @@ fn maybe_reload_config(state: &HookState) {
 
 /// Initialize the hook library.
 pub fn init_hooks(config: Config) -> Result<()> {
+    super::udp::init(&config)?;
     let state = HookState::new(config);
     if HOOK_STATE.set(state).is_err() {
         warn!("Hook state already initialized");
@@ -341,6 +342,7 @@ pub unsafe extern "system" fn hook_connect_impl(
     len: i32,
 ) -> i32 {
     if crate::net::is_internal_network() { return original_connect(sock, addr, len); }
+    if let Some(result) = super::udp_windows::connect(sock, addr, len) { return result; }
     let state = match get_hook_state() {
         Some(s) => s,
         None => return original_connect(sock, addr, len),
@@ -520,6 +522,14 @@ pub unsafe extern "system" fn hook_wsa_ioctl_impl(
     overlapped: *mut c_void,
     completion_routine: *mut c_void,
 ) -> i32 {
+    if super::udp::enabled(sock)
+        && (io_control_code == SIO_GET_EXTENSION_FUNCTION_POINTER
+            || io_control_code == windows::Win32::Networking::WinSock::SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER)
+    {
+        // Do not expose unwrapped message or registered-I/O entry points.
+        WSASetLastError(windows::Win32::Networking::WinSock::WSAEOPNOTSUPP.0);
+        return SOCKET_ERROR;
+    }
     if io_control_code != SIO_GET_EXTENSION_FUNCTION_POINTER
         || in_buffer_len < std::mem::size_of::<GUID>() as u32
         || out_buffer_len < std::mem::size_of::<*const c_void>() as u32

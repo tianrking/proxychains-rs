@@ -55,6 +55,8 @@ jobs:
           $env:PROXYCHAINS_TEST_FIXTURE = "$pwd/target/debug/examples/injection_fixture.exe"
           cargo test --locked -p proxychains-injector --test native_readiness -- --ignored
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p proxychains-injector --test native_udp -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify Unix preload and TCP routing
         if: runner.os != 'Windows'
@@ -68,6 +70,7 @@ jobs:
             export PROXYCHAINS_TEST_DLL="$PWD/target/debug/libproxychains.so"
           fi
           cargo test --locked -p proxychains-injector --test native_preload -- --ignored
+          cargo test --locked -p proxychains-injector --test native_udp -- --ignored
 
       - name: Build release binaries
         run: cargo build --locked --release --workspace

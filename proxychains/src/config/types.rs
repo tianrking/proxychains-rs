@@ -228,6 +228,8 @@ pub struct Config {
     pub quiet_mode: bool,
     /// Proxy DNS through the chain
     pub proxy_dns: bool,
+    /// Transparently relay supported UDP socket calls through one SOCKS5 node.
+    pub proxy_udp: bool,
     /// Remote DNS subnet for fake IPs
     pub remote_dns_subnet: u8,
     /// TCP read timeout
@@ -251,6 +253,7 @@ impl Default for Config {
             chain_len: None,
             quiet_mode: false,
             proxy_dns: false,
+            proxy_udp: false,
             remote_dns_subnet: 224,
             tcp_read_timeout: Duration::from_millis(15000),
             tcp_connect_timeout: Duration::from_millis(8000),

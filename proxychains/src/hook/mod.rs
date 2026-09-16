@@ -19,6 +19,11 @@ mod hooks_windows;
 #[cfg(windows)]
 mod interpose_windows;
 mod reload;
+pub mod udp;
+#[cfg(unix)]
+pub mod udp_unix;
+#[cfg(windows)]
+mod udp_windows;
 
 // Re-export based on platform
 #[cfg(unix)]

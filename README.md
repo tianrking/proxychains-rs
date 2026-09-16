@@ -2,6 +2,11 @@
 
 English | [简体中文](README.zh-CN.md)
 
+Transparent UDP is available with `proxy_udp` and exactly one SOCKS5 node.
+It intercepts supported application socket calls through UDP ASSOCIATE, including
+authenticated IPv4/IPv6/domain datagrams. See [setup and limitations](docs/udp-proxying.md).
+Windows overlapped UDP and general QUIC/HTTP/3 compatibility remain unsupported.
+
 A modern Rust implementation of classic `proxychains4`, with cross-platform process-level proxy chaining:
 - Linux: `LD_PRELOAD`
 - macOS: `DYLD_INSERT_LIBRARIES`

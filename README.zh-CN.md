@@ -2,6 +2,11 @@
 
 [English](README.md) | 简体中文
 
+新增透明 UDP 代理：配置 `proxy_udp` 并使用单个 SOCKS5 节点后，支持的应用
+socket 调用会通过 UDP ASSOCIATE 转发，支持认证、IPv4、IPv6 和域名封装。
+详见 [配置方法、接口覆盖与限制](docs/udp-proxying.md)。
+Windows overlapped/IOCP UDP 尚不支持，也不代表所有 QUIC/HTTP/3 应用已经兼容。
+
 `proxychains-rs` 是经典 `proxychains4` 的现代 Rust 实现，支持跨平台“指定进程走代理链”：
 - Linux: `LD_PRELOAD`
 - macOS: `DYLD_INSERT_LIBRARIES`
