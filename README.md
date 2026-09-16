@@ -151,7 +151,9 @@ successful UDP ASSOCIATE alone is not reported as working UDP forwarding.
 Set `--log-file` when launching a command to record intercepted TCP and UDP
 connection outcomes as JSONL. The record contains process name, PID, optional
 `PROXYCHAINS_SESSION_ID`, target, stage, result, and latency, but never proxy
-credentials or payload bytes. Use
+credentials or payload bytes. UDP records include `udp_associate`, `udp_send`,
+and `udp_receive` events, the selected association proxy when available, and
+the last failed proxy when association failover exhausts its candidates. Use
 `--events --events-follow` in another terminal to follow the file; follow mode
 waits for a log file that has not been created yet. Logging is best-effort: a
 busy or unavailable log file never blocks a connection hook.
