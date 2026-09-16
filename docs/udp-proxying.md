@@ -38,7 +38,7 @@ association. `proxychains-udp` remains an explicit fixed-target forwarder.
 | Platform | Intercepted operations |
 | --- | --- |
 | Linux/macOS | `connect`, `sendto`/`recvfrom`, `send`/`recv`, `write`/`read`, `sendmsg`/`recvmsg`, `writev`/`readv`, `getpeername`, `close` |
-| Linux | Also `sendmmsg`, and `recvmmsg` without a timeout argument (including `MSG_WAITFORONE`) |
+| Linux | Also `sendmmsg`, and `recvmmsg` with an overall timeout (including `MSG_WAITFORONE`) |
 | Windows | `connect`/`WSAConnect`, `sendto`/`recvfrom`, `send`/`recv`, synchronous and IOCP `WSASendTo`/`WSARecvFrom`, `WSASend`/`WSARecv`, synchronous and IOCP `WSASendMsg`/`WSARecvMsg`, `getpeername`, `closesocket` |
 
 Both connected and unconnected datagram sockets are supported. SOCKS frames can
@@ -78,8 +78,9 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
   `SIO_GET_EXTENSION_FUNCTION_POINTER`. IOCP `WSASendTo`/`WSARecvFrom`
   completion is supported for sockets associated with a completion port, with
   close cancellation reported through the completion packet.
-- Unix ancillary sends (packet-info, UDP segmentation offload), timed `recvmmsg`
-  and `connect(AF_UNSPEC)` disconnect are rejected. Receive control data is marked
+- Unix ancillary sends (packet-info, UDP segmentation offload) and
+  `connect(AF_UNSPEC)` disconnect are rejected. Timed Linux `recvmmsg` uses one
+  overall deadline and returns partial batches when it expires. Receive control data is marked
   truncated because relay metadata does not describe the original sender.
 - On Linux, `dup`, `dup2`, `dup3` and `fcntl(F_DUPFD*)` preserve the shared
   SOCKS5 association and remove replaced descriptor state. macOS dyld

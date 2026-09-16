@@ -56,6 +56,37 @@ pub fn run(mode: &str) {
         assert_eq!(received, vec![b"dup-clone".to_vec(), b"dup-original".to_vec()]);
         return;
     }
+    #[cfg(target_os = "linux")]
+    if mode == "udp-recvmmsg-timeout" {
+        use std::os::fd::AsRawFd;
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.send_to(b"batch-timeout", destination).unwrap();
+        let mut payload = [0u8; 64];
+        let mut iov = libc::iovec {
+            iov_base: payload.as_mut_ptr().cast(),
+            iov_len: payload.len(),
+        };
+        let mut message: libc::mmsghdr = unsafe { std::mem::zeroed() };
+        message.msg_hdr.msg_iov = &mut iov;
+        message.msg_hdr.msg_iovlen = 1;
+        let mut timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 100_000_000,
+        };
+        let received = unsafe {
+            libc::recvmmsg(
+                socket.as_raw_fd(),
+                &mut message,
+                2,
+                0,
+                &mut timeout,
+            )
+        };
+        assert_eq!(received, 1);
+        assert_eq!(message.msg_len as usize, b"batch-timeout".len());
+        assert_eq!(&payload[..message.msg_len as usize], b"batch-timeout");
+        return;
+    }
     for _ in 0..2 {
         let socket = UdpSocket::bind(if mode == "udp-v6relay" {
             "[::1]:0"

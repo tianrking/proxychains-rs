@@ -1,7 +1,7 @@
 //! libc datagram wrappers. All fallbacks resolve RTLD_NEXT, never our own exports.
 use super::udp;
 use libc::{c_int, c_void, size_t, sockaddr, socklen_t, ssize_t};
-use std::{io, ptr};
+use std::{io, ptr, time::{Duration, Instant}};
 
 macro_rules! original {
     ($name:literal, ($($arg:ty),*) -> $ret:ty) => {{
@@ -374,21 +374,150 @@ pub unsafe fn recvmmsg(
             s, msgs, count, flags, timeout,
         );
     }
-    // Timed batches need a shared deadline; do not silently change timeout semantics.
-    if !timeout.is_null() || msgs.is_null() || count > 1024 {
+    if msgs.is_null() || count > 1024 {
         return fail(udp::unsupported()) as c_int;
     }
+    let deadline = if timeout.is_null() {
+        None
+    } else {
+        match recvmmsg_deadline(&*timeout) {
+            Ok(deadline) => Some(deadline),
+            Err(error) => return fail(error) as c_int,
+        }
+    };
     for i in 0..count as usize {
         let msg = &mut *msgs.add(i);
         let mut receive_flags = flags & !libc::MSG_WAITFORONE;
         if i > 0 && flags & libc::MSG_WAITFORONE != 0 {
             receive_flags |= libc::MSG_DONTWAIT;
         }
+        if let Some(deadline) = deadline
+            .filter(|_| flags & libc::MSG_DONTWAIT == 0)
+            .filter(|_| !(i > 0 && flags & libc::MSG_WAITFORONE != 0))
+        {
+            if let Err(error) = wait_recvmmsg_readable(s, deadline) {
+                if i == 0 {
+                    return fail(error) as c_int;
+                }
+                recvmmsg_update_timeout(timeout, deadline);
+                return i as c_int;
+            }
+            // poll() closes the blocking race and keeps the receive bounded by
+            // the caller's deadline.
+        }
+        if deadline.is_some() {
+            // A timed recvmmsg uses a single overall deadline. After poll (or
+            // when WAITFORONE/DONTWAIT requests it), make the actual receive
+            // nonblocking so the deadline cannot be exceeded by a race.
+            receive_flags |= libc::MSG_DONTWAIT;
+        }
         let n = recvmsg(s, &mut msg.msg_hdr, receive_flags);
         if n < 0 {
-            return if i == 0 { -1 } else { i as c_int };
+            let error = io::Error::last_os_error();
+            if i > 0
+                && error
+                    .raw_os_error()
+                    .is_some_and(|code| code == libc::EAGAIN || code == libc::EWOULDBLOCK)
+            {
+                recvmmsg_update_timeout(timeout, deadline.unwrap_or_else(Instant::now));
+                return i as c_int;
+            }
+            return if i == 0 {
+                -1
+            } else {
+                recvmmsg_update_timeout(timeout, deadline.unwrap_or_else(Instant::now));
+                i as c_int
+            };
         }
         msg.msg_len = n as _;
     }
+    recvmmsg_update_timeout(timeout, deadline.unwrap_or_else(Instant::now));
     count as c_int
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod recvmmsg_tests {
+    use super::*;
+
+    #[test]
+    fn deadline_rejects_invalid_timespec() {
+        let negative = libc::timespec {
+            tv_sec: -1,
+            tv_nsec: 0,
+        };
+        assert_eq!(recvmmsg_deadline(&negative).unwrap_err().raw_os_error(), Some(libc::EINVAL));
+        let invalid_nanos = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 1_000_000_000,
+        };
+        assert_eq!(
+            recvmmsg_deadline(&invalid_nanos)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EINVAL)
+        );
+    }
+
+    #[test]
+    fn timeout_update_never_goes_negative() {
+        let mut timeout = libc::timespec {
+            tv_sec: 4,
+            tv_nsec: 0,
+        };
+        recvmmsg_update_timeout(&mut timeout, Instant::now());
+        assert_eq!(timeout.tv_sec, 0);
+        assert_eq!(timeout.tv_nsec, 0);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn recvmmsg_deadline(timeout: &libc::timespec) -> io::Result<Instant> {
+    if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    let duration = Duration::new(timeout.tv_sec as u64, timeout.tv_nsec as u32);
+    Ok(Instant::now()
+        .checked_add(duration)
+        .unwrap_or_else(Instant::now))
+}
+
+#[cfg(target_os = "linux")]
+fn wait_recvmmsg_readable(socket: c_int, deadline: Instant) -> io::Result<()> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let millis = if remaining.is_zero() {
+        0
+    } else {
+        remaining
+            .as_millis()
+            .saturating_add(1)
+            .min(i32::MAX as u128) as i32
+    };
+    let mut pollfd = libc::pollfd {
+        fd: socket,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(&mut pollfd, 1, millis) };
+    if result > 0 && pollfd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+        return Ok(());
+    }
+    if result == 0 {
+        return Err(io::Error::from_raw_os_error(libc::EAGAIN));
+    }
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Err(io::Error::from_raw_os_error(libc::EAGAIN))
+}
+
+#[cfg(target_os = "linux")]
+fn recvmmsg_update_timeout(timeout: *mut libc::timespec, deadline: Instant) {
+    if timeout.is_null() {
+        return;
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    unsafe {
+        (*timeout).tv_sec = remaining.as_secs().min(i64::MAX as u64) as libc::time_t;
+        (*timeout).tv_nsec = remaining.subsec_nanos() as libc::c_long;
+    }
 }
