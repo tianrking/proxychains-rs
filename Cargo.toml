@@ -15,6 +15,12 @@ authors = ["tianrking"]
 license = "GPL-2.0"
 repository = "https://github.com/tianrking/proxychains-rs"
 
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
 [workspace.dependencies]
 libc = "0.2"
 nix = { version = "0.28", features = ["net", "socket", "poll", "signal", "process", "fs"] }

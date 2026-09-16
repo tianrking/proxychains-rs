@@ -18,7 +18,7 @@ does not imply verification on an unavailable operating system or application.
 | Process-aware JSONL trace fields | Implemented | Events include process name/PID and a CLI-generated or caller-supplied `PROXYCHAINS_SESSION_ID`; logging remains best-effort and only covers captured hooks |
 | Agent compatibility and diagnostic bridge | Pending | Exact installed Agent versions and workflows |
 | System-enforced network isolation | Pending | Platform-specific enforcement and independent observation |
-| Reproducible builds and release | Author/repository corrected, lockfile tracked, native CI gates added | Local Windows builds; new remote CI and signed release certification remain pending |
+| Reproducible builds and release | Author/repository corrected, lockfile tracked, native CI gates added, and release profile uses thin LTO, one codegen unit and symbol stripping | Local Windows release build reduced the measured binaries to 795,648-byte `proxychains-udp.exe`, 739,840-byte DLL and 1,183,232-byte `proxychains4.exe`; new remote CI and signed release certification remain pending |
 
 Existing hook mode must not be described as universal or system-enforced fail-closed
 network isolation. Attaching to a running process cannot retroactively proxy its
