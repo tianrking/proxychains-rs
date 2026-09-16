@@ -22,6 +22,7 @@ fn native_udp_routing_and_lifecycle() {
         "udp-ipv6",
         "udp-vectored",
         "udp-iocp",
+        "udp-iocp-sendmsg",
         "udp-iocp-recv",
         "udp-recvmsg",
         "udp-iocp-cancel",

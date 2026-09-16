@@ -60,6 +60,8 @@ pub fn run(mode: &str) {
             }
             let n = if mode == "udp-iocp" && round == 0 {
                 iocp_send_to(&socket, data, destination)
+            } else if mode == "udp-iocp-sendmsg" && round == 0 {
+                iocp_sendmsg_to(&socket, data, destination)
             } else if mode == "udp-vectored" {
                 vectored_send(&socket, data, destination)
             } else if connected {
@@ -277,6 +279,88 @@ fn iocp_send_to(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> usi
     assert!(std::ptr::eq(completed, &mut overlapped));
     assert_eq!(bytes as usize, data.len());
     bytes as usize
+}
+#[cfg(windows)]
+fn iocp_sendmsg_to(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> usize {
+    use std::ffi::c_void;
+    use std::mem::transmute;
+    use std::os::windows::io::AsRawSocket;
+    use windows::core::GUID;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Networking::WinSock::{
+        LPWSAOVERLAPPED_COMPLETION_ROUTINE, SOCKET, WSABUF, WSAMSG, WSAGetLastError, WSAIoctl,
+        WSAID_WSASENDMSG, WSA_IO_PENDING,
+    };
+    use windows::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED};
+    const SIO_GET_EXTENSION_FUNCTION_POINTER: u32 = 0xC800_0006;
+    type SendMsg = unsafe extern "system" fn(
+        SOCKET,
+        *const WSAMSG,
+        u32,
+        *mut u32,
+        *mut OVERLAPPED,
+        LPWSAOVERLAPPED_COMPLETION_ROUTINE,
+    ) -> i32;
+    let port = unsafe {
+        CreateIoCompletionPort(HANDLE(-1), HANDLE::default(), 0x54, 1)
+            .expect("CreateIoCompletionPort")
+    };
+    let raw = SOCKET(socket.as_raw_socket() as usize);
+    unsafe {
+        CreateIoCompletionPort(HANDLE(socket.as_raw_socket() as isize), port, 0x54, 1)
+            .expect("associate UDP socket with IOCP");
+    }
+    let mut function: *mut c_void = std::ptr::null_mut();
+    let mut returned = 0;
+    let result = unsafe {
+        WSAIoctl(
+            raw,
+            SIO_GET_EXTENSION_FUNCTION_POINTER,
+            Some((&WSAID_WSASENDMSG as *const GUID).cast()),
+            std::mem::size_of::<GUID>() as u32,
+            Some((&mut function as *mut *mut c_void).cast()),
+            std::mem::size_of::<*mut c_void>() as u32,
+            &mut returned,
+            None,
+            None,
+        )
+    };
+    assert_eq!(result, 0);
+    let sendmsg: SendMsg = unsafe { transmute(function) };
+    let mut buffer = WSABUF {
+        len: data.len() as u32,
+        buf: windows::core::PSTR(data.as_ptr().cast_mut()),
+    };
+    let destination = socket2::SockAddr::from(destination);
+    let message = WSAMSG {
+        name: destination.as_ptr().cast_mut().cast(),
+        namelen: destination.len(),
+        lpBuffers: &mut buffer,
+        dwBufferCount: 1,
+        Control: WSABUF {
+            len: 0,
+            buf: windows::core::PSTR(std::ptr::null_mut()),
+        },
+        dwFlags: 0,
+    };
+    let mut overlapped = OVERLAPPED::default();
+    assert_eq!(unsafe { sendmsg(raw, &message, 0, std::ptr::null_mut(), &mut overlapped, None) }, -1);
+    assert_eq!(unsafe { WSAGetLastError() }, WSA_IO_PENDING);
+    let mut bytes = 0;
+    let mut key = 0;
+    let mut completed = std::ptr::null_mut();
+    unsafe {
+        GetQueuedCompletionStatus(port, &mut bytes, &mut key, &mut completed, 5000)
+            .expect("UDP IOCP WSASendMsg completion");
+    }
+    assert_eq!(key, 0x54);
+    assert!(std::ptr::eq(completed, &mut overlapped));
+    assert_eq!(bytes as usize, data.len());
+    bytes as usize
+}
+#[cfg(not(windows))]
+fn iocp_sendmsg_to(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> usize {
+    socket.send_to(data, destination).unwrap()
 }
 #[cfg(windows)]
 fn iocp_recv_from(socket: &UdpSocket, expected: &[u8]) -> usize {

@@ -694,11 +694,15 @@ pub(super) unsafe extern "system" fn wsa_sendmsg(
     if !udp::enabled(s) {
         return WSASENDMSG.get().unwrap()(s, msg, flags, sent, ov, completion);
     }
-    // This hook handles the synchronous WSAMSG form. Overlapped completion
-    // ownership stays with the application's IOCP and is intentionally
-    // rejected until the full asynchronous relay lifecycle is implemented.
-    if msg.is_null() || sent.is_null() || !ov.is_null() || !completion.is_null() {
+    if msg.is_null() || !completion.is_null() {
         return fail(udp::unsupported());
+    }
+    let iocp = if ov.is_null() { None } else { iocp_for(s) };
+    if !ov.is_null() && iocp.is_none() {
+        return fail(udp::unsupported());
+    }
+    if sent.is_null() && ov.is_null() {
+        return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
     }
     let message = &*(msg.cast::<WSAMSG>());
     if message.Control.len != 0 {
@@ -734,6 +738,18 @@ pub(super) unsafe extern "system" fn wsa_sendmsg(
         Ok(flags) => flags,
         Err(_) => return fail(udp::unsupported()),
     };
+    if let Some((port, completion_key)) = iocp {
+        return queue_iocp_send(
+            s,
+            data,
+            address,
+            native_flags,
+            sent,
+            ov,
+            port,
+            completion_key,
+        );
+    }
     match udp::send(s, &data, address, native_flags) {
         Some(Ok(length)) => {
             *sent = length as u32;

@@ -36,7 +36,7 @@ association. `proxychains-udp` remains an explicit fixed-target forwarder.
 | --- | --- |
 | Linux/macOS | `connect`, `sendto`/`recvfrom`, `send`/`recv`, `write`/`read`, `sendmsg`/`recvmsg`, `writev`/`readv`, `getpeername`, `close` |
 | Linux | Also `sendmmsg`, and `recvmmsg` without a timeout argument (including `MSG_WAITFORONE`) |
-| Windows | `connect`/`WSAConnect`, `sendto`/`recvfrom`, `send`/`recv`, synchronous and IOCP `WSASendTo`/`WSARecvFrom`, `WSASend`/`WSARecv`, synchronous `WSASendMsg`/`WSARecvMsg`, `getpeername`, `closesocket` |
+| Windows | `connect`/`WSAConnect`, `sendto`/`recvfrom`, `send`/`recv`, synchronous and IOCP `WSASendTo`/`WSARecvFrom`, `WSASend`/`WSARecv`, synchronous and IOCP `WSASendMsg`, synchronous `WSARecvMsg`, `getpeername`, `closesocket` |
 
 Both connected and unconnected datagram sockets are supported. SOCKS frames can
 contain IPv4, IPv6 or domain destinations; IPv4 and IPv6 relays are supported.
@@ -69,9 +69,9 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
 
 ## Compatibility boundaries
 
-- Windows asynchronous `WSASendMsg`/`WSARecvMsg` return `WSAEOPNOTSUPP`; RIO
-  is not implemented. Synchronous `WSASendMsg`/`WSARecvMsg` are exposed through
-  `SIO_GET_EXTENSION_FUNCTION_POINTER`. IOCP `WSASendTo`/`WSARecvFrom`
+- Windows asynchronous `WSARecvMsg` returns `WSAEOPNOTSUPP`; RIO is not
+  implemented. Synchronous `WSASendMsg`/`WSARecvMsg` and IOCP `WSASendMsg` are
+  exposed through `SIO_GET_EXTENSION_FUNCTION_POINTER`. IOCP `WSASendTo`/`WSARecvFrom`
   completion is supported for sockets associated with a completion port, with
   close cancellation reported through the completion packet.
 - Unix ancillary sends (packet-info, UDP segmentation offload), timed `recvmmsg`
