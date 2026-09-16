@@ -19,7 +19,7 @@ use windows::Win32::Networking::WinSock::{
     ADDRINFOA, ADDRINFOW, AF_INET, AF_INET6, IN_ADDR, IN_ADDR_0, IPPROTO_TCP, SOCKADDR,
     SOCKADDR_IN, SOCK_STREAM, SOCKET_ERROR, WSAEALREADY, WSAECONNREFUSED, WSAEFAULT,
     WSAEACCES, WSAEINPROGRESS, WSAEINVAL, WSAEWOULDBLOCK, WSAGetLastError, WSAHOST_NOT_FOUND, WSASetLastError,
-    SOCKET, SEND_RECV_FLAGS, send,
+    SOCKET, SEND_RECV_FLAGS, WSAID_WSASENDMSG, send,
 };
 use windows::core::GUID;
 use windows::Win32::System::IO::OVERLAPPED;
@@ -595,6 +595,31 @@ pub unsafe extern "system" fn hook_wsa_ioctl_impl(
     overlapped: *mut c_void,
     completion_routine: *mut c_void,
 ) -> i32 {
+    if io_control_code == SIO_GET_EXTENSION_FUNCTION_POINTER
+        && !in_buffer.is_null()
+        && in_buffer_len >= std::mem::size_of::<GUID>() as u32
+    {
+        let requested = *(in_buffer as *const GUID);
+        if requested == WSAID_WSASENDMSG {
+            if out_buffer.is_null()
+                || out_buffer_len < std::mem::size_of::<*const c_void>() as u32
+            {
+                WSASetLastError(WSAEFAULT.0);
+                return SOCKET_ERROR;
+            }
+            let replacement = super::udp_windows::wsa_sendmsg as *const c_void;
+            std::ptr::copy_nonoverlapping(
+                &replacement as *const *const c_void as *const u8,
+                out_buffer as *mut u8,
+                std::mem::size_of::<*const c_void>(),
+            );
+            if !bytes_returned.is_null() {
+                *bytes_returned = std::mem::size_of::<*const c_void>() as u32;
+            }
+            return 0;
+        }
+    }
+
     if super::udp::enabled(sock)
         && (io_control_code == SIO_GET_EXTENSION_FUNCTION_POINTER
             || io_control_code == windows::Win32::Networking::WinSock::SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER)
@@ -1180,5 +1205,28 @@ mod tests {
         let config = Config::default();
         let state = HookState::new(config);
         assert!(state.initialized);
+    }
+
+    #[test]
+    fn test_wsa_ioctl_exposes_synchronous_sendmsg_pointer() {
+        let guid = WSAID_WSASENDMSG;
+        let mut replacement: *mut c_void = std::ptr::null_mut();
+        let mut returned = 0;
+        let result = unsafe {
+            hook_wsa_ioctl_impl(
+                usize::MAX,
+                SIO_GET_EXTENSION_FUNCTION_POINTER,
+                (&guid as *const GUID).cast_mut().cast(),
+                std::mem::size_of::<GUID>() as u32,
+                (&mut replacement as *mut *mut c_void).cast(),
+                std::mem::size_of::<*mut c_void>() as u32,
+                &mut returned,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(result, 0);
+        assert!(!replacement.is_null());
+        assert_eq!(returned as usize, std::mem::size_of::<*mut c_void>());
     }
 }

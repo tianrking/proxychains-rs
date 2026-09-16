@@ -365,7 +365,7 @@ unsafe extern "system" fn wsa_recv(
     )
 }
 
-unsafe extern "system" fn wsa_sendmsg(
+pub(super) unsafe extern "system" fn wsa_sendmsg(
     s: usize,
     msg: *const c_void,
     flags: u32,

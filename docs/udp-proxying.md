@@ -69,9 +69,10 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
 
 ## Compatibility boundaries
 
-- Windows overlapped/IOCP datagrams, UDP extension-function queries and
+- Windows overlapped/IOCP datagrams, `WSARecvMsg` extension lookup and
   asynchronous `WSASendMsg` return `WSAEOPNOTSUPP`; completion/cancellation and
-  RIO are not implemented.
+  RIO are not implemented. Synchronous `WSASendMsg` is exposed through
+  `SIO_GET_EXTENSION_FUNCTION_POINTER` for `WSAID_WSASENDMSG` queries.
 - Unix ancillary sends (packet-info, UDP segmentation offload), timed `recvmmsg`
   and `connect(AF_UNSPEC)` disconnect are rejected. Receive control data is marked
   truncated because relay metadata does not describe the original sender.

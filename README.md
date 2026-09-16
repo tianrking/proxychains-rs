@@ -8,6 +8,8 @@ single-node SOCKS5 groups; each UDP socket keeps its first selected group.
 It intercepts supported application socket calls through UDP ASSOCIATE, including
 authenticated IPv4/IPv6/domain datagrams. See [setup and limitations](docs/udp-proxying.md).
 Windows overlapped UDP and general QUIC/HTTP/3 compatibility remain unsupported;
+the synchronous `WSASendMsg` extension pointer is available for applications
+that query it through Winsock.
 synchronous `WSASendMsg` datagrams are supported.
 
 A modern Rust implementation of classic `proxychains4`, with cross-platform process-level proxy chaining:
