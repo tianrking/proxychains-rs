@@ -12,7 +12,9 @@ use tracing_subscriber::FmtSubscriber;
 
 use proxychains::{ConfigParser, hook::init_hooks};
 
-#[cfg(unix)]
+// A unit-test executable must not interpose its own libc calls or run the
+// preload constructor. Native integration tests exercise the actual cdylib.
+#[cfg(all(unix, not(test)))]
 mod udp_exports;
 
 /// Initialize the library (common code for all platforms)
@@ -69,7 +71,7 @@ fn init_library() -> bool {
 // Unix Implementation (LD_PRELOAD/DYLD_INSERT_LIBRARIES)
 // ============================================================================
 
-#[cfg(unix)]
+#[cfg(all(unix, not(test)))]
 mod unix_impl {
     use super::*;
     use ctor::ctor;
