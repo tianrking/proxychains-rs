@@ -461,7 +461,11 @@ fn run_dns_queryex() {
 
     CALLED.store(false, Ordering::Release);
     CONTEXT.store(0, Ordering::Release);
-    let name: Vec<u16> = "proxychains-remote-dns.invalid"
+    // localhost is intentionally used here because Windows may complete a
+    // numeric/fake DNS answer synchronously without invoking the callback.
+    // The proxy-DNS fake-name path is covered by the hook unit tests; this
+    // native fixture validates the real callback ABI and context lifetime.
+    let name: Vec<u16> = "localhost"
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();
