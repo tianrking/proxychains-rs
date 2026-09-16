@@ -4,8 +4,10 @@ use super::udp;
 use std::ffi::c_void;
 use std::io;
 use std::ptr;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 use windows::Win32::Networking::WinSock::*;
+use windows::Win32::Foundation::HANDLE;
 
 macro_rules! original {
     ($name:ident, $ty:ident, ($($arg:ty),*) -> $ret:ty) => {
@@ -24,6 +26,25 @@ original!(WSARECVFROM, WsaRecvFrom, (usize, *const WSABUF, u32, *mut u32, *mut u
 original!(WSASEND, WsaSend, (usize, *const WSABUF, u32, *mut u32, u32, *mut c_void, *mut c_void) -> i32);
 original!(WSARECV, WsaRecv, (usize, *const WSABUF, u32, *mut u32, *mut u32, *mut c_void, *mut c_void) -> i32);
 original!(WSASENDMSG, WsaSendMsg, (usize, *const c_void, u32, *mut u32, *mut c_void, *mut c_void) -> i32);
+
+static IOCP_ASSOCIATIONS: OnceLock<parking_lot::Mutex<HashMap<usize, (HANDLE, usize)>>> =
+    OnceLock::new();
+
+fn iocp_associations() -> &'static parking_lot::Mutex<HashMap<usize, (HANDLE, usize)>> {
+    IOCP_ASSOCIATIONS.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+}
+
+pub(super) fn register_iocp(socket: usize, port: HANDLE, completion_key: usize) {
+    if !port.is_invalid() {
+        iocp_associations()
+            .lock()
+            .insert(socket, (port, completion_key));
+    }
+}
+
+pub(super) fn forget_iocp(socket: usize) {
+    iocp_associations().lock().remove(&socket);
+}
 
 pub(super) unsafe fn install() -> crate::Result<()> {
     macro_rules! install {
@@ -194,6 +215,7 @@ unsafe extern "system" fn close(s: usize) -> i32 {
     let result = CLOSE.get().unwrap()(s);
     if result == 0 {
         udp::forget(s);
+        forget_iocp(s);
     }
     result
 }

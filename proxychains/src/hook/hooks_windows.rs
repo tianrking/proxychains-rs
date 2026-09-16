@@ -15,6 +15,7 @@ use std::time::Instant;
 use parking_lot::Mutex;
 use rand::seq::SliceRandom;
 use tracing::{debug, error, info, warn};
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Networking::WinSock::{
     ADDRINFOA, ADDRINFOW, AF_INET, AF_INET6, IN_ADDR, IN_ADDR_0, IPPROTO_TCP, SOCKADDR,
     SOCKADDR_IN, SOCK_STREAM, SOCKET_ERROR, WSAEALREADY, WSAECONNREFUSED, WSAEFAULT,
@@ -1229,4 +1230,26 @@ mod tests {
         assert!(!replacement.is_null());
         assert_eq!(returned as usize, std::mem::size_of::<*mut c_void>());
     }
+}
+
+/// Capture socket-to-IOCP associations for the future asynchronous UDP relay.
+/// The association is recorded only; UDP completion semantics remain explicitly
+/// unsupported until send/receive cancellation and completion ownership exist.
+#[cfg(windows)]
+pub unsafe extern "system" fn hook_create_io_completion_port_impl(
+    file_handle: HANDLE,
+    existing_port: HANDLE,
+    completion_key: usize,
+    threads: u32,
+) -> HANDLE {
+    let port = super::interpose_windows::original_create_io_completion_port(
+        file_handle,
+        existing_port,
+        completion_key,
+        threads,
+    );
+    if !file_handle.is_invalid() && !port.is_invalid() {
+        super::udp_windows::register_iocp(file_handle.0 as usize, port, completion_key);
+    }
+    port
 }

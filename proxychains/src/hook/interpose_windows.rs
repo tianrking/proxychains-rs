@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 
 use minhook::MinHook;
 use tracing::debug;
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Networking::WinSock::{WSAECONNREFUSED, WSAHOST_NOT_FOUND, WSASetLastError};
 
 use crate::error::{Error, Result};
@@ -17,6 +18,7 @@ use super::hooks_windows::{
     hook_connect_impl, hook_freeaddrinfo_impl, hook_getaddrinfo_impl, hook_getaddrinfow_impl,
     hook_getaddrinfoexw_impl, hook_gethostbyname_impl, hook_getnameinfo_impl,
     hook_dns_query_a_impl, hook_dns_query_w_impl, hook_wsa_connect_impl, hook_wsa_ioctl_impl,
+    hook_create_io_completion_port_impl,
 };
 
 type ConnectFn = unsafe extern "system" fn(usize, *const c_void, i32) -> i32;
@@ -60,6 +62,7 @@ type WsaIoctlFn = unsafe extern "system" fn(
     *mut c_void,
     *mut c_void,
 ) -> i32;
+type CreateIoCompletionPortFn = unsafe extern "system" fn(HANDLE, HANDLE, usize, u32) -> HANDLE;
 type DnsQueryAFn = unsafe extern "system" fn(
     *const i8,
     u16,
@@ -86,6 +89,7 @@ static ORIGINAL_FREEADDRINFO: OnceLock<FreeAddrInfoFn> = OnceLock::new();
 static ORIGINAL_GETHOSTBYNAME: OnceLock<GetHostByNameFn> = OnceLock::new();
 static ORIGINAL_GETNAMEINFO: OnceLock<GetNameInfoFn> = OnceLock::new();
 static ORIGINAL_WSA_IOCTL: OnceLock<WsaIoctlFn> = OnceLock::new();
+static ORIGINAL_CREATE_IOCP: OnceLock<CreateIoCompletionPortFn> = OnceLock::new();
 static ORIGINAL_DNS_QUERY_A: OnceLock<DnsQueryAFn> = OnceLock::new();
 static ORIGINAL_DNS_QUERY_W: OnceLock<DnsQueryWFn> = OnceLock::new();
 
@@ -127,6 +131,11 @@ impl OriginalFunctions {
                 install_api_hook("WSAConnect", hook_wsa_connect_impl as *const () as *mut c_void)?;
             let wsa_ioctl_fn: WsaIoctlFn =
                 install_api_hook("WSAIoctl", hook_wsa_ioctl_impl as *const () as *mut c_void)?;
+            let create_iocp_fn: CreateIoCompletionPortFn = install_api_hook_from_module(
+                "kernel32.dll",
+                "CreateIoCompletionPort",
+                hook_create_io_completion_port_impl as *const () as *mut c_void,
+            )?;
             let getaddrinfo_fn: GetAddrInfoFn = install_api_hook(
                 "getaddrinfo",
                 hook_getaddrinfo_impl as *const () as *mut c_void,
@@ -151,6 +160,7 @@ impl OriginalFunctions {
             let _ = ORIGINAL_CONNECT.set(connect_fn);
             let _ = ORIGINAL_WSA_CONNECT.set(wsa_connect_fn);
             let _ = ORIGINAL_WSA_IOCTL.set(wsa_ioctl_fn);
+            let _ = ORIGINAL_CREATE_IOCP.set(create_iocp_fn);
             let _ = ORIGINAL_GETADDRINFO.set(getaddrinfo_fn);
             let _ = ORIGINAL_GETADDRINFOW.set(getaddrinfow_fn);
             let _ = ORIGINAL_FREEADDRINFO.set(freeaddrinfo_fn);
@@ -273,6 +283,20 @@ pub unsafe fn original_wsa_ioctl(
     } else {
         WSASetLastError(WSAECONNREFUSED.0);
         -1
+    }
+}
+
+/// Call the original CreateIoCompletionPort function.
+pub unsafe fn original_create_io_completion_port(
+    file_handle: HANDLE,
+    existing_port: HANDLE,
+    completion_key: usize,
+    threads: u32,
+) -> HANDLE {
+    if let Some(f) = ORIGINAL_CREATE_IOCP.get() {
+        f(file_handle, existing_port, completion_key, threads)
+    } else {
+        HANDLE(0)
     }
 }
 
