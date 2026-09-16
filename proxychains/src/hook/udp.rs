@@ -206,6 +206,7 @@ fn association(
     }
     let mut selected = None;
     let mut last_error = None;
+    let mut last_proxy = None;
     for proxy in available {
         match UdpControl::connect(proxy, config.tcp_connect_timeout, config.tcp_read_timeout) {
             Ok(association) => {
@@ -214,6 +215,7 @@ fn association(
                 break;
             }
             Err(error_value) => {
+                last_proxy = Some(format!("{}:{}", proxy.host, proxy.port));
                 crate::chain::mark_proxy_failure(
                     proxy,
                     crate::chain::HealthProtocol::Udp,
@@ -243,7 +245,7 @@ fn association(
                 protocol: "udp",
                 target: "unknown",
                 port: 0,
-                proxy: None,
+                proxy: last_proxy,
                 stage: "udp_associate",
                 ok: false,
                 elapsed_ms: Some(started.elapsed().as_millis()),
