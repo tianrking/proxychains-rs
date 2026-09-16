@@ -259,7 +259,7 @@ fn iocp_send_to(socket: &UdpSocket, data: &[u8], destination: SocketAddr) -> usi
             .expect("UDP IOCP completion");
     }
     assert_eq!(key, 0x51);
-    assert_eq!(completed, &mut overlapped);
+    assert!(std::ptr::eq(completed, &mut overlapped));
     assert_eq!(bytes as usize, data.len());
     sent = bytes;
     sent as usize
