@@ -18,7 +18,7 @@ Windows overlapped/IOCP UDP 尚不支持，也不代表所有 QUIC/HTTP/3 应用
 |---|---|---|
 | Linux | `LD_PRELOAD` | 交叉编译检查通过；已加入原生回归门禁，事件循环兼容性待完善 |
 | macOS | `DYLD_INSERT_LIBRARIES` | 交叉编译检查通过；受保护应用和事件循环尚未认证 |
-| Windows | DLL 注入 + MinHook | 原生测试程序通过；子进程注入时序、ConnectEx/IOCP 尚未完整实现 |
+| Windows | DLL 注入 + MinHook | 已改为创建事件树注入；ConnectEx/IOCP 尚未完整实现 |
 
 作者：**tianrking**。已验证的能力、使用方法和未完成事项见
 [实施状态](docs/implementation-status.md)。当前不是系统级网络隔离工具，
@@ -52,7 +52,7 @@ Windows overlapped/IOCP UDP 尚不支持，也不代表所有 QUIC/HTTP/3 应用
 - 链路模式：`dynamic_chain`、`strict_chain`、`random_chain`、`load_balance`、`failover`
 - 代理分组：`[ProxyList:<group>]` + `--group`
 - 进程树模式：`--tree`
-  - Windows：根进程 + 子/孙进程注入
+  - Windows：通过创建事件在根进程及每个子进程恢复前完成注入
   - Linux/macOS：通过 preload 环境变量继承覆盖子进程
 - 配置发现/校验：
   - `--list-groups`

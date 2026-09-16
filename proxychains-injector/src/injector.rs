@@ -250,6 +250,118 @@ impl ProxychainsInjector {
     /// (child/grandchild processes) until the root process exits.
     #[cfg(windows)]
     pub fn spawn_inject_tree_wait(&self, process_info: &ProcessInfo) -> Result<i32> {
+        self.spawn_inject_tree_debug_wait(process_info)
+    }
+
+    /// Create the root under the Windows debugger, inject every process at its
+    /// creation event, and continue each event only after hook initialization.
+    /// This closes the polling window where a short-lived child could execute
+    /// networking code before the 150 ms process-table scan noticed it.
+    #[cfg(windows)]
+    fn spawn_inject_tree_debug_wait(&self, process_info: &ProcessInfo) -> Result<i32> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::{PCWSTR, PWSTR};
+        use windows::Win32::Foundation::{CloseHandle, HANDLE, DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED};
+        use windows::Win32::System::Diagnostics::Debug::{
+            ContinueDebugEvent, WaitForDebugEvent, CREATE_PROCESS_DEBUG_EVENT,
+            DEBUG_EVENT, EXCEPTION_DEBUG_EVENT, EXIT_PROCESS_DEBUG_EVENT,
+        };
+        use windows::Win32::System::Threading::{
+            CreateProcessW, GetExitCodeProcess, TerminateProcess, DEBUG_PROCESS,
+            PROCESS_INFORMATION, STARTUPINFOW,
+        };
+
+        let mut command_line = quote_arg(&process_info.command);
+        for arg in &process_info.args {
+            command_line.push(' ');
+            command_line.push_str(&quote_arg(arg));
+        }
+        let mut cmd_wide: Vec<u16> = std::ffi::OsStr::new(&command_line)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut startup_info = STARTUPINFOW::default();
+        startup_info.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+        let mut process_info_win = PROCESS_INFORMATION::default();
+
+        unsafe {
+            CreateProcessW(
+                PCWSTR::null(),
+                PWSTR(cmd_wide.as_mut_ptr()),
+                None,
+                None,
+                false,
+                DEBUG_PROCESS,
+                None,
+                PCWSTR::null(),
+                &startup_info,
+                &mut process_info_win,
+            )
+            .map_err(|e| InjectorError::ProcessCreationFailed(format!("{e:?}")))?;
+
+            let root_pid = process_info_win.dwProcessId;
+            let root_handle: HANDLE = process_info_win.hProcess;
+            let mut root_exit = None;
+            let mut fatal_error: Option<InjectorError> = None;
+            loop {
+                let mut event = DEBUG_EVENT::default();
+                WaitForDebugEvent(&mut event, 30_000).map_err(|e| {
+                    InjectorError::WindowsApi(format!("WaitForDebugEvent failed: {e:?}"))
+                })?;
+                let code = event.dwDebugEventCode;
+                let mut continue_status = DBG_CONTINUE;
+
+                if code == CREATE_PROCESS_DEBUG_EVENT {
+                    let info = event.u.CreateProcessInfo;
+                    let is_root = event.dwProcessId == root_pid;
+                    if fatal_error.is_none() {
+                        if let Err(error) = self.inject_dll(info.hProcess) {
+                            fatal_error = Some(error);
+                            if is_root {
+                                let _ = TerminateProcess(root_handle, 1);
+                            }
+                        } else {
+                            info!("Injected DLL at process creation event for PID {}", event.dwProcessId);
+                        }
+                    }
+                    if !is_root {
+                        let _ = CloseHandle(info.hProcess);
+                    }
+                    let _ = CloseHandle(info.hThread);
+                    if !info.hFile.is_invalid() {
+                        let _ = CloseHandle(info.hFile);
+                    }
+                } else if code == EXIT_PROCESS_DEBUG_EVENT {
+                    let info = event.u.ExitProcess;
+                    if event.dwProcessId == root_pid {
+                        root_exit = Some(info.dwExitCode);
+                    }
+                } else if code == EXCEPTION_DEBUG_EVENT {
+                    continue_status = DBG_EXCEPTION_NOT_HANDLED;
+                }
+
+                ContinueDebugEvent(event.dwProcessId, event.dwThreadId, continue_status)
+                    .map_err(|e| InjectorError::WindowsApi(format!("ContinueDebugEvent failed: {e:?}")))?;
+                if root_exit.is_some() {
+                    break;
+                }
+            }
+
+            let mut exit_code = root_exit.unwrap_or(1);
+            GetExitCodeProcess(root_handle, &mut exit_code)
+                .map_err(|e| InjectorError::WindowsApi(format!("GetExitCodeProcess failed: {e:?}")))?;
+            let _ = CloseHandle(process_info_win.hThread);
+            let _ = CloseHandle(root_handle);
+            if let Some(error) = fatal_error {
+                return Err(error);
+            }
+            Ok(exit_code as i32)
+        }
+    }
+
+    /// Legacy process-table implementation retained for diagnostic comparison.
+    #[cfg(windows)]
+    fn spawn_inject_tree_polling_wait(&self, process_info: &ProcessInfo) -> Result<i32> {
         use std::collections::HashSet;
         use std::os::windows::ffi::OsStrExt;
         use windows::core::{PCWSTR, PWSTR};

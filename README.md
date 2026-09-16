@@ -18,7 +18,7 @@ A modern Rust implementation of classic `proxychains4`, with cross-platform proc
 |---|---|---|
 | Linux | `LD_PRELOAD` | Compile-checked; native regression gate added, event-loop compatibility pending |
 | macOS | `DYLD_INSERT_LIBRARIES` | Compile-checked; native regression gate added, protected apps and event loops not certified |
-| Windows | DLL injection + MinHook | Native fixture verified; tree timing and ConnectEx/IOCP remain incomplete |
+| Windows | DLL injection + MinHook | Creation-time tree injection verified in code; ConnectEx/IOCP remains incomplete |
 
 Author: **tianrking**. See [implementation status](docs/implementation-status.md)
 for verified behavior, commands and unfinished work. This is not system-enforced
@@ -52,7 +52,7 @@ Recommendation:
 - Chain modes: `dynamic_chain`, `strict_chain`, `random_chain`, `load_balance`, `failover`
 - Proxy groups: `[ProxyList:<group>]` + `--group`
 - Process tree mode: `--tree`
-  - Windows: root process + child/grandchild process injection
+  - Windows: creation-time debugger events inject the root and every child before it resumes
   - Linux/macOS: inherited preload environment for child processes
 - Discovery/validation:
   - `--list-groups`

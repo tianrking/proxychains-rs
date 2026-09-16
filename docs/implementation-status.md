@@ -41,9 +41,11 @@ proxychains4 -f proxychains.conf --attach-name example.exe
 
 Names must resolve to exactly one process. Architecture must match the injector.
 Only future intercepted connections are affected; existing sockets are untouched.
-The suspended launcher waits for explicit hook readiness. The old public
-`spawn_and_inject` API and polling-based `--tree` descendants do not have the same
-before-first-instruction guarantee. ConnectEx/IOCP support is not certified.
+The suspended launcher waits for explicit hook readiness. Windows `--tree`
+uses debugger creation events to inject each child before it resumes, closing
+the old process-table polling window. The public `spawn_and_inject` API still
+injects after launch and does not have the same before-first-instruction
+guarantee. ConnectEx/IOCP support is not certified.
 
 Explicit UDP forwarding through a configuration containing exactly one SOCKS5 node:
 
