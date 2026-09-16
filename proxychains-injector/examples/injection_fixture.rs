@@ -5,7 +5,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args
         .get(1)
-        .is_some_and(|s| s.starts_with("udp") || s == "quic")
+        .is_some_and(|s| (s.starts_with("udp") && s != "udp-rio") || s == "quic")
     {
         udp_fixture::run(&args[1]);
         std::process::exit(23);
@@ -61,6 +61,13 @@ fn main() {
         std::process::exit(24);
         std::process::exit(23);
     }
+    if args.get(1).map(String::as_str) == Some("udp-rio") {
+        #[cfg(windows)]
+        run_udp_rio_probe();
+        #[cfg(not(windows))]
+        std::process::exit(24);
+        std::process::exit(23);
+    }
     if args.get(1).map(String::as_str) == Some("sleep") {
         std::thread::sleep(std::time::Duration::from_secs(60));
         return;
@@ -69,6 +76,37 @@ fn main() {
         std::fs::write(marker, b"started").unwrap();
     }
     std::process::exit(23);
+}
+
+#[cfg(windows)]
+fn run_udp_rio_probe() {
+    use std::os::windows::io::AsRawSocket;
+    use windows::core::GUID;
+    use windows::Win32::Networking::WinSock::{
+        WSAGetLastError, WSAIoctl, WSAEOPNOTSUPP, SOCKET,
+    };
+
+    const SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER: u32 = 0xC800_0024;
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("RIO probe socket");
+    let raw = SOCKET(socket.as_raw_socket() as usize);
+    let rio = GUID::from_u128(0x8509e08196dd4005b1659e2ee8c79e3f);
+    let mut table = [0u8; 512];
+    let mut returned = 0;
+    let result = unsafe {
+        WSAIoctl(
+            raw,
+            SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER,
+            Some((&rio as *const GUID).cast()),
+            std::mem::size_of::<GUID>() as u32,
+            Some(table.as_mut_ptr().cast()),
+            table.len() as u32,
+            &mut returned,
+            None,
+            None,
+        )
+    };
+    assert_eq!(result, -1, "RIO must not bypass transparent UDP proxying");
+    assert_eq!(unsafe { WSAGetLastError() }, WSAEOPNOTSUPP);
 }
 
 #[cfg(windows)]

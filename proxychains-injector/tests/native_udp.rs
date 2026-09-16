@@ -204,6 +204,11 @@ fn native_udp_routing_and_lifecycle() {
     assert_eq!(run(&library, &fixture, &config, "udp-failover"), 23);
     failover_server.join().unwrap();
 
+    // RIO is not intercepted yet; transparent UDP must reject the extension
+    // query instead of exposing direct registered-I/O function pointers.
+    std::fs::write(&config, "proxy_udp\n[ProxyList]\nsocks5 127.0.0.1 9\n").unwrap();
+    assert_eq!(run(&library, &fixture, &config, "udp-rio"), 23);
+
     // Exercise a real QUIC handshake and bidirectional stream through the
     // transparent SOCKS5 UDP path. The injected client targets the reserved
     // address; the relay forwards the inner QUIC datagrams to a local server.

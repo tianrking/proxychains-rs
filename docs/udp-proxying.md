@@ -73,8 +73,10 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
 ## Compatibility boundaries
 
 - Windows asynchronous `WSASendMsg`/`WSARecvMsg` is supported for sockets
-  associated with a completion port; RIO is not implemented. Synchronous and
-  asynchronous extension functions are exposed through
+  associated with a completion port. RIO is deliberately rejected with
+  `WSAEOPNOTSUPP` until a complete RIO data plane exists, preventing direct
+  registered-I/O function pointers from bypassing the proxy. Synchronous and
+  asynchronous message extension functions are exposed through
   `SIO_GET_EXTENSION_FUNCTION_POINTER`. IOCP `WSASendTo`/`WSARecvFrom`
   completion is supported for sockets associated with a completion port, with
   close cancellation reported through the completion packet.
