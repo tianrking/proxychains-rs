@@ -15,6 +15,7 @@ does not imply verification on an unavailable operating system or application.
 | Shared proxy health and cooldown | Implemented for chain manager and Windows hook selection | Unit tests cover cross-manager suppression, bounded expiry, success recovery and config parsing; cross-target Windows compile check passes |
 | Route explanation CLI | Implemented (`--explain`) | CLI parser test and explicit rule/action output; process and local-address behavior remain subject to observed hook context |
 | Per-route proxy groups | Implemented for TCP hooks (`route_group`) | Parser validates named groups; Unix/Windows TCP selection is covered by unit/build checks; transparent UDP remains single-node by design |
+| Process-aware JSONL trace fields | Implemented | Events include process name/PID and optional `PROXYCHAINS_SESSION_ID`; logging remains best-effort and only covers captured hooks |
 | Agent compatibility and diagnostic bridge | Pending | Exact installed Agent versions and workflows |
 | System-enforced network isolation | Pending | Platform-specific enforcement and independent observation |
 | Reproducible builds and release | Author/repository corrected, lockfile tracked, native CI gates added | Local Windows builds; new remote CI and signed release certification remain pending |

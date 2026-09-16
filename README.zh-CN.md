@@ -141,7 +141,8 @@ proxychains4 --profile ./profiles/build.profile
 仅建立 UDP ASSOCIATE 不会被报告为 UDP 转发正常。
 
 启动命令时加入 `--log-file`，即可把 hook 捕获到的 TCP/UDP 连接结果写成
-JSONL。记录包含进程号、目标、阶段、结果和时延，不包含代理凭据或报文内容。
+JSONL。记录包含进程名、进程号、可选的 `PROXYCHAINS_SESSION_ID`、目标、
+阶段、结果和时延，不包含代理凭据或报文内容。
 另一个终端运行 `--events --events-follow` 可以持续查看记录。记录是尽力而为的，
 日志文件忙或不可用时不会阻塞连接 hook。
 

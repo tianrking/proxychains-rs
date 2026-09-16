@@ -143,8 +143,9 @@ connection, and optional SOCKS5 UDP ASSOCIATE plus an actual UDP echo. A
 successful UDP ASSOCIATE alone is not reported as working UDP forwarding.
 
 Set `--log-file` when launching a command to record intercepted TCP and UDP
-connection outcomes as JSONL. The record contains process ID, target, stage,
-result, and latency, but never proxy credentials or payload bytes. Use
+connection outcomes as JSONL. The record contains process name, PID, optional
+`PROXYCHAINS_SESSION_ID`, target, stage, result, and latency, but never proxy
+credentials or payload bytes. Use
 `--events --events-follow` in another terminal to follow the file. Logging is
 best-effort: a busy or unavailable log file never blocks a connection hook.
 

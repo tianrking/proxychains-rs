@@ -17,6 +17,9 @@ pub struct ConnectionEvent<'a> {
     pub schema_version: &'static str,
     pub timestamp_ms: u128,
     pub pid: u32,
+    pub process: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub event: &'a str,
     pub protocol: &'a str,
     pub target: &'a str,
@@ -75,6 +78,19 @@ pub fn process_id() -> u32 {
     std::process::id()
 }
 
+pub fn process_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+pub fn session_id() -> Option<String> {
+    std::env::var("PROXYCHAINS_SESSION_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,6 +101,8 @@ mod tests {
             schema_version: "1.0",
             timestamp_ms: 1,
             pid: 2,
+            process: "fixture.exe".to_string(),
+            session_id: Some("session-1".to_string()),
             event: "connect",
             protocol: "tcp",
             target: "example.test",

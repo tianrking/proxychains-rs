@@ -113,6 +113,8 @@ fn association(session: &mut Session) -> io::Result<Arc<UdpControl>> {
                 schema_version: "1.0",
                 timestamp_ms: crate::trace::now_ms(),
                 pid: crate::trace::process_id(),
+                process: crate::trace::process_name(),
+                session_id: crate::trace::session_id(),
                 event: "udp_associate",
                 protocol: "udp",
                 target: "unknown",
@@ -130,6 +132,8 @@ fn association(session: &mut Session) -> io::Result<Arc<UdpControl>> {
                 schema_version: "1.0",
                 timestamp_ms: crate::trace::now_ms(),
                 pid: crate::trace::process_id(),
+                process: crate::trace::process_name(),
+                session_id: crate::trace::session_id(),
                 event: "udp_associate",
                 protocol: "udp",
                 target: "unknown",
@@ -280,6 +284,7 @@ pub(crate) unsafe fn send(
     match &result {
         Ok(_) => crate::trace::record(crate::trace::ConnectionEvent {
             schema_version: "1.0", timestamp_ms: crate::trace::now_ms(), pid: crate::trace::process_id(),
+            process: crate::trace::process_name(), session_id: crate::trace::session_id(),
             event: "udp_send", protocol: "udp", target: &target_label, port: target_port,
             stage: "data", ok: true, elapsed_ms: None, error: None,
         }),
@@ -287,6 +292,7 @@ pub(crate) unsafe fn send(
             let message = error_value.to_string();
             crate::trace::record(crate::trace::ConnectionEvent {
                 schema_version: "1.0", timestamp_ms: crate::trace::now_ms(), pid: crate::trace::process_id(),
+                process: crate::trace::process_name(), session_id: crate::trace::session_id(),
                 event: "udp_send", protocol: "udp", target: &target_label, port: target_port,
                 stage: "data", ok: false, elapsed_ms: None, error: Some(&message),
             });
