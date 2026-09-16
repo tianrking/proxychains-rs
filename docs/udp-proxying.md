@@ -78,9 +78,8 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
 - Unix ancillary sends (packet-info, UDP segmentation offload), timed `recvmmsg`
   and `connect(AF_UNSPEC)` disconnect are rejected. Receive control data is marked
   truncated because relay metadata does not describe the original sender.
-- On Linux, `dup`, `dup2`, `dup3` and `fcntl(F_DUPFD*)` preserve the shared
-  SOCKS5 association and remove replaced descriptor state. macOS dyld
-  interposition leaves descriptor duplication on the native path. Descriptor passing, sockets inherited across fork/exec, Windows socket duplication, direct syscalls, io_uring,
+- On Unix, `dup` and `dup2`, plus Linux `dup3` and `fcntl(F_DUPFD*)`, preserve
+  the shared SOCKS5 association and remove replaced descriptor state. Descriptor passing, sockets inherited across fork/exec, Windows socket duplication, direct syscalls, io_uring,
   static executables and APIs outside the table remain unsupported.
 - SOCKS fragmentation (`FRAG != 0`) is dropped. The payload must fit a UDP packet
   including the SOCKS header: 10 bytes for IPv4, 22 for IPv6, or 7 plus the domain

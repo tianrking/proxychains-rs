@@ -26,7 +26,7 @@ macro_rules! interpose {
 
 #[used]
 #[link_section = "__DATA,__interpose,interposing"]
-static INTERPOSE: [Interpose; 17] = [
+static INTERPOSE: [Interpose; 18] = [
     interpose!(unix_impl, connect),
     interpose!(unix_impl, getaddrinfo),
     interpose!(unix_impl, freeaddrinfo),
@@ -42,6 +42,7 @@ static INTERPOSE: [Interpose; 17] = [
     interpose!(udp_exports, read),
     interpose!(udp_exports, write),
     interpose!(udp_exports, close),
+    interpose!(udp_exports, fcntl),
     interpose!(udp_exports, getpeername),
     interpose!(udp_exports, sendmsg),
     interpose!(udp_exports, recvmsg),
