@@ -76,9 +76,11 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
 
 - Windows asynchronous `WSASendMsg`/`WSARecvMsg` is supported for sockets
   associated with a completion port or using an overlapped completion routine;
-  the same applies to `WSASendTo`/`WSARecvFrom`. RIO is deliberately rejected with
-  `WSAEOPNOTSUPP` until a complete RIO data plane exists, preventing direct
-  registered-I/O function pointers from bypassing the proxy. Synchronous and
+  the same applies to `WSASendTo`/`WSARecvFrom`. RIO queries now receive a
+  proxy-backed extension table: registered buffers, request/completion queues,
+  `RIOSend`/`RIOReceive`, and completion dequeue are routed through the existing
+  SOCKS5 UDP data plane. RIO address/control metadata and provider-specific
+  notification behavior remain outside the certified surface. Synchronous and
   asynchronous message extension functions are exposed through
   `SIO_GET_EXTENSION_FUNCTION_POINTER`. IOCP `WSASendTo`/`WSARecvFrom`
   completion is supported for sockets associated with a completion port, with
@@ -97,8 +99,10 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
   including the SOCKS header: 10 bytes for IPv4, 22 for IPv6, or 7 plus the domain
   byte length. No IP tunneling or ICMP support is added.
 - QUIC payloads are opaque UDP. A native Quinn+h3 fixture verifies a real
-  HTTP/3 GET and response through the SOCKS5 relay; browser QUIC, MsQuic and
-  RIO remain uncertified.
+  HTTP/3 GET and response through the SOCKS5 relay; browser QUIC and MsQuic
+  remain uncertified. RIO queue and completion behavior is covered by a native
+  Windows fixture, while successful RIO traffic through a live relay still needs
+  an application-level fixture.
 
 On Windows, asynchronous `GetAddrInfoExA/W` calls retain the proxy-DNS fake
 name until completion. Callback mode forwards the original callback and

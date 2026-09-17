@@ -857,9 +857,25 @@ pub unsafe extern "system" fn hook_wsa_ioctl_impl(
         let multiple = io_control_code
             == windows::Win32::Networking::WinSock::SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER;
         let single = io_control_code == SIO_GET_EXTENSION_FUNCTION_POINTER;
-        if (single || multiple) && requested == WSAID_MULTIPLE_RIO {
-            // Do not expose an unwrapped registered-I/O table.  Other
-            // extension queries remain available to the application.
+        if multiple && requested == WSAID_MULTIPLE_RIO {
+            let table = super::rio_windows::extension_table();
+            if out_buffer.is_null() || out_buffer_len < std::mem::size_of_val(&table) as u32 {
+                WSASetLastError(windows::Win32::Networking::WinSock::WSAEFAULT.0);
+                return SOCKET_ERROR;
+            }
+            std::ptr::copy_nonoverlapping(
+                &table as *const _ as *const u8,
+                out_buffer as *mut u8,
+                std::mem::size_of_val(&table),
+            );
+            if !bytes_returned.is_null() {
+                *bytes_returned = std::mem::size_of_val(&table) as u32;
+            }
+            return 0;
+        }
+        if single && requested == WSAID_MULTIPLE_RIO {
+            // RIO is obtained through the multiple-extension query.  Do not
+            // expose an unrelated single-pointer result for this GUID.
             WSASetLastError(windows::Win32::Networking::WinSock::WSAEOPNOTSUPP.0);
             return SOCKET_ERROR;
         }

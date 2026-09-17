@@ -208,8 +208,8 @@ fn native_udp_routing_and_lifecycle() {
 
     #[cfg(windows)]
     {
-        // RIO is not intercepted yet; transparent UDP must reject the
-        // extension query instead of exposing direct registered-I/O pointers.
+        // RIO exposes a proxy-backed extension table. The fixture exercises
+        // registration, queue creation, send completion and cleanup.
         std::fs::write(&config, "proxy_udp\n[ProxyList]\nsocks5 127.0.0.1 9\n").unwrap();
         assert_eq!(run(&library, &fixture, &config, "udp-rio"), 23);
     }

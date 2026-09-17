@@ -89,15 +89,23 @@ fn main() {
 fn run_udp_rio_probe() {
     use std::os::windows::io::AsRawSocket;
     use windows::core::GUID;
-    use windows::Win32::Networking::WinSock::{
-        WSAGetLastError, WSAIoctl, WSAEOPNOTSUPP, SOCKET,
-    };
+    use windows::Win32::Networking::WinSock::{WSAIoctl, SOCKET};
 
     const SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER: u32 = 0xC800_0024;
     let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("RIO probe socket");
     let raw = SOCKET(socket.as_raw_socket() as usize);
     let rio = GUID::from_u128(0x8509e08196dd4005b1659e2ee8c79e3f);
-    let mut table = [0u8; 512];
+    #[repr(C)]
+    struct RioTable {
+        cb_size: u32,
+        _padding: u32,
+        functions: [usize; 13],
+    }
+    let mut table = RioTable {
+        cb_size: 0,
+        _padding: 0,
+        functions: [0; 13],
+    };
     let mut returned = 0;
     let result = unsafe {
         WSAIoctl(
@@ -105,15 +113,88 @@ fn run_udp_rio_probe() {
             SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER,
             Some((&rio as *const GUID).cast()),
             std::mem::size_of::<GUID>() as u32,
-            Some(table.as_mut_ptr().cast()),
-            table.len() as u32,
+            Some((&mut table as *mut RioTable).cast()),
+            std::mem::size_of::<RioTable>() as u32,
             &mut returned,
             None,
             None,
         )
     };
-    assert_eq!(result, -1, "RIO must not bypass transparent UDP proxying");
-    assert_eq!(unsafe { WSAGetLastError() }, WSAEOPNOTSUPP);
+    assert_eq!(result, 0, "RIO extension table must be available");
+    assert_eq!(returned as usize, std::mem::size_of::<RioTable>());
+    assert!(table.cb_size >= std::mem::size_of::<RioTable>() as u32);
+
+    type CreateCq = unsafe extern "system" fn(u32, *mut std::ffi::c_void) -> usize;
+    type CloseCq = unsafe extern "system" fn(usize);
+    type CreateRq = unsafe extern "system" fn(
+        usize,
+        u32,
+        u32,
+        u32,
+        u32,
+        usize,
+        usize,
+        *mut std::ffi::c_void,
+    ) -> usize;
+    type Register = unsafe extern "system" fn(*mut i8, u32) -> usize;
+    type Deregister = unsafe extern "system" fn(usize);
+    type Send =
+        unsafe extern "system" fn(usize, *const RioBuf, u32, u32, *mut std::ffi::c_void) -> i32;
+    type Dequeue = unsafe extern "system" fn(usize, *mut RioResult, u32) -> u32;
+    #[repr(C)]
+    struct RioBuf {
+        buffer_id: usize,
+        offset: u32,
+        length: u32,
+    }
+    #[repr(C)]
+    #[derive(Default)]
+    struct RioResult {
+        status: i32,
+        bytes_transferred: u32,
+        socket_context: u64,
+        request_context: u64,
+    }
+    let create_cq: CreateCq = unsafe { std::mem::transmute(table.functions[5]) };
+    let close_cq: CloseCq = unsafe { std::mem::transmute(table.functions[4]) };
+    let create_rq: CreateRq = unsafe { std::mem::transmute(table.functions[6]) };
+    let register: Register = unsafe { std::mem::transmute(table.functions[10]) };
+    let deregister: Deregister = unsafe { std::mem::transmute(table.functions[8]) };
+    let send: Send = unsafe { std::mem::transmute(table.functions[2]) };
+    let dequeue: Dequeue = unsafe { std::mem::transmute(table.functions[7]) };
+    let cq = unsafe { create_cq(8, std::ptr::null_mut()) };
+    assert_ne!(cq, 0, "RIO completion queue creation");
+    let rq = unsafe {
+        create_rq(
+            socket.as_raw_socket() as usize,
+            8,
+            8,
+            8,
+            8,
+            cq,
+            cq,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(rq, 0, "RIO request queue creation");
+    let mut payload = [0u8; 16];
+    let buffer = unsafe { register(payload.as_mut_ptr().cast(), payload.len() as u32) };
+    assert_ne!(buffer, usize::MAX, "RIO buffer registration");
+    let descriptor = RioBuf {
+        buffer_id: buffer,
+        offset: 0,
+        length: payload.len() as u32,
+    };
+    assert_eq!(
+        unsafe { send(rq, &descriptor, 1, 0, std::ptr::null_mut()) },
+        1
+    );
+    let mut completion = RioResult::default();
+    assert_eq!(unsafe { dequeue(cq, &mut completion, 1) }, 1);
+    unsafe {
+        deregister(buffer);
+        close_cq(cq);
+    }
 }
 
 #[cfg(windows)]
@@ -129,10 +210,10 @@ fn run_tcp_connectex_cancel(target: &str, use_iocp: bool) {
         closesocket, WSAGetLastError, WSAIoctl, SOCKET, WSAID_CONNECTEX, WSA_IO_PENDING,
         WSA_OPERATION_ABORTED,
     };
+    use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
     use windows::Win32::System::IO::{
         CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
     };
-    use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
     type ConnectEx = unsafe extern "system" fn(
         SOCKET,
@@ -238,10 +319,7 @@ fn run_tcp_connectex_cancel(target: &str, use_iocp: bool) {
         assert_eq!(key, 0x57);
         assert!(std::ptr::eq(completed, &mut overlapped));
     } else {
-        assert_eq!(
-            unsafe { WaitForSingleObject(event, 10_000) },
-            WAIT_OBJECT_0
-        );
+        assert_eq!(unsafe { WaitForSingleObject(event, 10_000) }, WAIT_OBJECT_0);
     }
     assert_eq!(completed_bytes, 0);
     assert_eq!(overlapped.Internal, WSA_OPERATION_ABORTED.0 as usize);
@@ -438,16 +516,13 @@ fn run_dns_queryex() {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::ERROR_SUCCESS;
     use windows::Win32::NetworkManagement::Dns::{
-        DnsFree, DnsQueryEx, DNS_QUERY_REQUEST, DNS_QUERY_REQUEST_VERSION1,
-        DNS_QUERY_RESULT, DNS_QUERY_RESULTS_VERSION1, DNS_TYPE_A, DnsFreeRecordList,
+        DnsFree, DnsFreeRecordList, DnsQueryEx, DNS_QUERY_REQUEST, DNS_QUERY_REQUEST_VERSION1,
+        DNS_QUERY_RESULT, DNS_QUERY_RESULTS_VERSION1, DNS_TYPE_A,
     };
 
     static CALLED: AtomicBool = AtomicBool::new(false);
     static CONTEXT: AtomicUsize = AtomicUsize::new(0);
-    unsafe extern "system" fn callback(
-        context: *const c_void,
-        results: *mut DNS_QUERY_RESULT,
-    ) {
+    unsafe extern "system" fn callback(context: *const c_void, results: *mut DNS_QUERY_RESULT) {
         CONTEXT.store(context as usize, Ordering::Release);
         if !results.is_null() {
             let result = &mut *results;
@@ -482,7 +557,10 @@ fn run_dns_queryex() {
         ..Default::default()
     };
     let code = unsafe { DnsQueryEx(&request, &mut result, None) };
-    assert!(code == ERROR_SUCCESS.0 as i32 || code == 9506, "DnsQueryEx returned {code}");
+    assert!(
+        code == ERROR_SUCCESS.0 as i32 || code == 9506,
+        "DnsQueryEx returned {code}"
+    );
     let deadline = Instant::now() + Duration::from_secs(5);
     while !CALLED.load(Ordering::Acquire) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));

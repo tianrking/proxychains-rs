@@ -1,0 +1,364 @@
+//! Small RIO compatibility layer for transparent UDP sockets.
+//!
+//! RIO uses registered buffers and opaque request/completion queue handles,
+//! so it does not pass through the ordinary Winsock send/receive hooks.  The
+//! wrappers below preserve those semantics while routing the actual datagram
+//! through the existing SOCKS5 UDP implementation.
+
+use super::udp;
+use std::collections::VecDeque;
+use std::ffi::c_void;
+use std::ptr;
+use std::sync::Mutex;
+use windows::Win32::Foundation::BOOL;
+
+pub type BufferId = *mut RioBuffer;
+pub type CompletionQueue = *mut RioCompletionQueue;
+pub type RequestQueue = *mut RioRequestQueue;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RioResult {
+    pub status: i32,
+    pub bytes_transferred: u32,
+    pub socket_context: u64,
+    pub request_context: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RioBuf {
+    pub buffer_id: BufferId,
+    pub offset: u32,
+    pub length: u32,
+}
+
+#[repr(C)]
+pub struct RioNotificationCompletion {
+    pub kind: i32,
+    pub payload: [usize; 3],
+}
+
+pub struct RioBuffer {
+    base: *mut u8,
+    length: usize,
+}
+
+pub struct RioCompletionQueue {
+    results: Mutex<VecDeque<RioResult>>,
+    _capacity: u32,
+}
+
+pub struct RioRequestQueue {
+    socket: usize,
+    receive: CompletionQueue,
+    send: CompletionQueue,
+    context: u64,
+}
+
+#[repr(C)]
+pub struct ExtensionFunctionTable {
+    pub cb_size: u32,
+    pub receive: *const c_void,
+    pub receive_ex: *const c_void,
+    pub send: *const c_void,
+    pub send_ex: *const c_void,
+    pub close_completion_queue: *const c_void,
+    pub create_completion_queue: *const c_void,
+    pub create_request_queue: *const c_void,
+    pub dequeue_completion: *const c_void,
+    pub deregister_buffer: *const c_void,
+    pub notify: *const c_void,
+    pub register_buffer: *const c_void,
+    pub resize_completion_queue: *const c_void,
+    pub resize_request_queue: *const c_void,
+}
+
+pub fn extension_table() -> ExtensionFunctionTable {
+    ExtensionFunctionTable {
+        cb_size: std::mem::size_of::<ExtensionFunctionTable>() as u32,
+        receive: receive as *const c_void,
+        receive_ex: receive_ex as *const c_void,
+        send: send as *const c_void,
+        send_ex: send_ex as *const c_void,
+        close_completion_queue: close_completion_queue as *const c_void,
+        create_completion_queue: create_completion_queue as *const c_void,
+        create_request_queue: create_request_queue as *const c_void,
+        dequeue_completion: dequeue as *const c_void,
+        deregister_buffer: deregister_buffer as *const c_void,
+        notify: notify as *const c_void,
+        register_buffer: register_buffer as *const c_void,
+        resize_completion_queue: resize_completion_queue as *const c_void,
+        resize_request_queue: resize_request_queue as *const c_void,
+    }
+}
+
+unsafe impl Send for RioBuffer {}
+unsafe impl Sync for RioBuffer {}
+unsafe impl Send for RioCompletionQueue {}
+unsafe impl Sync for RioCompletionQueue {}
+unsafe impl Send for RioRequestQueue {}
+unsafe impl Sync for RioRequestQueue {}
+
+pub unsafe extern "system" fn register_buffer(data: *mut i8, length: u32) -> BufferId {
+    if data.is_null() || length == 0 {
+        return usize::MAX as BufferId;
+    }
+    Box::into_raw(Box::new(RioBuffer {
+        base: data.cast(),
+        length: length as usize,
+    }))
+}
+
+pub unsafe extern "system" fn deregister_buffer(id: BufferId) {
+    if !id.is_null() && id as usize != usize::MAX {
+        drop(Box::from_raw(id));
+    }
+}
+
+pub unsafe extern "system" fn create_completion_queue(
+    size: u32,
+    _notification: *mut RioNotificationCompletion,
+) -> CompletionQueue {
+    if size == 0 {
+        return ptr::null_mut();
+    }
+    Box::into_raw(Box::new(RioCompletionQueue {
+        results: Mutex::new(VecDeque::with_capacity(size.min(4096) as usize)),
+        _capacity: size,
+    }))
+}
+
+pub unsafe extern "system" fn close_completion_queue(queue: CompletionQueue) {
+    if !queue.is_null() {
+        drop(Box::from_raw(queue));
+    }
+}
+
+pub unsafe extern "system" fn create_request_queue(
+    socket: usize,
+    _max_outstanding_receive: u32,
+    _max_receive_data_buffers: u32,
+    _max_outstanding_send: u32,
+    _max_send_data_buffers: u32,
+    receive: CompletionQueue,
+    send: CompletionQueue,
+    context: *mut c_void,
+) -> RequestQueue {
+    if receive.is_null() || send.is_null() || socket == 0 {
+        return ptr::null_mut();
+    }
+    Box::into_raw(Box::new(RioRequestQueue {
+        socket,
+        receive,
+        send,
+        context: context as usize as u64,
+    }))
+}
+
+pub unsafe extern "system" fn notify(_queue: CompletionQueue) -> i32 {
+    0
+}
+
+pub unsafe extern "system" fn resize_completion_queue(_queue: CompletionQueue, _size: u32) -> i32 {
+    1
+}
+
+pub unsafe extern "system" fn resize_request_queue(
+    _queue: RequestQueue,
+    _max_receive: u32,
+    _max_send: u32,
+) -> i32 {
+    1
+}
+
+unsafe fn gather(buffers: *const RioBuf, count: u32) -> Option<Vec<u8>> {
+    if buffers.is_null() || count == 0 || count > 1024 {
+        return None;
+    }
+    let mut output = Vec::new();
+    for item in std::slice::from_raw_parts(buffers, count as usize) {
+        if item.buffer_id.is_null() || item.buffer_id as usize == usize::MAX {
+            return None;
+        }
+        let buffer = &*item.buffer_id;
+        let end = (item.offset as usize).checked_add(item.length as usize)?;
+        if end > buffer.length {
+            return None;
+        }
+        let part =
+            std::slice::from_raw_parts(buffer.base.add(item.offset as usize), item.length as usize);
+        output.extend_from_slice(part);
+    }
+    Some(output)
+}
+
+unsafe fn scatter(buffers: *const RioBuf, count: u32, payload: &[u8]) -> Option<u32> {
+    if buffers.is_null() || count == 0 || count > 1024 {
+        return None;
+    }
+    let mut copied = 0usize;
+    for item in std::slice::from_raw_parts(buffers, count as usize) {
+        if item.buffer_id.is_null() || item.buffer_id as usize == usize::MAX {
+            return None;
+        }
+        let buffer = &*item.buffer_id;
+        let end = (item.offset as usize).checked_add(item.length as usize)?;
+        if end > buffer.length {
+            return None;
+        }
+        let amount = (item.length as usize).min(payload.len().saturating_sub(copied));
+        if amount != 0 {
+            ptr::copy_nonoverlapping(
+                payload.as_ptr().add(copied),
+                buffer.base.add(item.offset as usize),
+                amount,
+            );
+            copied += amount;
+        }
+        if copied == payload.len() {
+            break;
+        }
+    }
+    Some(copied as u32)
+}
+
+unsafe fn push(queue: CompletionQueue, result: RioResult) {
+    if !queue.is_null() {
+        if let Ok(mut results) = (*queue).results.lock() {
+            results.push_back(result);
+        }
+    }
+}
+
+pub unsafe extern "system" fn send(
+    queue: RequestQueue,
+    buffers: *const RioBuf,
+    count: u32,
+    flags: u32,
+    context: *mut c_void,
+) -> i32 {
+    if queue.is_null() {
+        return 0;
+    }
+    let request = &*queue;
+    let data = match gather(buffers, count) {
+        Some(data) => data,
+        None => return 0,
+    };
+    let result = match udp::send(request.socket, &data, None, flags as i32) {
+        Some(Ok(bytes)) => RioResult {
+            status: 0,
+            bytes_transferred: bytes as u32,
+            socket_context: request.context,
+            request_context: context as usize as u64,
+        },
+        Some(Err(error)) => RioResult {
+            status: error.raw_os_error().unwrap_or(10053),
+            bytes_transferred: 0,
+            socket_context: request.context,
+            request_context: context as usize as u64,
+        },
+        None => RioResult {
+            status: 10045,
+            bytes_transferred: 0,
+            socket_context: request.context,
+            request_context: context as usize as u64,
+        },
+    };
+    push(request.send, result);
+    BOOL(1).0
+}
+
+pub unsafe extern "system" fn send_ex(
+    queue: RequestQueue,
+    buffers: *const RioBuf,
+    count: u32,
+    _local: *const RioBuf,
+    _remote: *const RioBuf,
+    _control: *const RioBuf,
+    _flags: *const RioBuf,
+    flags: u32,
+    context: *mut c_void,
+) -> i32 {
+    send(queue, buffers, count, flags, context)
+}
+
+pub unsafe extern "system" fn receive(
+    queue: RequestQueue,
+    buffers: *const RioBuf,
+    count: u32,
+    flags: u32,
+    context: *mut c_void,
+) -> i32 {
+    if queue.is_null() {
+        return 0;
+    }
+    let request = &*queue;
+    let result = match udp::receive(request.socket, flags as i32) {
+        Some(Ok(received)) => match scatter(buffers, count, &received.payload) {
+            Some(bytes) => RioResult {
+                status: 0,
+                bytes_transferred: bytes,
+                socket_context: request.context,
+                request_context: context as usize as u64,
+            },
+            None => RioResult {
+                status: 10014,
+                bytes_transferred: 0,
+                socket_context: request.context,
+                request_context: context as usize as u64,
+            },
+        },
+        Some(Err(error)) => RioResult {
+            status: error.raw_os_error().unwrap_or(10053),
+            bytes_transferred: 0,
+            socket_context: request.context,
+            request_context: context as usize as u64,
+        },
+        None => RioResult {
+            status: 10045,
+            bytes_transferred: 0,
+            socket_context: request.context,
+            request_context: context as usize as u64,
+        },
+    };
+    push(request.receive, result);
+    BOOL(1).0
+}
+
+pub unsafe extern "system" fn receive_ex(
+    queue: RequestQueue,
+    buffers: *const RioBuf,
+    count: u32,
+    _local: *const RioBuf,
+    _remote: *const RioBuf,
+    _control: *const RioBuf,
+    _flags: *const RioBuf,
+    flags: u32,
+    context: *mut c_void,
+) -> i32 {
+    receive(queue, buffers, count, flags, context)
+}
+
+pub unsafe extern "system" fn dequeue(
+    queue: CompletionQueue,
+    output: *mut RioResult,
+    count: u32,
+) -> u32 {
+    if queue.is_null() || output.is_null() || count == 0 {
+        return 0;
+    }
+    let Ok(mut results) = (*queue).results.lock() else {
+        return 0;
+    };
+    let mut copied = 0;
+    while copied < count {
+        let Some(result) = results.pop_front() else {
+            break;
+        };
+        *output.add(copied as usize) = result;
+        copied += 1;
+    }
+    copied
+}

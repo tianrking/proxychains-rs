@@ -19,6 +19,8 @@ mod hooks_windows;
 #[cfg(windows)]
 mod interpose_windows;
 mod reload;
+#[cfg(windows)]
+mod rio_windows;
 pub mod udp;
 #[cfg(unix)]
 pub mod udp_unix;
