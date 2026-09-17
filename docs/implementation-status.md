@@ -12,6 +12,13 @@ does not imply verification on an unavailable operating system or application.
 | Injection readiness and process attachment | Implemented, Windows fixture passes | Invalid DLL/config, successful attach, corrected-config retry, name ambiguity, real TCP payload and failed proxy |
 | Unix socket lifecycle and event-loop compatibility | Premature close and flag loss fixed; Linux `dup`/`dup2`/`dup3` and `fcntl(F_DUPFD*)` now preserve UDP association state; timed Linux `recvmmsg` is supported with an overall deadline | Linux native preload fixture covers duplication and timed batch receive; macOS descriptor duplication remains native; replacing an fd still does not preserve epoll/kqueue registrations |
 | UDP and IPv6 transport | SOCKS5 UDP transport, explicit forwarder, opt-in transparent UDP hooks, multi-node association failover, synchronous, IOCP and overlapped completion-routine Windows `WSASendMsg`/`WSARecvMsg`/`WSASendTo`/`WSARecvFrom`, ConnectEx cancellation signaling, and explicit RIO bypass rejection implemented | Windows native UDP fixture passes, including IPv6 relay, domains, authentication, vectored I/O, IOCP and completion-routine delivery, cancellation, extension-pointer calls, RIO `WSAEOPNOTSUPP` rejection and a real Quinn+h3 HTTP/3 GET/response through a SOCKS5 relay; native readiness exercises ConnectEx event/IOCP close-cancellation; browser and MsQuic remain uncertified |
+
+The current Windows browser probe provides a narrower, reproducible boundary:
+Chrome launched with `--tree --disable-quic` completes normally, while the same
+launch with QUIC enabled creates SOCKS5 UDP associations but the relay receives
+no UDP datagram before Chrome exits with `STATUS_ACCESS_VIOLATION`. This is
+evidence of an unresolved QUIC/UDP send-path or browser-process interaction,
+not evidence that browser HTTP/3 is proxied successfully.
 | Shared proxy health and cooldown | Implemented with protocol-specific TCP/UDP state for TCP chain/Windows selection and transparent UDP association creation | Unit tests cover bounded expiry, recovery, TCP/UDP isolation and config parsing; UDP association failures no longer suppress healthy TCP nodes (and vice versa); cross-target Windows compile check passes |
 | Route explanation CLI | Implemented (`--explain`) | CLI parser test and explicit rule/action output; process and local-address behavior remain subject to observed hook context |
 | Per-route proxy groups | Implemented for TCP and transparent UDP hooks (`route_group`) | Parser validates named groups; UDP groups may contain multiple SOCKS5 nodes and fail over for new associations; each UDP socket keeps its initial association |
