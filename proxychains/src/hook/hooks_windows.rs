@@ -33,7 +33,7 @@ use crate::config::{ChainType, Config, ProxyData, ProxyState, RouteAction, Route
 use crate::dns::{is_fake_ip, DnsResolver};
 use crate::error::{Error, Result};
 use crate::net::{get_ip_from_sockaddr, get_ipaddr_from_sockaddr, get_port_from_sockaddr};
-use crate::proxy::{tunnel_through_proxy, TargetAddress};
+use crate::proxy::{tunnel_through_tcp_proxy as tunnel_through_proxy, TargetAddress};
 use crate::ConfigParser;
 
 use super::interpose_windows::{

@@ -139,6 +139,60 @@ pub fn tunnel_through_proxy<T: Read + Write>(
     }
 }
 
+/// Socket-backed handshake with one deadline across all protocol stages.
+/// Generic codecs cannot interrupt arbitrary `Read` implementations; this
+/// adapter resets the OS timeout before every potentially blocking operation.
+pub fn tunnel_through_tcp_proxy(
+    stream: &mut std::net::TcpStream,
+    proxy: &ProxyData,
+    target: &TargetAddress,
+    target_port: u16,
+    timeout: Duration,
+) -> Result<()> {
+    struct DeadlineStream<'a> {
+        stream: &'a mut std::net::TcpStream,
+        start: std::time::Instant,
+        timeout: Duration,
+        read: Option<Duration>,
+        write: Option<Duration>,
+    }
+    impl DeadlineStream<'_> {
+        fn remaining(&self) -> std::io::Result<Duration> {
+            let remaining = self.timeout.saturating_sub(self.start.elapsed());
+            if remaining.is_zero() {
+                Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "proxy handshake deadline exceeded"))
+            } else {
+                Ok(remaining)
+            }
+        }
+    }
+    impl Read for DeadlineStream<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.stream.set_read_timeout(Some(self.remaining()?))?;
+            self.stream.read(buf)
+        }
+    }
+    impl Write for DeadlineStream<'_> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.stream.set_write_timeout(Some(self.remaining()?))?;
+            self.stream.write(buf)
+        }
+        fn flush(&mut self) -> std::io::Result<()> { self.stream.flush() }
+    }
+    impl Drop for DeadlineStream<'_> {
+        fn drop(&mut self) {
+            let _ = self.stream.set_read_timeout(self.read);
+            let _ = self.stream.set_write_timeout(self.write);
+        }
+    }
+    let read = stream.read_timeout()?;
+    let write = stream.write_timeout()?;
+    let mut bounded = DeadlineStream {
+        stream, start: std::time::Instant::now(), timeout, read, write,
+    };
+    tunnel_through_proxy(&mut bounded, proxy, target, target_port, timeout)
+}
+
 /// Establish a full proxy chain connection
 pub fn establish_proxy_chain(
     proxies: &[ProxyData],
@@ -161,9 +215,9 @@ pub fn establish_proxy_chain(
 
     for pair in proxies.windows(2) {
         let next = TargetAddress::from_domain(pair[1].host.clone());
-        tunnel_through_proxy(&mut stream, &pair[0], &next, pair[1].port, read_timeout)?;
+        tunnel_through_tcp_proxy(&mut stream, &pair[0], &next, pair[1].port, read_timeout)?;
     }
-    tunnel_through_proxy(&mut stream, proxies.last().unwrap(), target, target_port, read_timeout)?;
+    tunnel_through_tcp_proxy(&mut stream, proxies.last().unwrap(), target, target_port, read_timeout)?;
     stream.set_read_timeout(None)?;
     stream.set_write_timeout(None)?;
     Ok(stream)

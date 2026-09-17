@@ -7,7 +7,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::{ChainType, Config, ProxyData, ProxyState};
 use crate::error::{Error, Result};
-use crate::proxy::{connect_to_proxy, tunnel_through_proxy, TargetAddress};
+use crate::proxy::{connect_to_proxy, tunnel_through_tcp_proxy as tunnel_through_proxy, TargetAddress};
 
 use super::health;
 use super::selector::{count_alive, mark_blocked, mark_down, ProxySelector};
