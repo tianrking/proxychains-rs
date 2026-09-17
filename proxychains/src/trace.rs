@@ -1,17 +1,18 @@
 //! Best-effort JSONL connection tracing for transparent hook diagnostics.
 //!
 //! Tracing is disabled unless `PROXYCHAINS_LOG_FILE` is set. Events never
-//! include proxy credentials or payload bytes. A contended logger is skipped
-//! so an application thread is not serialized behind a slow file reader.
+//! include proxy credentials or payload bytes. A bounded queue feeds a worker;
+//! full queues drop events instead of waiting for disk I/O. Pending events may
+//! be lost at process exit. Fork children skip logging until a fresh exec.
 
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use std::sync::mpsc::{sync_channel, SyncSender};
-use std::sync::atomic::{AtomicU64, Ordering};
 use serde::Serialize;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, SyncSender};
 
 #[derive(Debug, Serialize)]
 pub struct ConnectionEvent<'a> {
@@ -45,18 +46,26 @@ const QUEUE_CAPACITY: usize = 256;
 const MAX_EVENT_BYTES: usize = 16 * 1024;
 
 /// Events lost to overload, oversized records or an unavailable writer.
-pub fn dropped_events() -> u64 { DROPPED.load(Ordering::Relaxed) }
+pub fn dropped_events() -> u64 {
+    DROPPED.load(Ordering::Relaxed)
+}
 
 fn start_writer<W: Write + Send + 'static>(mut output: W) -> Option<AsyncWriter> {
     let (sender, receiver) = sync_channel::<Vec<u8>>(QUEUE_CAPACITY);
-    std::thread::Builder::new().name("proxychains-log".into()).spawn(move || {
-        for line in receiver {
-            if output.write_all(&line).is_err() {
-                DROPPED.fetch_add(1, Ordering::Relaxed);
+    std::thread::Builder::new()
+        .name("proxychains-log".into())
+        .spawn(move || {
+            for line in receiver {
+                if output.write_all(&line).is_err() {
+                    DROPPED.fetch_add(1, Ordering::Relaxed);
+                }
             }
-        }
-    }).ok()?;
-    Some(AsyncWriter { sender, pid: std::process::id() })
+        })
+        .ok()?;
+    Some(AsyncWriter {
+        sender,
+        pid: std::process::id(),
+    })
 }
 
 pub fn init_from_env() {
@@ -112,7 +121,10 @@ pub fn process_id() -> u32 {
 pub fn process_name() -> String {
     std::env::current_exe()
         .ok()
-        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .unwrap_or_else(|| "unknown".to_string())
 }
 
@@ -134,13 +146,17 @@ mod tests {
                 let _ = self.0.recv();
                 Ok(data.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
         let (release, gate) = sync_channel(0);
         let writer = start_writer(SlowSink(gate)).unwrap();
         let mut rejected = 0;
         for _ in 0..QUEUE_CAPACITY + 2 {
-            if writer.sender.try_send(vec![b'x']).is_err() { rejected += 1; }
+            if writer.sender.try_send(vec![b'x']).is_err() {
+                rejected += 1;
+            }
         }
         assert!(rejected > 0);
         drop(release);

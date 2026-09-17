@@ -5,6 +5,11 @@ Owner and commit author: tianrking.
 This tracks the requested reliability and capability work. A completed implementation
 does not imply verification on an unavailable operating system or application.
 
+See [macOS validation, 2026-09-17](macos-validation-2026-09-17.md) for the latest
+local debug/release evidence and remaining gaps. This supersedes the older macOS
+duplication note below: `dup`/`dup2` are now intercepted and tested, while
+`fcntl(F_DUPFD*)` and full TCP event-loop compatibility remain incomplete.
+
 | Milestone | Status | Validation required |
 | --- | --- | --- |
 | TCP protocol correctness | Core regressions fixed | Windows local protocol tests pass; Agent workflows pending |
@@ -46,8 +51,9 @@ cross-process DNS service.
 ## Available commands
 
 Build with `cargo build --locked --release --workspace` (Rust 1.88 or newer).
-The local compiler used for verification was Rust 1.98.1; 1.88 is the highest
-declared minimum of locked dependencies, not a locally tested compiler version.
+The earlier Windows verification used Rust 1.98.1. The 2026-09-17 macOS
+workspace tests and debug/release builds also pass on Rust 1.88.0; CI now has
+an explicit minimum-version check.
 
 Windows attachment, with the matching DLL next to the launcher:
 
