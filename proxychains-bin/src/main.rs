@@ -22,6 +22,7 @@ use tracing::{debug, error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use proxychains::config::{ProxyType, RouteAction, RouteProtocol};
+use proxychains::error::Error as ProxyError;
 use proxychains::proxy::{
     connect_to_proxy, tunnel_through_proxy, Socks5Connector, TargetAddress, TargetAddr,
     UdpAssociation,
@@ -633,7 +634,8 @@ fn doctor_proxy(
             &doctor_socks5_target_address(&target.0),
             target.1,
         ) {
-            node.target = DoctorStage::failed(target_started.elapsed(), "target", &error.to_string());
+            let (failure_type, detail) = classify_doctor_error(&error, "target");
+            node.target = DoctorStage::failed(target_started.elapsed(), failure_type, &detail);
             return node;
         }
         node.target = DoctorStage::ok(target_started.elapsed());
@@ -650,13 +652,13 @@ fn doctor_proxy(
                 node.target = DoctorStage::ok(handshake_started.elapsed());
             }
             Err(error) => {
+                let (failure_type, detail) = classify_doctor_error(&error, "target");
                 node.authentication = DoctorStage::failed(
                     handshake_started.elapsed(),
-                    "protocol_or_target",
-                    &error.to_string(),
+                    failure_type,
+                    &detail,
                 );
-                node.target =
-                    DoctorStage::failed(handshake_started.elapsed(), "target", &error.to_string());
+                node.target = DoctorStage::failed(handshake_started.elapsed(), failure_type, &detail);
                 return node;
             }
         }
@@ -704,6 +706,20 @@ fn doctor_proxy(
         && node.target.ok
         && (!udp_echo_target.is_some() || (node.udp_associate.ok && node.udp_echo.ok));
     node
+}
+
+fn classify_doctor_error(error: &ProxyError, fallback: &'static str) -> (&'static str, String) {
+    let failure_type = match error {
+        ProxyError::AuthFailed(_) => "authentication",
+        ProxyError::Dns(_) => "dns",
+        ProxyError::Timeout(_) => "timeout",
+        ProxyError::ProxyConnection(_) | ProxyError::Blocked => "proxy_rejected",
+        ProxyError::Io(io) if io.kind() == ErrorKind::TimedOut => "timeout",
+        ProxyError::Io(io) if io.kind() == ErrorKind::ConnectionRefused => "refused",
+        ProxyError::Io(io) if io.kind() == ErrorKind::ConnectionReset => "reset",
+        _ => fallback,
+    };
+    (failure_type, error.to_string())
 }
 
 fn print_doctor_report(report: &DoctorReport) {
@@ -1523,6 +1539,22 @@ mod tests {
         assert!(!node.authentication.ok);
         assert_eq!(node.authentication.failure_type.as_deref(), Some("authentication"));
         assert!(node.target.skipped);
+    }
+
+    #[test]
+    fn doctor_classifies_actionable_failures() {
+        assert_eq!(
+            classify_doctor_error(&ProxyError::Dns("no answer".into()), "target").0,
+            "dns"
+        );
+        assert_eq!(
+            classify_doctor_error(&ProxyError::Timeout("deadline".into()), "target").0,
+            "timeout"
+        );
+        assert_eq!(
+            classify_doctor_error(&ProxyError::ProxyConnection("403".into()), "target").0,
+            "proxy_rejected"
+        );
     }
 
     #[test]

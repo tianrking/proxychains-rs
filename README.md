@@ -145,8 +145,11 @@ proxychains4 --profile ./profiles/build.profile
 
 `--probe` only checks whether a proxy endpoint accepts a TCP connection.
 `--doctor` separately checks transport, protocol/authentication, target
-connection, and optional SOCKS5 UDP ASSOCIATE plus an actual UDP echo. A
-successful UDP ASSOCIATE alone is not reported as working UDP forwarding.
+connection, and optional SOCKS5 UDP ASSOCIATE plus an actual UDP echo. Its
+JSON stages classify actionable failures as `authentication`, `dns`,
+`timeout`, `refused`, `reset`, `proxy_rejected`, or `target` where the
+protocol cannot provide a more specific cause. A successful UDP ASSOCIATE
+alone is not reported as working UDP forwarding.
 
 Set `--log-file` when launching a command to record intercepted TCP and UDP
 connection outcomes as JSONL. The record contains process name, PID, optional
