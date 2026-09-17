@@ -38,6 +38,7 @@ pub mod hook;
 pub mod net;
 pub mod platform;
 pub mod proxy;
+pub mod socks5_server;
 pub mod trace;
 
 // Re-exports for convenience
@@ -47,6 +48,7 @@ pub use config::{
 };
 pub use dns::{DnsCache, DnsResolver};
 pub use error::{Error, Result};
+pub use socks5_server::{LocalSocks5Credentials, LocalSocks5Server};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

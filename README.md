@@ -31,8 +31,10 @@ network isolation. `raw` is a no-handshake mode, not an IP tunnel. Arbitrary UDP
 ICMP, browser/MsQuic HTTP/3 workflows and complete Agent compatibility are not certified.
 
 New interfaces: `proxychains4 --pid PID`, `proxychains4 --attach-name FILE.exe`
-(Windows), and `proxychains-udp -f FILE --listen 127.0.0.1:1053 --target 1.1.1.1:53`
-(explicit UDP forwarding through exactly one SOCKS5 node).
+(Windows), `proxychains-udp -f FILE --listen 127.0.0.1:1053 --target 1.1.1.1:53`
+(explicit UDP forwarding through exactly one SOCKS5 node), and
+`proxychains-socks5 -f FILE --listen 127.0.0.1:1081` (a local SOCKS5 CONNECT
+service backed by the configured chain). See [agent local SOCKS5 setup](docs/agent-local-socks5.md).
 
 ## Linux Compatibility (Important)
 
