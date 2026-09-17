@@ -53,6 +53,13 @@ pub(super) fn register_iocp(socket: usize, port: HANDLE, completion_key: usize) 
 
 pub(super) fn forget_iocp(socket: usize) {
     iocp_associations().lock().remove(&socket);
+    cancel_iocp(socket);
+}
+
+/// Signal workers before the socket is closed. A worker may otherwise observe
+/// the session teardown first and report WSAEOPNOTSUPP instead of the Winsock
+/// cancellation status required for an overlapped receive.
+pub(super) fn cancel_iocp(socket: usize) {
     for ((pending_socket, _), cancelled) in iocp_pending().lock().iter() {
         if *pending_socket == socket {
             cancelled.store(true, Ordering::Release);
@@ -231,6 +238,9 @@ unsafe extern "system" fn recv(s: usize, buf: *mut u8, len: i32, flags: i32) -> 
 unsafe extern "system" fn close(s: usize) -> i32 {
     // Winsock may refuse to close a nonblocking socket with linger enabled.
     super::hooks_windows::cancel_connect_ex(s);
+    // Publish cancellation before closesocket tears down the UDP session.
+    // This also covers a worker that has been queued but has not started yet.
+    cancel_iocp(s);
     let result = CLOSE.get().unwrap()(s);
     if result == 0 {
         udp::forget(s);
