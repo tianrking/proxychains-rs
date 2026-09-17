@@ -19,6 +19,11 @@ launch with QUIC enabled creates SOCKS5 UDP associations but the relay receives
 no UDP datagram before Chrome exits with `STATUS_ACCESS_VIOLATION`. This is
 evidence of an unresolved QUIC/UDP send-path or browser-process interaction,
 not evidence that browser HTTP/3 is proxied successfully.
+An instrumented repeat observed `WSARecvFrom` calls in injected browser
+processes but no `WSASendTo`, `WSASendMsg`, or `WSASend` calls before the crash;
+the remaining possibilities are an un-injected network-process path or a
+registered-I/O path that is deliberately rejected today. This observation is
+diagnostic only and does not certify RIO or browser HTTP/3 support.
 | Shared proxy health and cooldown | Implemented with protocol-specific TCP/UDP state for TCP chain/Windows selection and transparent UDP association creation | Unit tests cover bounded expiry, recovery, TCP/UDP isolation and config parsing; UDP association failures no longer suppress healthy TCP nodes (and vice versa); cross-target Windows compile check passes |
 | Route explanation CLI | Implemented (`--explain`) | CLI parser test and explicit rule/action output; process and local-address behavior remain subject to observed hook context |
 | Per-route proxy groups | Implemented for TCP and transparent UDP hooks (`route_group`) | Parser validates named groups; UDP groups may contain multiple SOCKS5 nodes and fail over for new associations; each UDP socket keeps its initial association |
