@@ -22,10 +22,7 @@ impl Platform for UnixPlatform {
         }
 
         // Default system config locations
-        let system_paths = [
-            "/etc/proxychains.conf",
-            "/usr/local/etc/proxychains.conf",
-        ];
+        let system_paths = ["/etc/proxychains.conf", "/usr/local/etc/proxychains.conf"];
 
         for path in &system_paths {
             let p = PathBuf::from(path);

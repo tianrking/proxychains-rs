@@ -230,7 +230,9 @@ fn native_udp_routing_and_lifecycle() {
             control.read_exact(&mut request).unwrap();
             assert_eq!(request, [5, 3, 0, 1, 0, 0, 0, 0, 0, 0]);
             let relay = UdpSocket::bind("127.0.0.1:0").unwrap();
-            relay.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            relay
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let mut reply = vec![5, 0, 0, 1, 127, 0, 0, 1];
             reply.extend(relay.local_addr().unwrap().port().to_be_bytes());
             control.write_all(&reply).unwrap();
@@ -477,8 +479,8 @@ fn spawn_quic_server() -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
             let connection = incoming.await.unwrap();
             let mut h3: h3::server::Connection<_, bytes::Bytes> =
                 h3::server::Connection::new(h3_quinn::Connection::new(connection))
-                .await
-                .expect("http3 server init");
+                    .await
+                    .expect("http3 server init");
             let resolver = h3
                 .accept()
                 .await

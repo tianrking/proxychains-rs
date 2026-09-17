@@ -89,10 +89,10 @@ fn main() {
 fn run_udp_rio_probe() {
     use std::os::windows::io::AsRawSocket;
     use windows::core::GUID;
-    use windows::Win32::Networking::WinSock::{WSAIoctl, SOCKET};
     use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
-    use windows::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus};
+    use windows::Win32::Networking::WinSock::{WSAIoctl, SOCKET};
     use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+    use windows::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus};
 
     const SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER: u32 = 0xC800_0024;
     let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("RIO probe socket");
@@ -251,9 +251,8 @@ fn run_udp_rio_probe() {
             .parse::<std::net::SocketAddr>()
             .expect("RIO target address"),
     );
-    let remote_bytes = unsafe {
-        std::slice::from_raw_parts(remote.as_ptr().cast::<u8>(), remote.len() as usize)
-    };
+    let remote_bytes =
+        unsafe { std::slice::from_raw_parts(remote.as_ptr().cast::<u8>(), remote.len() as usize) };
     let remote_id = unsafe {
         register(
             remote_bytes.as_ptr().cast_mut().cast(),
@@ -296,12 +295,7 @@ fn run_udp_rio_probe() {
         _padding: 0,
         payload: [iocp.0 as usize, 0x44, 0],
     };
-    let iocp_cq = unsafe {
-        create_cq(
-            8,
-            (&mut iocp_notification as *mut RioNotification).cast(),
-        )
-    };
+    let iocp_cq = unsafe { create_cq(8, (&mut iocp_notification as *mut RioNotification).cast()) };
     assert_ne!(iocp_cq, 0, "RIO IOCP completion queue creation");
     let iocp_rq = unsafe {
         create_rq(

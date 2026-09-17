@@ -10,18 +10,16 @@ use std::sync::OnceLock;
 use minhook::MinHook;
 use tracing::debug;
 use windows::Win32::Foundation::HANDLE;
-use windows::Win32::Networking::WinSock::{WSAECONNREFUSED, WSAHOST_NOT_FOUND, WSASetLastError};
+use windows::Win32::Networking::WinSock::{WSASetLastError, WSAECONNREFUSED, WSAHOST_NOT_FOUND};
 
 use crate::error::{Error, Result};
 
 use super::hooks_windows::{
-    hook_connect_impl, hook_freeaddrinfo_impl, hook_getaddrinfo_impl, hook_getaddrinfow_impl,
-    hook_getaddrinfoexa_impl, hook_getaddrinfoexw_impl, hook_gethostbyname_impl, hook_getnameinfo_impl,
-    hook_dns_query_a_impl, hook_dns_query_w_impl, hook_wsa_connect_impl, hook_wsa_ioctl_impl,
-    hook_create_io_completion_port_impl,
-    hook_getaddrinfoex_overlapped_result_impl,
-    hook_dns_query_ex_impl,
-    hook_dns_query_utf8_impl,
+    hook_connect_impl, hook_create_io_completion_port_impl, hook_dns_query_a_impl,
+    hook_dns_query_ex_impl, hook_dns_query_utf8_impl, hook_dns_query_w_impl,
+    hook_freeaddrinfo_impl, hook_getaddrinfo_impl, hook_getaddrinfoex_overlapped_result_impl,
+    hook_getaddrinfoexa_impl, hook_getaddrinfoexw_impl, hook_getaddrinfow_impl,
+    hook_gethostbyname_impl, hook_getnameinfo_impl, hook_wsa_connect_impl, hook_wsa_ioctl_impl,
 };
 
 type ConnectFn = unsafe extern "system" fn(usize, *const c_void, i32) -> i32;
@@ -103,7 +101,8 @@ static ORIGINAL_GETADDRINFO: OnceLock<GetAddrInfoFn> = OnceLock::new();
 static ORIGINAL_GETADDRINFOW: OnceLock<GetAddrInfoWFn> = OnceLock::new();
 static ORIGINAL_GETADDRINFOEXW: OnceLock<GetAddrInfoExWFn> = OnceLock::new();
 static ORIGINAL_GETADDRINFOEXA: OnceLock<GetAddrInfoExAFn> = OnceLock::new();
-static ORIGINAL_GETADDRINFOEX_OVERLAPPED_RESULT: OnceLock<GetAddrInfoExOverlappedResultFn> = OnceLock::new();
+static ORIGINAL_GETADDRINFOEX_OVERLAPPED_RESULT: OnceLock<GetAddrInfoExOverlappedResultFn> =
+    OnceLock::new();
 static ORIGINAL_FREEADDRINFO: OnceLock<FreeAddrInfoFn> = OnceLock::new();
 static ORIGINAL_GETHOSTBYNAME: OnceLock<GetHostByNameFn> = OnceLock::new();
 static ORIGINAL_GETNAMEINFO: OnceLock<GetNameInfoFn> = OnceLock::new();
@@ -148,8 +147,10 @@ impl OriginalFunctions {
         unsafe {
             let connect_fn: ConnectFn =
                 install_api_hook("connect", hook_connect_impl as *const () as *mut c_void)?;
-            let wsa_connect_fn: WsaConnectFn =
-                install_api_hook("WSAConnect", hook_wsa_connect_impl as *const () as *mut c_void)?;
+            let wsa_connect_fn: WsaConnectFn = install_api_hook(
+                "WSAConnect",
+                hook_wsa_connect_impl as *const () as *mut c_void,
+            )?;
             let wsa_ioctl_fn: WsaIoctlFn =
                 install_api_hook("WSAIoctl", hook_wsa_ioctl_impl as *const () as *mut c_void)?;
             let create_iocp_fn: CreateIoCompletionPortFn = install_api_hook_from_module(
@@ -296,15 +297,7 @@ pub unsafe fn original_wsa_connect(
     gqos: *const c_void,
 ) -> i32 {
     if let Some(f) = ORIGINAL_WSA_CONNECT.get() {
-        f(
-            sock,
-            name,
-            namelen,
-            caller_data,
-            callee_data,
-            sqos,
-            gqos,
-        )
+        f(sock, name, namelen, caller_data, callee_data, sqos, gqos)
     } else {
         WSASetLastError(WSAECONNREFUSED.0);
         -1

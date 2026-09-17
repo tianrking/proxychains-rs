@@ -41,9 +41,11 @@ pub mod proxy;
 pub mod trace;
 
 // Re-exports for convenience
-pub use chain::{ChainManager, ChainError};
-pub use config::{Config, ConfigParser, ProxyData, ProxyType, ChainType, RouteAction, RouteProtocol, RouteRule};
-pub use dns::{DnsResolver, DnsCache};
+pub use chain::{ChainError, ChainManager};
+pub use config::{
+    ChainType, Config, ConfigParser, ProxyData, ProxyType, RouteAction, RouteProtocol, RouteRule,
+};
+pub use dns::{DnsCache, DnsResolver};
 pub use error::{Error, Result};
 
 /// Library version

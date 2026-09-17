@@ -485,9 +485,9 @@ unsafe extern "system" fn wsa_sendto(
             None => return fail(io::Error::from_raw_os_error(WSAEFAULT.0)),
         }
     };
-    if let Some((port, completion_key)) = iocp.or_else(|| {
-        (!completion.is_null()).then_some((HANDLE::default(), 0))
-    }) {
+    if let Some((port, completion_key)) =
+        iocp.or_else(|| (!completion.is_null()).then_some((HANDLE::default(), 0)))
+    {
         return queue_iocp_send(
             s,
             data,
@@ -558,9 +558,11 @@ unsafe extern "system" fn wsa_recvfrom(
         Ok(b) => b,
         Err(e) => return fail(e),
     };
-    if let Some((port, completion_key)) = ov.as_ref().and_then(|_| iocp_for(s)).or_else(|| {
-        (!completion.is_null()).then_some((HANDLE::default(), 0))
-    }) {
+    if let Some((port, completion_key)) = ov
+        .as_ref()
+        .and_then(|_| iocp_for(s))
+        .or_else(|| (!completion.is_null()).then_some((HANDLE::default(), 0)))
+    {
         let buffers = slices
             .iter()
             .map(|buffer| (buffer.buf.0 as usize, buffer.len as usize))
@@ -666,9 +668,9 @@ pub(super) unsafe extern "system" fn wsa_recvmsg(
         return fail(io::Error::from_raw_os_error(WSAEFAULT.0));
     }
     let buffers = std::slice::from_raw_parts(message.lpBuffers, count);
-    if let Some((port, completion_key)) = iocp.or_else(|| {
-        (!completion.is_null()).then_some((HANDLE::default(), 0))
-    }) {
+    if let Some((port, completion_key)) =
+        iocp.or_else(|| (!completion.is_null()).then_some((HANDLE::default(), 0)))
+    {
         let buffers = buffers
             .iter()
             .map(|buffer| (buffer.buf.0 as usize, buffer.len as usize))
@@ -777,9 +779,9 @@ pub(super) unsafe extern "system" fn wsa_sendmsg(
         Ok(flags) => flags,
         Err(_) => return fail(udp::unsupported()),
     };
-    if let Some((port, completion_key)) = iocp.or_else(|| {
-        (!completion.is_null()).then_some((HANDLE::default(), 0))
-    }) {
+    if let Some((port, completion_key)) =
+        iocp.or_else(|| (!completion.is_null()).then_some((HANDLE::default(), 0)))
+    {
         return queue_iocp_send(
             s,
             data,

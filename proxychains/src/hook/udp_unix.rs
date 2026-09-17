@@ -1,9 +1,9 @@
 //! libc datagram wrappers. All fallbacks resolve RTLD_NEXT, never our own exports.
 use super::udp;
 use libc::{c_int, c_void, size_t, sockaddr, socklen_t, ssize_t};
-use std::{io, ptr};
 #[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
+use std::{io, ptr};
 
 macro_rules! original {
     ($name:literal, ($($arg:ty),*) -> $ret:ty) => {{

@@ -1,9 +1,9 @@
 //! Configuration types for proxychains
 
+use crate::error::{Error, Result};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, ToSocketAddrs};
 use std::time::Duration;
-use crate::error::{Error, Result};
 
 /// Proxy protocol type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -156,7 +156,9 @@ impl ProxyData {
 
         let mut addrs = (self.host.as_str(), self.port)
             .to_socket_addrs()
-            .map_err(|e| Error::Dns(format!("Failed to resolve proxy host {}: {}", self.host, e)))?;
+            .map_err(|e| {
+                Error::Dns(format!("Failed to resolve proxy host {}: {}", self.host, e))
+            })?;
 
         addrs
             .find_map(|addr| match addr.ip() {
@@ -172,7 +174,9 @@ impl ProxyData {
         if let Ok(ip) = host.parse::<IpAddr>() {
             return Ok(std::net::SocketAddr::new(ip, self.port));
         }
-        (host, self.port).to_socket_addrs()?.next()
+        (host, self.port)
+            .to_socket_addrs()?
+            .next()
             .ok_or_else(|| Error::Dns(format!("No address for proxy host {}", self.host)))
     }
 }
@@ -217,7 +221,9 @@ pub struct LocalNetV6 {
 impl LocalNetV6 {
     pub fn new(address: Ipv6Addr, prefix: u8) -> Result<Self> {
         if prefix > 128 {
-            return Err(Error::Config(format!("Invalid IPv6 localnet prefix: {prefix}")));
+            return Err(Error::Config(format!(
+                "Invalid IPv6 localnet prefix: {prefix}"
+            )));
         }
         Ok(Self { address, prefix })
     }
@@ -272,7 +278,10 @@ impl RouteRule {
     ) -> bool {
         if self.protocol.is_some_and(|expected| expected != protocol)
             || self.port.is_some_and(|expected| expected != port)
-            || self.process.as_deref().is_some_and(|expected| !process.eq_ignore_ascii_case(expected))
+            || self
+                .process
+                .as_deref()
+                .is_some_and(|expected| !process.eq_ignore_ascii_case(expected))
         {
             return false;
         }
@@ -400,7 +409,10 @@ impl Config {
                     || v6.is_unspecified()
                     || v6.is_unique_local()
                     || v6.is_unicast_link_local()
-                    || self.localnets_v6.iter().any(|localnet| localnet.contains(v6))
+                    || self
+                        .localnets_v6
+                        .iter()
+                        .any(|localnet| localnet.contains(v6))
             }
         }
     }
@@ -445,7 +457,10 @@ impl Config {
     ) -> RouteAction {
         let process = std::env::current_exe()
             .ok()
-            .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+            .and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
             .unwrap_or_default();
         self.route_action_for_process(protocol, domain, port, &process)
     }
@@ -483,7 +498,10 @@ impl Config {
     ) -> Option<&str> {
         let process = std::env::current_exe()
             .ok()
-            .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+            .and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
             .unwrap_or_default();
         self.route_proxy_group_for_process(protocol, domain, port, &process)
     }
@@ -512,12 +530,8 @@ mod tests {
         let cfg = Config::default();
         assert!(cfg.should_bypass_ip(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
         assert!(cfg.should_bypass_ip(&IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
-        assert!(cfg.should_bypass_ip(&IpAddr::V6(Ipv6Addr::new(
-            0xfe80, 0, 0, 0, 1, 2, 3, 4
-        ))));
-        assert!(cfg.should_bypass_ip(&IpAddr::V6(Ipv6Addr::new(
-            0xfc00, 0, 0, 0, 1, 2, 3, 4
-        ))));
+        assert!(cfg.should_bypass_ip(&IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 1, 2, 3, 4))));
+        assert!(cfg.should_bypass_ip(&IpAddr::V6(Ipv6Addr::new(0xfc00, 0, 0, 0, 1, 2, 3, 4))));
         assert!(!cfg.should_bypass_ip(&IpAddr::V6(Ipv6Addr::new(
             0x2606, 0x4700, 0, 0, 0, 0, 0, 0x1111
         ))));

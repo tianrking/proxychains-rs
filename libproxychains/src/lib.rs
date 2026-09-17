@@ -10,14 +10,14 @@
 use tracing::{debug, error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use proxychains::{ConfigParser, hook::init_hooks};
+use proxychains::{hook::init_hooks, ConfigParser};
 
 // A unit-test executable must not interpose its own libc calls or run the
 // preload constructor. Native integration tests exercise the actual cdylib.
-#[cfg(all(unix, not(test)))]
-mod udp_exports;
 #[cfg(all(target_os = "macos", not(test)))]
 mod macos_interpose;
+#[cfg(all(unix, not(test)))]
+mod udp_exports;
 
 /// Initialize the library (common code for all platforms)
 fn init_library() -> bool {
@@ -82,7 +82,11 @@ mod unix_impl {
     /// Library initialization using #[ctor] attribute
     #[ctor]
     fn init() {
-        if !init_library() { unsafe { libc::_exit(127); } }
+        if !init_library() {
+            unsafe {
+                libc::_exit(127);
+            }
+        }
     }
 
     /// Hook for connect() system call
@@ -169,38 +173,69 @@ mod windows_impl {
     pub unsafe extern "system" fn proxychains_initialize_v1(argument: *mut c_void) -> u32 {
         use std::os::windows::ffi::OsStringExt;
         static INITIALIZED: std::sync::OnceLock<(Vec<u16>, u32)> = std::sync::OnceLock::new();
-        if argument.is_null() { return 1; }
+        if argument.is_null() {
+            return 1;
+        }
         let ptr = argument as *const u16;
         let mut payload = Vec::new();
         let mut separators = Vec::new();
         for i in 0..32768 {
-            let ch = *ptr.add(i); payload.push(ch);
-            if ch == 0 { separators.push(i); if separators.len() == 2 { break; } }
+            let ch = *ptr.add(i);
+            payload.push(ch);
+            if ch == 0 {
+                separators.push(i);
+                if separators.len() == 2 {
+                    break;
+                }
+            }
         }
-        if separators.len() != 2 { return 2; }
+        if separators.len() != 2 {
+            return 2;
+        }
         // Configuration failures before installing hooks are retryable for attachment.
         // Once hook installation begins, retain failure state rather than retrying a
         // potentially partial installation.
         if INITIALIZED.get().is_none() {
             let config = std::ffi::OsString::from_wide(&payload[..separators[0]]);
-            let group = std::ffi::OsString::from_wide(&payload[separators[0]+1..separators[1]]);
+            let group = std::ffi::OsString::from_wide(&payload[separators[0] + 1..separators[1]]);
             let mut parser = ConfigParser::new();
-            if !config.is_empty() { parser = parser.with_path(std::path::PathBuf::from(config)); }
-            if !group.is_empty() { parser = parser.with_group(group.to_string_lossy()); }
-            if !matches!(parser.parse(), Ok(config) if config.has_proxies()) { return 3; }
+            if !config.is_empty() {
+                parser = parser.with_path(std::path::PathBuf::from(config));
+            }
+            if !group.is_empty() {
+                parser = parser.with_group(group.to_string_lossy());
+            }
+            if !matches!(parser.parse(), Ok(config) if config.has_proxies()) {
+                return 3;
+            }
         }
         let (saved, status) = INITIALIZED.get_or_init(|| {
             let result = std::panic::catch_unwind(|| {
                 let config = std::ffi::OsString::from_wide(&payload[..separators[0]]);
-                let group = std::ffi::OsString::from_wide(&payload[separators[0]+1..separators[1]]);
-                if !config.is_empty() { std::env::set_var("PROXYCHAINS_CONF_FILE", config); }
-                if group.is_empty() { std::env::remove_var("PROXYCHAINS_PROXY_GROUP"); }
-                else { std::env::set_var("PROXYCHAINS_PROXY_GROUP", group); }
+                let group =
+                    std::ffi::OsString::from_wide(&payload[separators[0] + 1..separators[1]]);
+                if !config.is_empty() {
+                    std::env::set_var("PROXYCHAINS_CONF_FILE", config);
+                }
+                if group.is_empty() {
+                    std::env::remove_var("PROXYCHAINS_PROXY_GROUP");
+                } else {
+                    std::env::set_var("PROXYCHAINS_PROXY_GROUP", group);
+                }
                 init_library()
             });
-            (payload.clone(), if matches!(result, Ok(true)) { 0x50435231 } else { 3 })
+            (
+                payload.clone(),
+                if matches!(result, Ok(true)) {
+                    0x50435231
+                } else {
+                    3
+                },
+            )
         });
-        if saved != &payload { return 4; }
+        if saved != &payload {
+            return 4;
+        }
         *status
     }
 
@@ -211,11 +246,7 @@ mod windows_impl {
     /// # Safety
     /// This is a Windows API callback
     #[no_mangle]
-    pub extern "system" fn DllMain(
-        _hinst: HINSTANCE,
-        reason: u32,
-        _reserved: *mut c_void,
-    ) -> BOOL {
+    pub extern "system" fn DllMain(_hinst: HINSTANCE, reason: u32, _reserved: *mut c_void) -> BOOL {
         const DLL_PROCESS_ATTACH: u32 = 1;
         const DLL_PROCESS_DETACH: u32 = 0;
 

@@ -12,8 +12,8 @@ use std::ptr;
 use std::sync::{Mutex, OnceLock};
 use windows::Win32::Foundation::BOOL;
 use windows::Win32::Foundation::HANDLE;
-use windows::Win32::System::IO::{PostQueuedCompletionStatus, OVERLAPPED};
 use windows::Win32::System::Threading::SetEvent;
+use windows::Win32::System::IO::{PostQueuedCompletionStatus, OVERLAPPED};
 
 pub type BufferId = *mut RioBuffer;
 pub type CompletionQueue = *mut RioCompletionQueue;
@@ -228,7 +228,11 @@ pub unsafe extern "system" fn notify(queue: CompletionQueue) -> i32 {
     if queue.is_null() {
         return -1;
     }
-    if (*queue).results.lock().is_ok_and(|results| !results.is_empty()) {
+    if (*queue)
+        .results
+        .lock()
+        .is_ok_and(|results| !results.is_empty())
+    {
         signal(&*queue);
     }
     0

@@ -20,8 +20,8 @@ use crate::chain::ChainManager;
 use crate::config::{Config, RouteAction, RouteProtocol};
 use crate::dns::is_fake_ip;
 use crate::error::Result;
+use crate::net::{get_ip_from_sockaddr, get_ipaddr_from_sockaddr, get_port_from_sockaddr};
 use crate::ConfigParser;
-use crate::net::{get_ipaddr_from_sockaddr, get_ip_from_sockaddr, get_port_from_sockaddr};
 
 use super::interpose::{
     init_original_functions, original_connect, original_freeaddrinfo, original_getaddrinfo,
@@ -84,7 +84,9 @@ fn maybe_reload_config(lock: &Mutex<HookState>) {
 
 fn reload_config_with(lock: &Mutex<HookState>, parse: impl FnOnce() -> Result<Config>) {
     static RELOADING: Mutex<()> = Mutex::new(());
-    let Some(_reload) = RELOADING.try_lock() else { return };
+    let Some(_reload) = RELOADING.try_lock() else {
+        return;
+    };
     let mut state = lock.lock();
     let now = Instant::now();
     if now < state.next_reload_check {
@@ -125,7 +127,11 @@ fn parse_service_port(service: *const c_char) -> u16 {
     }
 }
 
-unsafe fn write_hostname_to_buf(host: *mut c_char, hostlen: libc::socklen_t, hostname: &str) -> c_int {
+unsafe fn write_hostname_to_buf(
+    host: *mut c_char,
+    hostlen: libc::socklen_t,
+    hostname: &str,
+) -> c_int {
     if host.is_null() || hostlen <= 1 {
         return libc::EAI_FAIL;
     }
@@ -160,7 +166,11 @@ unsafe fn store_fake_addrinfo_result(
 
             let sockaddr_ptr = Box::into_raw(Box::new(sockaddr));
             let mut ai: libc::addrinfo = std::mem::zeroed();
-            ai.ai_flags = if hints.is_null() { 0 } else { (*hints).ai_flags };
+            ai.ai_flags = if hints.is_null() {
+                0
+            } else {
+                (*hints).ai_flags
+            };
             ai.ai_family = libc::AF_INET;
             ai.ai_socktype = if hints.is_null() {
                 libc::SOCK_STREAM
@@ -206,7 +216,11 @@ unsafe fn store_fake_addrinfo_result(
 
             let sockaddr_ptr = Box::into_raw(Box::new(sockaddr));
             let mut ai: libc::addrinfo = std::mem::zeroed();
-            ai.ai_flags = if hints.is_null() { 0 } else { (*hints).ai_flags };
+            ai.ai_flags = if hints.is_null() {
+                0
+            } else {
+                (*hints).ai_flags
+            };
             ai.ai_family = libc::AF_INET6;
             ai.ai_socktype = if hints.is_null() {
                 libc::SOCK_STREAM
@@ -259,9 +273,7 @@ pub fn init_hooks(config: Config) -> Result<()> {
 
 /// Check if hooks are initialized
 pub fn is_initialized() -> bool {
-    HOOK_STATE
-        .get()
-        .map_or(false, |s| s.lock().initialized)
+    HOOK_STATE.get().map_or(false, |s| s.lock().initialized)
 }
 
 /// Get the hook state
@@ -283,14 +295,14 @@ fn get_hook_state() -> Option<HookSnapshot> {
 ///
 /// # Safety
 /// This function makes unsafe FFI calls
-pub unsafe fn hook_connect(
-    sock: c_int,
-    addr: *const libc::sockaddr,
-    len: socklen_t,
-) -> c_int {
+pub unsafe fn hook_connect(sock: c_int, addr: *const libc::sockaddr, len: socklen_t) -> c_int {
     trace!("hook_connect called: sock={}", sock);
-    if crate::net::is_internal_network() { return original_connect(sock, addr, len); }
-    if let Some(result) = super::udp_unix::connect(sock, addr, len) { return result; }
+    if crate::net::is_internal_network() {
+        return original_connect(sock, addr, len);
+    }
+    if let Some(result) = super::udp_unix::connect(sock, addr, len) {
+        return result;
+    }
 
     // Check if initialized
     let state = match get_hook_state() {
@@ -333,20 +345,28 @@ pub unsafe fn hook_connect(
         .clone()
         .unwrap_or_else(|| final_ip.to_string());
 
-    let route_action = state
-        .config
-        .route_action(RouteProtocol::Tcp, target_domain.as_deref(), final_port);
+    let route_action =
+        state
+            .config
+            .route_action(RouteProtocol::Tcp, target_domain.as_deref(), final_port);
     if route_action == RouteAction::Reject {
         #[cfg(target_os = "linux")]
-        { *libc::__errno_location() = libc::EACCES; }
+        {
+            *libc::__errno_location() = libc::EACCES;
+        }
         #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
-        { *libc::__error() = libc::EACCES; }
+        {
+            *libc::__error() = libc::EACCES;
+        }
         return -1;
     }
     if route_action == RouteAction::Direct
         || (route_action == RouteAction::Proxy && state.config.should_bypass_ip(&final_ip))
     {
-        debug!("Bypassing proxy for local address: {}:{}", final_ip, final_port);
+        debug!(
+            "Bypassing proxy for local address: {}:{}",
+            final_ip, final_port
+        );
         return original_connect(sock, addr, len);
     }
 
@@ -354,7 +374,8 @@ pub unsafe fn hook_connect(
     if state.config.proxy_dns && target_domain.is_some() {
         debug!(
             "Connecting to {}:{} ({}) through proxy chain",
-            final_ip, final_port,
+            final_ip,
+            final_port,
             target_domain.as_ref().unwrap()
         );
     } else {
@@ -369,28 +390,30 @@ pub unsafe fn hook_connect(
     // followed by close close the successful tunnel itself).
     let descriptor_flags = libc::fcntl(sock, libc::F_GETFD);
     let status_flags = libc::fcntl(sock, libc::F_GETFL);
-    if descriptor_flags < 0 || status_flags < 0 { return -1; }
+    if descriptor_flags < 0 || status_flags < 0 {
+        return -1;
+    }
 
     // Connect through the selected proxy group. Route-group selection is made
     // before the chain manager is created so each new connection gets an
     // independent, auditable choice of exit group.
     let mut chain_config = (*state.config).clone();
-    if let Some(group) = state
-        .config
-        .route_proxy_group(RouteProtocol::Tcp, target_domain.as_deref(), final_port)
+    if let Some(group) =
+        state
+            .config
+            .route_proxy_group(RouteProtocol::Tcp, target_domain.as_deref(), final_port)
     {
         let Some(proxies) = state.config.proxy_groups.get(group) else {
-            error!("Proxy group selected by route rule is unavailable: {}", group);
+            error!(
+                "Proxy group selected by route rule is unavailable: {}",
+                group
+            );
             return -1;
         };
         chain_config.proxies = proxies.clone();
     }
     let chain_manager = ChainManager::new(chain_config);
-    match chain_manager.connect_proxy_chain(
-        final_ip,
-        final_port,
-        target_domain.as_deref(),
-    ) {
+    match chain_manager.connect_proxy_chain(final_ip, final_port, target_domain.as_deref()) {
         Ok(proxy_stream) => {
             // Get the file descriptor from the proxy stream
             let proxy_fd = proxy_stream.into_raw_fd();
@@ -402,13 +425,17 @@ pub unsafe fn hook_connect(
 
             // Use dup2 to make it the same fd as the original socket
             let result = libc::dup2(proxy_fd, sock);
-            if proxy_fd != sock { libc::close(proxy_fd); }
+            if proxy_fd != sock {
+                libc::close(proxy_fd);
+            }
 
             if result < 0 {
                 error!("Failed to duplicate socket fd");
                 return -1;
             }
-            if libc::fcntl(sock, libc::F_SETFD, descriptor_flags) < 0 { return -1; }
+            if libc::fcntl(sock, libc::F_SETFD, descriptor_flags) < 0 {
+                return -1;
+            }
 
             info!("Proxy connection established");
             crate::trace::record(crate::trace::ConnectionEvent {
@@ -476,7 +503,9 @@ pub unsafe fn hook_getaddrinfo(
     res: *mut *mut libc::addrinfo,
 ) -> c_int {
     trace!("hook_getaddrinfo called");
-    if crate::net::is_internal_network() { return original_getaddrinfo(node, service, hints, res); }
+    if crate::net::is_internal_network() {
+        return original_getaddrinfo(node, service, hints, res);
+    }
 
     // Check if initialized and proxy_dns is enabled
     let state = match get_hook_state() {
@@ -580,7 +609,10 @@ pub unsafe fn hook_gethostbyname(name: *const c_char) -> *mut libc::hostent {
     let fake_ip = match state.dns_resolver.resolve(&hostname) {
         Ok(ip) => ip,
         Err(e) => {
-            error!("Failed to resolve {} in hook_gethostbyname: {}", hostname, e);
+            error!(
+                "Failed to resolve {} in hook_gethostbyname: {}",
+                hostname, e
+            );
             return std::ptr::null_mut();
         }
     };
@@ -693,7 +725,9 @@ mod tests {
         reload_config_with(&state, || panic!("reload interval must be respected"));
         let current = state.lock().config.clone();
         state.lock().next_reload_check = Instant::now();
-        reload_config_with(&state, || Err(crate::Error::Config("invalid update".into())));
+        reload_config_with(&state, || {
+            Err(crate::Error::Config("invalid update".into()))
+        });
         assert!(Arc::ptr_eq(&current, &state.lock().config));
     }
 }

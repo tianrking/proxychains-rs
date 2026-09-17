@@ -113,10 +113,14 @@ impl ConfigParser {
         config.proxy_dns = env::var(ENV_DNS).is_ok();
         config.quiet_mode = env::var(ENV_QUIET_MODE).is_ok();
 
+        config.proxies.push(ProxyData::new_host(
+            host.to_string(),
+            port,
+            ProxyType::Socks5,
+        ));
         config
-            .proxies
-            .push(ProxyData::new_host(host.to_string(), port, ProxyType::Socks5));
-        config.proxy_groups.insert("default".to_string(), config.proxies.clone());
+            .proxy_groups
+            .insert("default".to_string(), config.proxies.clone());
 
         Ok(config)
     }
@@ -144,10 +148,7 @@ impl ConfigParser {
 
             // Check for section markers
             if trimmed.starts_with('[') {
-                let section = trimmed
-                    .trim_start_matches('[')
-                    .trim_end_matches(']')
-                    .trim();
+                let section = trimmed.trim_start_matches('[').trim_end_matches(']').trim();
                 let section_lower = section.to_lowercase();
 
                 if section_lower.starts_with("proxylist") {
@@ -163,7 +164,9 @@ impl ConfigParser {
                             matched_selected_group = true;
                         }
                         is_match
-                    } else { true };
+                    } else {
+                        true
+                    };
                     proxy_group = Some(group_name);
                 } else {
                     proxy_group = None;
@@ -192,10 +195,7 @@ impl ConfigParser {
 
         if let Some(group) = selected_group {
             if !matched_selected_group {
-                return Err(Error::Config(format!(
-                    "Proxy group not found: {}",
-                    group
-                )));
+                return Err(Error::Config(format!("Proxy group not found: {}", group)));
             }
         }
 
@@ -238,10 +238,7 @@ impl ConfigParser {
                 continue;
             }
 
-            let section = trimmed
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .trim();
+            let section = trimmed.trim_start_matches('[').trim_end_matches(']').trim();
             if !section.to_lowercase().starts_with("proxylist") {
                 continue;
             }
@@ -287,9 +284,13 @@ impl ConfigParser {
             "proxy_dns_old" => config.proxy_dns = true,
             "proxy_dns_daemon" => config.proxy_dns = true,
             "remote_dns_subnet" => {
-                let subnet: u8 = value.parse().map_err(|_| crate::error::Error::Config("Invalid remote_dns_subnet".into()))?;
+                let subnet: u8 = value
+                    .parse()
+                    .map_err(|_| crate::error::Error::Config("Invalid remote_dns_subnet".into()))?;
                 if subnet == 0 || subnet == 127 || subnet == 255 {
-                    return Err(crate::error::Error::Config("remote_dns_subnet cannot be unspecified, loopback, or broadcast".into()));
+                    return Err(crate::error::Error::Config(
+                        "remote_dns_subnet cannot be unspecified, loopback, or broadcast".into(),
+                    ));
                 }
                 config.remote_dns_subnet = subnet;
             }
@@ -347,19 +348,22 @@ impl ConfigParser {
 
         if let Ok(address) = parts[0].parse::<Ipv6Addr>() {
             let prefix: u8 = parts[1].parse().map_err(|_| {
-                Error::Config(format!("IPv6 localnet requires a CIDR prefix: {}", parts[1]))
+                Error::Config(format!(
+                    "IPv6 localnet requires a CIDR prefix: {}",
+                    parts[1]
+                ))
             })?;
             config.localnets_v6.push(LocalNetV6::new(address, prefix)?);
             return Ok(());
         }
 
-        let address: Ipv4Addr = parts[0].parse().map_err(|_| {
-            Error::Config(format!("Invalid localnet address: {}", parts[0]))
-        })?;
+        let address: Ipv4Addr = parts[0]
+            .parse()
+            .map_err(|_| Error::Config(format!("Invalid localnet address: {}", parts[0])))?;
 
-        let netmask: Ipv4Addr = parts[1].parse().map_err(|_| {
-            Error::Config(format!("Invalid localnet netmask: {}", parts[1]))
-        })?;
+        let netmask: Ipv4Addr = parts[1]
+            .parse()
+            .map_err(|_| Error::Config(format!("Invalid localnet netmask: {}", parts[1])))?;
 
         config.localnets.push(LocalNet::new(address, netmask));
         Ok(())
@@ -378,19 +382,21 @@ impl ConfigParser {
             if ap.len() != 2 {
                 return Err(Error::Config(format!("Invalid address:port: {}", s)));
             }
-            let addr: Ipv4Addr = ap[0].parse().map_err(|_| {
-                Error::Config(format!("Invalid address: {}", ap[0]))
-            })?;
-            let port: u16 = ap[1].parse().map_err(|_| {
-                Error::Config(format!("Invalid port: {}", ap[1]))
-            })?;
+            let addr: Ipv4Addr = ap[0]
+                .parse()
+                .map_err(|_| Error::Config(format!("Invalid address: {}", ap[0])))?;
+            let port: u16 = ap[1]
+                .parse()
+                .map_err(|_| Error::Config(format!("Invalid port: {}", ap[1])))?;
             Ok((addr, port))
         };
 
         let (orig_addr, orig_port) = parse_addr_port(parts[0])?;
         let (new_addr, new_port) = parse_addr_port(parts[1])?;
 
-        config.dnats.push(DnatRule::new(orig_addr, orig_port, new_addr, new_port));
+        config
+            .dnats
+            .push(DnatRule::new(orig_addr, orig_port, new_addr, new_port));
         Ok(())
     }
 
@@ -398,7 +404,9 @@ impl ConfigParser {
     fn parse_route(&self, value: &str, config: &mut Config) -> Result<()> {
         let parts: Vec<&str> = value.split_whitespace().collect();
         if parts.len() != 3 {
-            return Err(Error::Config("Invalid route format; expected route ACTION MATCHER VALUE".into()));
+            return Err(Error::Config(
+                "Invalid route format; expected route ACTION MATCHER VALUE".into(),
+            ));
         }
 
         let action = match parts[0].to_ascii_lowercase().as_str() {
@@ -418,17 +426,35 @@ impl ConfigParser {
         };
         match parts[1].to_ascii_lowercase().as_str() {
             "domain" => rule.domain = Some(parts[2].trim_end_matches('.').to_string()),
-            "domain_suffix" | "suffix" => rule.domain_suffix = Some(parts[2].trim_end_matches('.').to_string()),
-            "port" => rule.port = Some(parts[2].parse().map_err(|_| Error::Config(format!("Invalid route port: {}", parts[2])))?),
+            "domain_suffix" | "suffix" => {
+                rule.domain_suffix = Some(parts[2].trim_end_matches('.').to_string())
+            }
+            "port" => {
+                rule.port = Some(
+                    parts[2]
+                        .parse()
+                        .map_err(|_| Error::Config(format!("Invalid route port: {}", parts[2])))?,
+                )
+            }
             "process" | "process_name" => rule.process = Some(parts[2].to_string()),
             "protocol" => {
                 rule.protocol = Some(match parts[2].to_ascii_lowercase().as_str() {
                     "tcp" => RouteProtocol::Tcp,
                     "udp" => RouteProtocol::Udp,
-                    _ => return Err(Error::Config(format!("Invalid route protocol: {}", parts[2]))),
+                    _ => {
+                        return Err(Error::Config(format!(
+                            "Invalid route protocol: {}",
+                            parts[2]
+                        )))
+                    }
                 });
             }
-            _ => return Err(Error::Config(format!("Invalid route matcher: {}", parts[1]))),
+            _ => {
+                return Err(Error::Config(format!(
+                    "Invalid route matcher: {}",
+                    parts[1]
+                )))
+            }
         }
         config.route_rules.push(rule);
         Ok(())
@@ -458,19 +484,31 @@ impl ConfigParser {
                 rule.domain_suffix = Some(parts[2].trim_end_matches('.').to_string())
             }
             "port" => {
-                rule.port = Some(parts[2].parse().map_err(|_| {
-                    Error::Config(format!("Invalid route port: {}", parts[2]))
-                })?)
+                rule.port = Some(
+                    parts[2]
+                        .parse()
+                        .map_err(|_| Error::Config(format!("Invalid route port: {}", parts[2])))?,
+                )
             }
             "process" | "process_name" => rule.process = Some(parts[2].to_string()),
             "protocol" => {
                 rule.protocol = Some(match parts[2].to_ascii_lowercase().as_str() {
                     "tcp" => RouteProtocol::Tcp,
                     "udp" => RouteProtocol::Udp,
-                    _ => return Err(Error::Config(format!("Invalid route protocol: {}", parts[2]))),
+                    _ => {
+                        return Err(Error::Config(format!(
+                            "Invalid route protocol: {}",
+                            parts[2]
+                        )))
+                    }
                 });
             }
-            _ => return Err(Error::Config(format!("Invalid route matcher: {}", parts[1]))),
+            _ => {
+                return Err(Error::Config(format!(
+                    "Invalid route matcher: {}",
+                    parts[1]
+                )))
+            }
         }
         config.route_rules.push(rule);
         Ok(())
@@ -484,18 +522,16 @@ impl ConfigParser {
             return Err(Error::Config(format!("Invalid proxy line: {}", line)));
         }
 
-        let proxy_type: ProxyType = parts[0].parse().map_err(|e| {
-            Error::Config(e)
-        })?;
+        let proxy_type: ProxyType = parts[0].parse().map_err(|e| Error::Config(e))?;
 
         let host = parts[1].to_string();
         if host.is_empty() {
             return Err(Error::Config("Invalid proxy host: empty".to_string()));
         }
 
-        let port: u16 = parts[2].parse().map_err(|_| {
-            Error::Config(format!("Invalid proxy port: {}", parts[2]))
-        })?;
+        let port: u16 = parts[2]
+            .parse()
+            .map_err(|_| Error::Config(format!("Invalid proxy port: {}", parts[2])))?;
 
         let mut proxy = ProxyData::new_host(host, port, proxy_type);
 
@@ -560,10 +596,7 @@ mod tests {
 
     #[test]
     fn test_localnet_contains() {
-        let localnet = LocalNet::new(
-            Ipv4Addr::new(192, 168, 0, 0),
-            Ipv4Addr::new(255, 255, 0, 0),
-        );
+        let localnet = LocalNet::new(Ipv4Addr::new(192, 168, 0, 0), Ipv4Addr::new(255, 255, 0, 0));
 
         assert!(localnet.contains(&Ipv4Addr::new(192, 168, 1, 1)));
         assert!(localnet.contains(&Ipv4Addr::new(192, 168, 255, 255)));
@@ -684,35 +717,61 @@ socks5 127.0.0.1 1080
 
     #[test]
     fn test_parse_route_rules_in_order() {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let path = std::env::temp_dir().join(format!("proxychains_routes_{}.conf", ts));
-        fs::write(&path, r#"
+        fs::write(
+            &path,
+            r#"
 route direct domain_suffix .internal.example
 route reject port 25
 route direct protocol udp
 [ProxyList]
 socks5 127.0.0.1 1080
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let config = ConfigParser::new().with_path(path.clone()).parse().unwrap();
         assert_eq!(config.route_rules.len(), 3);
-        assert_eq!(config.route_action(RouteProtocol::Tcp, Some("git.internal.example"), 443), RouteAction::Direct);
-        assert_eq!(config.route_action(RouteProtocol::Tcp, Some("mail.example"), 25), RouteAction::Reject);
-        assert_eq!(config.route_action(RouteProtocol::Udp, Some("dns.example"), 53), RouteAction::Direct);
-        assert_eq!(config.route_action(RouteProtocol::Tcp, Some("example.com"), 443), RouteAction::Proxy);
+        assert_eq!(
+            config.route_action(RouteProtocol::Tcp, Some("git.internal.example"), 443),
+            RouteAction::Direct
+        );
+        assert_eq!(
+            config.route_action(RouteProtocol::Tcp, Some("mail.example"), 25),
+            RouteAction::Reject
+        );
+        assert_eq!(
+            config.route_action(RouteProtocol::Udp, Some("dns.example"), 53),
+            RouteAction::Direct
+        );
+        assert_eq!(
+            config.route_action(RouteProtocol::Tcp, Some("example.com"), 443),
+            RouteAction::Proxy
+        );
         let _ = fs::remove_file(path);
     }
 
     #[test]
     fn test_parse_route_group_and_retain_all_groups() {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let path = std::env::temp_dir().join(format!("proxychains_route_groups_{}.conf", ts));
-        fs::write(&path, r#"
+        fs::write(
+            &path,
+            r#"
 route_group jp domain git.example.com
 [ProxyList]
 socks5 127.0.0.1 1080
 [ProxyList:jp]
 socks5 127.0.0.2 1080
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let config = ConfigParser::new().with_path(path.clone()).parse().unwrap();
         assert_eq!(config.proxies.len(), 2);
         assert_eq!(config.proxy_groups["default"].len(), 1);
@@ -731,27 +790,45 @@ socks5 127.0.0.2 1080
 
     #[test]
     fn test_route_group_requires_existing_group() {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let path = std::env::temp_dir().join(format!("proxychains_route_group_missing_{}.conf", ts));
-        fs::write(&path, r#"
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("proxychains_route_group_missing_{}.conf", ts));
+        fs::write(
+            &path,
+            r#"
 route_group missing domain example.com
 [ProxyList]
 socks5 127.0.0.1 1080
-"#).unwrap();
-        let error = ConfigParser::new().with_path(path.clone()).parse().unwrap_err();
+"#,
+        )
+        .unwrap();
+        let error = ConfigParser::new()
+            .with_path(path.clone())
+            .parse()
+            .unwrap_err();
         assert!(format!("{error}").contains("Proxy group not found for route rule"));
         let _ = fs::remove_file(path);
     }
 
     #[test]
     fn test_parse_proxy_health_cooldown() {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let path = std::env::temp_dir().join(format!("proxychains_health_{}.conf", ts));
-        fs::write(&path, r#"
+        fs::write(
+            &path,
+            r#"
 proxy_health_cooldown_ms 1250
 [ProxyList]
 socks5 127.0.0.1 1080
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let config = ConfigParser::new().with_path(path.clone()).parse().unwrap();
         assert_eq!(config.proxy_health_cooldown, Duration::from_millis(1250));
         let _ = fs::remove_file(path);

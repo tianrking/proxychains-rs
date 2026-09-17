@@ -40,12 +40,7 @@ pub fn get_ip_from_sockaddr(addr: *const core::ffi::c_void) -> Option<Ipv4Addr> 
             // sin_port: u16 (2 bytes)
             // sin_addr: in_addr (4 bytes)
             let ip_ptr = (addr as *const u8).add(4);
-            let ip_bytes = [
-                *ip_ptr,
-                *ip_ptr.add(1),
-                *ip_ptr.add(2),
-                *ip_ptr.add(3),
-            ];
+            let ip_bytes = [*ip_ptr, *ip_ptr.add(1), *ip_ptr.add(2), *ip_ptr.add(3)];
             Some(Ipv4Addr::from(ip_bytes))
         } else if sa_family == 23 {
             // Handle IPv4-mapped IPv6 (::ffff:a.b.c.d) so reverse fake-DNS lookup works.
@@ -168,17 +163,13 @@ mod tests {
         raw[1] = 0;
         raw[2] = 0x13; // port 4919 in network byte order
         raw[3] = 0x37;
-        raw[8..24].copy_from_slice(&[
-            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-        ]);
+        raw[8..24].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
         let addr_ptr = raw.as_ptr() as *const core::ffi::c_void;
         assert_eq!(get_port_from_sockaddr(addr_ptr), 4919);
         assert_eq!(
             get_ipaddr_from_sockaddr(addr_ptr),
-            Some(IpAddr::V6(Ipv6Addr::new(
-                0x2001, 0x0db8, 0, 0, 0, 0, 0, 1
-            )))
+            Some(IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1)))
         );
     }
 
@@ -187,10 +178,11 @@ mod tests {
         let mut raw = [0u8; 28];
         raw[0] = 23; // AF_INET6
         raw[1] = 0;
-        raw[8..24].copy_from_slice(&[
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4,
-        ]);
+        raw[8..24].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4]);
         let addr_ptr = raw.as_ptr() as *const core::ffi::c_void;
-        assert_eq!(get_ip_from_sockaddr(addr_ptr), Some(Ipv4Addr::new(1, 2, 3, 4)));
+        assert_eq!(
+            get_ip_from_sockaddr(addr_ptr),
+            Some(Ipv4Addr::new(1, 2, 3, 4))
+        );
     }
 }

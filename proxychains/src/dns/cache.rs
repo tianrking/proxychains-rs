@@ -65,7 +65,9 @@ impl DnsCache {
             return Ok(ip);
         }
         if *counter >= self.max_entries as u32 {
-            return Err(crate::error::Error::Dns("Fake IP cache exhausted; refusing address reuse".into()));
+            return Err(crate::error::Error::Dns(
+                "Fake IP cache exhausted; refusing address reuse".into(),
+            ));
         }
         *counter += 1;
 
@@ -79,7 +81,9 @@ impl DnsCache {
         };
 
         self.ip_to_host.write().insert(fake_ip, entry);
-        self.host_to_ip.write().insert(hostname.to_string(), fake_ip);
+        self.host_to_ip
+            .write()
+            .insert(hostname.to_string(), fake_ip);
 
         Ok(fake_ip)
     }
@@ -174,17 +178,26 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(cache.get_hostname(&first), None);
         assert!(cache.get_or_create("third.invalid").is_err());
-        assert_eq!(cache.get_hostname(&second).as_deref(), Some("second.invalid"));
+        assert_eq!(
+            cache.get_hostname(&second).as_deref(),
+            Some("second.invalid")
+        );
     }
 
     #[test]
     fn concurrent_resolution_has_one_stable_mapping() {
         let cache = std::sync::Arc::new(DnsCache::new(198));
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
-        let workers: Vec<_> = (0..16).map(|_| {
-            let cache = cache.clone(); let barrier = barrier.clone();
-            std::thread::spawn(move || { barrier.wait(); cache.get_or_create("same.invalid").unwrap() })
-        }).collect();
+        let workers: Vec<_> = (0..16)
+            .map(|_| {
+                let cache = cache.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    cache.get_or_create("same.invalid").unwrap()
+                })
+            })
+            .collect();
         let ips: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
         assert!(ips.iter().all(|ip| *ip == ips[0]));
         assert_eq!(cache.size(), 1);

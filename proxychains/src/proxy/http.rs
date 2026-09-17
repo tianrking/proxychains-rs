@@ -32,7 +32,11 @@ impl<'a> HttpConnector<'a> {
         target_port: u16,
     ) -> Result<()> {
         // Build CONNECT request
-        if target_host.is_empty() || target_host.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        if target_host.is_empty()
+            || target_host
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+        {
             return Err(Error::InvalidAddress);
         }
         let host = match target_host.parse::<std::net::IpAddr>() {
@@ -44,10 +48,8 @@ impl<'a> HttpConnector<'a> {
         // Add authentication if credentials are provided
         if let (Some(user), Some(pass)) = (&self.proxy.user, &self.proxy.pass) {
             let credentials = format!("{}:{}", user, pass);
-            let encoded = base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                credentials,
-            );
+            let encoded =
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, credentials);
             request.push_str(&format!("Proxy-Authorization: Basic {}\r\n", encoded));
         }
 
@@ -134,7 +136,11 @@ mod tests {
     use std::net::Ipv4Addr;
 
     fn create_test_proxy() -> ProxyData {
-        ProxyData::new(Ipv4Addr::new(192, 168, 1, 1), 8080, crate::config::ProxyType::Http)
+        ProxyData::new(
+            Ipv4Addr::new(192, 168, 1, 1),
+            8080,
+            crate::config::ProxyType::Http,
+        )
     }
 
     #[test]
@@ -143,12 +149,18 @@ mod tests {
         let connector = HttpConnector::new(&proxy, Duration::from_secs(5));
 
         // Valid 200 response
-        assert!(connector.validate_response("HTTP/1.0 200 OK\r\n\r\n").is_ok());
+        assert!(connector
+            .validate_response("HTTP/1.0 200 OK\r\n\r\n")
+            .is_ok());
 
         // Valid 2xx response
-        assert!(connector.validate_response("HTTP/1.1 204 No Content\r\n\r\n").is_ok());
+        assert!(connector
+            .validate_response("HTTP/1.1 204 No Content\r\n\r\n")
+            .is_ok());
 
         // Invalid response (403)
-        assert!(connector.validate_response("HTTP/1.0 403 Forbidden\r\n\r\n").is_err());
+        assert!(connector
+            .validate_response("HTTP/1.0 403 Forbidden\r\n\r\n")
+            .is_err());
     }
 }

@@ -9,7 +9,11 @@ use std::time::Duration;
 use crate::error::{Error, Result};
 
 /// Read bytes from a stream with timeout
-pub fn read_bytes_timeout<T: Read>(stream: &mut T, count: usize, timeout: Duration) -> Result<Vec<u8>> {
+pub fn read_bytes_timeout<T: Read>(
+    stream: &mut T,
+    count: usize,
+    timeout: Duration,
+) -> Result<Vec<u8>> {
     let mut buf = vec![0u8; count];
     let mut read_total = 0;
     let start = std::time::Instant::now();
@@ -75,7 +79,10 @@ pub fn write_bytes_timeout<T: Write>(stream: &mut T, data: &[u8], timeout: Durat
 }
 
 /// Connect to an address with timeout (Windows-specific)
-pub fn connect_with_timeout(addr: &std::net::SocketAddr, timeout: Duration) -> Result<std::net::TcpStream> {
+pub fn connect_with_timeout(
+    addr: &std::net::SocketAddr,
+    timeout: Duration,
+) -> Result<std::net::TcpStream> {
     Ok(std::net::TcpStream::connect_timeout(addr, timeout)?)
 }
 

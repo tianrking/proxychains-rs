@@ -15,7 +15,9 @@ impl IpType {
     }
 
     pub fn from_int(val: u32) -> Self {
-        Self { as_int: val.to_be() }
+        Self {
+            as_int: val.to_be(),
+        }
     }
 
     pub fn to_ipv4(&self) -> Ipv4Addr {
@@ -230,6 +232,9 @@ mod tests {
             sin6_scope_id: 0,
         };
         let ptr = &sockaddr as *const libc::sockaddr_in6 as *const libc::sockaddr;
-        assert_eq!(unsafe { get_ip_from_sockaddr(ptr) }, Some(Ipv4Addr::new(5, 6, 7, 8)));
+        assert_eq!(
+            unsafe { get_ip_from_sockaddr(ptr) },
+            Some(Ipv4Addr::new(5, 6, 7, 8))
+        );
     }
 }

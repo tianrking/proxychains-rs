@@ -1,6 +1,6 @@
+use bytes::Buf;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::{Duration, Instant};
-use bytes::Buf;
 
 pub fn run(mode: &str) {
     let destination: SocketAddr = match mode {
@@ -265,10 +265,16 @@ fn completion_send_recv(socket: &UdpSocket, data: &[u8], destination: SocketAddr
     while !CALLED.load(Ordering::Acquire) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(CALLED.load(Ordering::Acquire), "WSASendTo completion not called");
+    assert!(
+        CALLED.load(Ordering::Acquire),
+        "WSASendTo completion not called"
+    );
     assert_eq!(ERROR.load(Ordering::Acquire), 0);
     assert_eq!(BYTES.load(Ordering::Acquire) as usize, data.len());
-    assert_eq!(OVERLAPPED_PTR.load(Ordering::Acquire), &mut overlapped as *mut _ as usize);
+    assert_eq!(
+        OVERLAPPED_PTR.load(Ordering::Acquire),
+        &mut overlapped as *mut _ as usize
+    );
 
     let mut payload = vec![0u8; data.len().max(64)];
     let mut recv_buffer = WSABUF {
@@ -299,10 +305,16 @@ fn completion_send_recv(socket: &UdpSocket, data: &[u8], destination: SocketAddr
     while !CALLED.load(Ordering::Acquire) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(CALLED.load(Ordering::Acquire), "WSARecvFrom completion not called");
+    assert!(
+        CALLED.load(Ordering::Acquire),
+        "WSARecvFrom completion not called"
+    );
     assert_eq!(ERROR.load(Ordering::Acquire), 0);
     assert_eq!(BYTES.load(Ordering::Acquire) as usize, data.len());
-    assert_eq!(OVERLAPPED_PTR.load(Ordering::Acquire), &mut recv_overlapped as *mut _ as usize);
+    assert_eq!(
+        OVERLAPPED_PTR.load(Ordering::Acquire),
+        &mut recv_overlapped as *mut _ as usize
+    );
     assert_eq!(&payload[..data.len()], data);
 }
 
@@ -328,12 +340,17 @@ fn run_quic(destination: SocketAddr) {
             .unwrap()
             .await
             .expect("quic connect");
-        let (mut driver, mut client) = h3::client::new(h3_quinn::Connection::new(connection.clone()))
-            .await
-            .expect("http3 client init");
+        let (mut driver, mut client) =
+            h3::client::new(h3_quinn::Connection::new(connection.clone()))
+                .await
+                .expect("http3 client init");
         let request = async move {
             let mut stream = client
-                .send_request(http::Request::get("https://proxychains.test/quic").body(()).unwrap())
+                .send_request(
+                    http::Request::get("https://proxychains.test/quic")
+                        .body(())
+                        .unwrap(),
+                )
                 .await
                 .expect("http3 request");
             let response = stream.recv_response().await.expect("http3 response");

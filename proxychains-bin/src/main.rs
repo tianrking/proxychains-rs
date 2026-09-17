@@ -24,7 +24,7 @@ use tracing_subscriber::FmtSubscriber;
 use proxychains::config::{ProxyType, RouteAction, RouteProtocol};
 use proxychains::error::Error as ProxyError;
 use proxychains::proxy::{
-    connect_to_proxy, tunnel_through_proxy, Socks5Connector, TargetAddress, TargetAddr,
+    connect_to_proxy, tunnel_through_proxy, Socks5Connector, TargetAddr, TargetAddress,
     UdpAssociation,
 };
 use proxychains::{Config, ConfigParser};
@@ -223,7 +223,10 @@ fn main() {
     if !args.command.is_empty() && !args.events && !args.doctor && !args.probe {
         if let Some(cwd) = &args.launch_cwd {
             if let Err(error) = env::set_current_dir(cwd) {
-                eprintln!("proxychains: cannot enter profile directory {}: {error}", cwd.display());
+                eprintln!(
+                    "proxychains: cannot enter profile directory {}: {error}",
+                    cwd.display()
+                );
                 process::exit(1);
             }
         }
@@ -391,17 +394,30 @@ fn print_route_explanation(config: &Config, args: &Args) -> bool {
     };
     let current_process = env::current_exe()
         .ok()
-        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .unwrap_or_default();
     let process = args
         .explain_process
         .as_deref()
         .unwrap_or(current_process.as_str());
-    let domain = host.parse::<std::net::IpAddr>().is_err().then_some(host.as_str());
+    let domain = host
+        .parse::<std::net::IpAddr>()
+        .is_err()
+        .then_some(host.as_str());
     let action = config.route_action_for_process(protocol, domain, port, process);
     println!("Target: {host}:{port}");
     println!("Protocol: {:?}", protocol);
-    println!("Process: {}", if process.is_empty() { "(unknown)" } else { process });
+    println!(
+        "Process: {}",
+        if process.is_empty() {
+            "(unknown)"
+        } else {
+            process
+        }
+    );
     if let Some(rule) = config.matching_route_rule(protocol, domain, port, process) {
         println!("Matched rule: {:?}", rule);
     } else {
@@ -415,7 +431,10 @@ fn print_route_explanation(config: &Config, args: &Args) -> bool {
             println!("Effective action: {:?}", action);
         }
     } else {
-        println!("Effective action: {:?} (IP bypass depends on resolved address)", action);
+        println!(
+            "Effective action: {:?} (IP bypass depends on resolved address)",
+            action
+        );
     }
     false
 }
@@ -653,12 +672,10 @@ fn doctor_proxy(
             }
             Err(error) => {
                 let (failure_type, detail) = classify_doctor_error(&error, "target");
-                node.authentication = DoctorStage::failed(
-                    handshake_started.elapsed(),
-                    failure_type,
-                    &detail,
-                );
-                node.target = DoctorStage::failed(handshake_started.elapsed(), failure_type, &detail);
+                node.authentication =
+                    DoctorStage::failed(handshake_started.elapsed(), failure_type, &detail);
+                node.target =
+                    DoctorStage::failed(handshake_started.elapsed(), failure_type, &detail);
                 return node;
             }
         }
@@ -684,21 +701,15 @@ fn doctor_proxy(
                         Ok(()) => node.udp_echo = DoctorStage::ok(echo_started.elapsed()),
                         Err(error) => {
                             let (failure_type, detail) = classify_doctor_error(&error, "udp_echo");
-                            node.udp_echo = DoctorStage::failed(
-                                echo_started.elapsed(),
-                                failure_type,
-                                &detail,
-                            )
+                            node.udp_echo =
+                                DoctorStage::failed(echo_started.elapsed(), failure_type, &detail)
                         }
                     }
                 }
                 Err(error) => {
                     let (failure_type, detail) = classify_doctor_error(&error, "udp_associate");
-                    node.udp_associate = DoctorStage::failed(
-                        udp_started.elapsed(),
-                        failure_type,
-                        &detail,
-                    )
+                    node.udp_associate =
+                        DoctorStage::failed(udp_started.elapsed(), failure_type, &detail)
                 }
             }
         }
@@ -1068,7 +1079,10 @@ fn apply_profile(args: &mut Args, path: &PathBuf) -> Result<(), String> {
             "cwd" => profile.cwd = Some(resolve_path(value)),
             "config" => profile.config = Some(resolve_path(value)),
             "group" => profile.group = Some(value.to_string()),
-            key if key.strip_prefix("env.").is_some_and(|name| !name.is_empty()) => {
+            key if key
+                .strip_prefix("env.")
+                .is_some_and(|name| !name.is_empty()) =>
+            {
                 profile.env.push((key[4..].to_string(), value.to_string()));
             }
             _ => return Err(format!("unknown key {key:?} on line {}", line_number + 1)),
@@ -1080,7 +1094,9 @@ fn apply_profile(args: &mut Args, path: &PathBuf) -> Result<(), String> {
     if !args.command.is_empty() {
         return Err("a profile supplies the command; do not append a command".to_string());
     }
-    args.command = std::iter::once(profile.command).chain(profile.args).collect();
+    args.command = std::iter::once(profile.command)
+        .chain(profile.args)
+        .collect();
     if args.config.is_none() {
         args.config = profile.config;
     }
@@ -1107,21 +1123,25 @@ fn run_events(args: &Args) -> bool {
     loop {
         let mut file = match std::fs::File::open(&path) {
             Ok(file) => file,
-            Err(error)
-                if args.events_follow && error.kind() == std::io::ErrorKind::NotFound =>
-            {
+            Err(error) if args.events_follow && error.kind() == std::io::ErrorKind::NotFound => {
                 std::thread::sleep(Duration::from_millis(200));
                 continue;
             }
             Err(error) => {
-                eprintln!("proxychains: cannot read connection log {}: {error}", path.display());
+                eprintln!(
+                    "proxychains: cannot read connection log {}: {error}",
+                    path.display()
+                );
                 return true;
             }
         };
         let file_len = match file.metadata() {
             Ok(metadata) => metadata.len(),
             Err(error) => {
-                eprintln!("proxychains: cannot stat connection log {}: {error}", path.display());
+                eprintln!(
+                    "proxychains: cannot stat connection log {}: {error}",
+                    path.display()
+                );
                 return true;
             }
         };
@@ -1539,7 +1559,10 @@ mod tests {
         server.join().unwrap();
         assert!(!node.ok);
         assert!(!node.authentication.ok);
-        assert_eq!(node.authentication.failure_type.as_deref(), Some("authentication"));
+        assert_eq!(
+            node.authentication.failure_type.as_deref(),
+            Some("authentication")
+        );
         assert!(node.target.skipped);
     }
 
@@ -1561,14 +1584,22 @@ mod tests {
 
     #[test]
     fn profile_loads_command_context_without_shell_expansion() {
-        let path = std::env::temp_dir().join(format!("proxychains-profile-{}.conf", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("proxychains-profile-{}.conf", std::process::id()));
         std::fs::write(&path, "command = cargo\nargs = test --locked\ncwd = project\nconfig = config/proxychains.conf\ngroup = work\nenv.RUST_LOG = info\n").unwrap();
-        let mut args = Args::try_parse_from(["proxychains4", "--profile", path.to_str().unwrap()]).unwrap();
+        let mut args =
+            Args::try_parse_from(["proxychains4", "--profile", path.to_str().unwrap()]).unwrap();
         apply_profile(&mut args, &path).unwrap();
         assert_eq!(args.command, vec!["cargo", "test", "--locked"]);
         assert_eq!(args.group.as_deref(), Some("work"));
-        assert_eq!(args.launch_cwd, Some(path.parent().unwrap().join("project")));
-        assert_eq!(args.config, Some(path.parent().unwrap().join("config/proxychains.conf")));
+        assert_eq!(
+            args.launch_cwd,
+            Some(path.parent().unwrap().join("project"))
+        );
+        assert_eq!(
+            args.config,
+            Some(path.parent().unwrap().join("config/proxychains.conf"))
+        );
         assert_eq!(args.launch_env, vec![("RUST_LOG".into(), "info".into())]);
         let _ = std::fs::remove_file(path);
     }

@@ -8,14 +8,23 @@
 thread_local! { static INTERNAL_NETWORK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
 pub(crate) struct InternalNetwork;
 impl InternalNetwork {
-    pub(crate) fn enter() -> Self { INTERNAL_NETWORK.with(|n| n.set(n.get()+1)); Self }
+    pub(crate) fn enter() -> Self {
+        INTERNAL_NETWORK.with(|n| n.set(n.get() + 1));
+        Self
+    }
 }
-impl Drop for InternalNetwork { fn drop(&mut self) { INTERNAL_NETWORK.with(|n| n.set(n.get()-1)); } }
+impl Drop for InternalNetwork {
+    fn drop(&mut self) {
+        INTERNAL_NETWORK.with(|n| n.set(n.get() - 1));
+    }
+}
 // libc may call our close/read hooks before dyld has initialized Rust TLS.
 // Keep the TLS access behind the caller's configuration-ready check even under
 // LTO: inlining allowed LLVM to hoist the TLS bootstrap ahead of that check.
 #[inline(never)]
-pub(crate) fn is_internal_network() -> bool { INTERNAL_NETWORK.with(|n| n.get()!=0) }
+pub(crate) fn is_internal_network() -> bool {
+    INTERNAL_NETWORK.with(|n| n.get() != 0)
+}
 
 #[cfg(unix)]
 mod socket;
@@ -41,9 +50,5 @@ pub use socket_windows::*;
 
 #[cfg(windows)]
 pub use timeout_windows::{
-    read_bytes_timeout,
-    write_bytes_timeout,
-    connect_with_timeout,
-    is_connected,
-    set_socket_timeout,
+    connect_with_timeout, is_connected, read_bytes_timeout, set_socket_timeout, write_bytes_timeout,
 };

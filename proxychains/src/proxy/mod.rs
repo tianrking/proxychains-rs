@@ -99,7 +99,7 @@ pub fn tunnel_through_proxy<T: Read + Write>(
     target_port: u16,
     timeout: Duration,
 ) -> Result<()> {
-        match proxy.proxy_type {
+    match proxy.proxy_type {
         ProxyType::Socks5 => {
             // For SOCKS5, prefer domain if available
             let target_addr = if let Some(domain) = target.domain() {
@@ -160,7 +160,10 @@ pub fn tunnel_through_tcp_proxy(
         fn remaining(&self) -> std::io::Result<Duration> {
             let remaining = self.timeout.saturating_sub(self.start.elapsed());
             if remaining.is_zero() {
-                Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "proxy handshake deadline exceeded"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "proxy handshake deadline exceeded",
+                ))
             } else {
                 Ok(remaining)
             }
@@ -177,7 +180,9 @@ pub fn tunnel_through_tcp_proxy(
             self.stream.set_write_timeout(Some(self.remaining()?))?;
             self.stream.write(buf)
         }
-        fn flush(&mut self) -> std::io::Result<()> { self.stream.flush() }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.stream.flush()
+        }
     }
     impl Drop for DeadlineStream<'_> {
         fn drop(&mut self) {
@@ -188,7 +193,11 @@ pub fn tunnel_through_tcp_proxy(
     let read = stream.read_timeout()?;
     let write = stream.write_timeout()?;
     let mut bounded = DeadlineStream {
-        stream, start: std::time::Instant::now(), timeout, read, write,
+        stream,
+        start: std::time::Instant::now(),
+        timeout,
+        read,
+        write,
     };
     tunnel_through_proxy(&mut bounded, proxy, target, target_port, timeout)
 }
@@ -217,7 +226,13 @@ pub fn establish_proxy_chain(
         let next = TargetAddress::from_domain(pair[1].host.clone());
         tunnel_through_tcp_proxy(&mut stream, &pair[0], &next, pair[1].port, read_timeout)?;
     }
-    tunnel_through_tcp_proxy(&mut stream, proxies.last().unwrap(), target, target_port, read_timeout)?;
+    tunnel_through_tcp_proxy(
+        &mut stream,
+        proxies.last().unwrap(),
+        target,
+        target_port,
+        read_timeout,
+    )?;
     stream.set_read_timeout(None)?;
     stream.set_write_timeout(None)?;
     Ok(stream)
@@ -238,7 +253,8 @@ mod tests {
         assert!(domain.ip().is_none());
         assert!(domain.domain().is_some());
 
-        let both = TargetAddress::from_both(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), "example.com");
+        let both =
+            TargetAddress::from_both(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), "example.com");
         assert!(both.ip().is_some());
         assert!(both.domain().is_some());
     }

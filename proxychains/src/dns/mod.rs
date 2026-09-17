@@ -11,5 +11,5 @@ mod resolver;
 
 // Re-export specific items to avoid ambiguity
 pub use cache::{DnsCache, DnsEntry};
-pub use hosts::{parse_hosts_file, lookup_in_hosts};
-pub use resolver::{DnsResolver, is_fake_ip, get_hostname_from_ip, resolve_to_fake_ip};
+pub use hosts::{lookup_in_hosts, parse_hosts_file};
+pub use resolver::{get_hostname_from_ip, is_fake_ip, resolve_to_fake_ip, DnsResolver};

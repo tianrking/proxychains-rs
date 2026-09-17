@@ -161,9 +161,21 @@ mod tests {
 
     fn create_test_proxies() -> Vec<ProxyData> {
         vec![
-            ProxyData::new(Ipv4Addr::new(192, 168, 1, 1), 1080, crate::config::ProxyType::Socks5),
-            ProxyData::new(Ipv4Addr::new(192, 168, 1, 2), 1080, crate::config::ProxyType::Socks5),
-            ProxyData::new(Ipv4Addr::new(192, 168, 1, 3), 1080, crate::config::ProxyType::Socks5),
+            ProxyData::new(
+                Ipv4Addr::new(192, 168, 1, 1),
+                1080,
+                crate::config::ProxyType::Socks5,
+            ),
+            ProxyData::new(
+                Ipv4Addr::new(192, 168, 1, 2),
+                1080,
+                crate::config::ProxyType::Socks5,
+            ),
+            ProxyData::new(
+                Ipv4Addr::new(192, 168, 1, 3),
+                1080,
+                crate::config::ProxyType::Socks5,
+            ),
         ]
     }
 

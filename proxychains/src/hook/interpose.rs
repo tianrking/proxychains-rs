@@ -23,9 +23,17 @@ pub fn load_symbol<T>(name: &str) -> Result<T> {
         // and its locks are safe to enter from read/write/close replacements.
         extern "C" {
             fn gethostbyname(name: *const c_char) -> *mut libc::hostent;
-            fn gethostbyaddr(addr: *const c_void, len: libc::socklen_t, kind: c_int) -> *mut libc::hostent;
+            fn gethostbyaddr(
+                addr: *const c_void,
+                len: libc::socklen_t,
+                kind: c_int,
+            ) -> *mut libc::hostent;
         }
-        macro_rules! pointer { ($name:ident) => { libc::$name as *const () as *mut c_void }; }
+        macro_rules! pointer {
+            ($name:ident) => {
+                libc::$name as *const () as *mut c_void
+            };
+        }
         let symbol = match name {
             "connect" => pointer!(connect),
             "getaddrinfo" => pointer!(getaddrinfo),
@@ -53,17 +61,13 @@ pub fn load_symbol<T>(name: &str) -> Result<T> {
             return Ok(unsafe { std::mem::transmute_copy::<*mut c_void, T>(&symbol) });
         }
     }
-    let cname = CString::new(name).map_err(|_| {
-        Error::Config(format!("Invalid symbol name: {}", name))
-    })?;
+    let cname =
+        CString::new(name).map_err(|_| Error::Config(format!("Invalid symbol name: {}", name)))?;
 
     let sym = unsafe { dlsym(RTLD_NEXT, cname.as_ptr()) };
 
     if sym.is_null() {
-        return Err(Error::Config(format!(
-            "Failed to load symbol: {}",
-            name
-        )));
+        return Err(Error::Config(format!("Failed to load symbol: {}", name)));
     }
 
     Ok(unsafe { std::mem::transmute_copy::<*mut c_void, T>(&sym) })
@@ -71,12 +75,31 @@ pub fn load_symbol<T>(name: &str) -> Result<T> {
 
 /// Store for original function pointers
 pub struct OriginalFunctions {
-    pub connect: Option<unsafe extern "C" fn(c_int, *const libc::sockaddr, libc::socklen_t) -> c_int>,
-    pub getaddrinfo: Option<unsafe extern "C" fn(*const c_char, *const c_char, *const libc::addrinfo, *mut *mut libc::addrinfo) -> c_int>,
+    pub connect:
+        Option<unsafe extern "C" fn(c_int, *const libc::sockaddr, libc::socklen_t) -> c_int>,
+    pub getaddrinfo: Option<
+        unsafe extern "C" fn(
+            *const c_char,
+            *const c_char,
+            *const libc::addrinfo,
+            *mut *mut libc::addrinfo,
+        ) -> c_int,
+    >,
     pub freeaddrinfo: Option<unsafe extern "C" fn(*mut libc::addrinfo)>,
     pub gethostbyname: Option<unsafe extern "C" fn(*const c_char) -> *mut libc::hostent>,
-    pub getnameinfo: Option<unsafe extern "C" fn(*const libc::sockaddr, libc::socklen_t, *mut c_char, libc::socklen_t, *mut c_char, libc::socklen_t, c_int) -> c_int>,
-    pub gethostbyaddr: Option<unsafe extern "C" fn(*const c_void, libc::socklen_t, c_int) -> *mut libc::hostent>,
+    pub getnameinfo: Option<
+        unsafe extern "C" fn(
+            *const libc::sockaddr,
+            libc::socklen_t,
+            *mut c_char,
+            libc::socklen_t,
+            *mut c_char,
+            libc::socklen_t,
+            c_int,
+        ) -> c_int,
+    >,
+    pub gethostbyaddr:
+        Option<unsafe extern "C" fn(*const c_void, libc::socklen_t, c_int) -> *mut libc::hostent>,
 }
 
 impl OriginalFunctions {
@@ -132,7 +155,9 @@ pub fn init_original_functions() -> Result<()> {
 /// # Safety
 /// This function should only be called after initialization
 pub unsafe fn get_original_functions() -> &'static OriginalFunctions {
-    ORIGINAL_FUNCS.get().expect("Original functions not initialized")
+    ORIGINAL_FUNCS
+        .get()
+        .expect("Original functions not initialized")
 }
 
 /// Call the original connect function

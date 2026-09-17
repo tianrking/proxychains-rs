@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use proxychains::config::{ProxyData, ProxyType};
 use proxychains::proxy::{
-    http_connect, socks5_connect, establish_proxy_chain, TargetAddr, TargetAddress,
+    establish_proxy_chain, http_connect, socks5_connect, TargetAddr, TargetAddress,
 };
 
 fn proxy_from_env(var: &str, proxy_type: ProxyType) -> Option<ProxyData> {

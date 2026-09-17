@@ -165,7 +165,10 @@ mod tests {
         assert_eq!(ip.octets()[0], 198);
         let new = DnsResolver::new(true, 224);
         assert_eq!(new.get_hostname(&ip).as_deref(), Some("old-subnet.invalid"));
-        assert_eq!(resolve_to_fake_ip("other.invalid", 198).unwrap().octets()[0], 198);
+        assert_eq!(
+            resolve_to_fake_ip("other.invalid", 198).unwrap().octets()[0],
+            198
+        );
     }
 
     #[test]

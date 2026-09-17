@@ -107,7 +107,7 @@ impl<'a> Socks4Connector<'a> {
                 request.extend_from_slice(user.as_bytes());
             }
             request.push(0); // Null terminator for user ID
-            // Null-terminated domain name
+                             // Null-terminated domain name
             request.extend_from_slice(domain.as_bytes());
             request.push(0); // Null terminator for domain
         } else {

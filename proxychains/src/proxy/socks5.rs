@@ -83,14 +83,22 @@ impl ReplyCode {
     fn to_error(&self) -> Error {
         match self {
             ReplyCode::Succeeded => Error::Protocol("Unexpected success".to_string()),
-            ReplyCode::GeneralFailure => Error::ProxyConnection("General SOCKS server failure".to_string()),
+            ReplyCode::GeneralFailure => {
+                Error::ProxyConnection("General SOCKS server failure".to_string())
+            }
             ReplyCode::ConnectionNotAllowed => Error::Blocked,
-            ReplyCode::NetworkUnreachable => Error::ProxyConnection("Network unreachable".to_string()),
+            ReplyCode::NetworkUnreachable => {
+                Error::ProxyConnection("Network unreachable".to_string())
+            }
             ReplyCode::HostUnreachable => Error::ProxyConnection("Host unreachable".to_string()),
-            ReplyCode::ConnectionRefused => Error::ProxyConnection("Connection refused".to_string()),
+            ReplyCode::ConnectionRefused => {
+                Error::ProxyConnection("Connection refused".to_string())
+            }
             ReplyCode::TtlExpired => Error::ProxyConnection("TTL expired".to_string()),
             ReplyCode::CommandNotSupported => Error::Protocol("Command not supported".to_string()),
-            ReplyCode::AddressTypeNotSupported => Error::Protocol("Address type not supported".to_string()),
+            ReplyCode::AddressTypeNotSupported => {
+                Error::Protocol("Address type not supported".to_string())
+            }
         }
     }
 }
@@ -163,7 +171,9 @@ impl<'a> Socks5Connector<'a> {
     /// Negotiate authentication method
     pub(crate) fn negotiate_auth<T: Read + Write>(&self, stream: &mut T) -> Result<AuthMethod> {
         if self.proxy.user.is_some() != self.proxy.pass.is_some() {
-            return Err(Error::AuthFailed("Both username and password are required".into()));
+            return Err(Error::AuthFailed(
+                "Both username and password are required".into(),
+            ));
         }
         // Build greeting message
         let mut greeting = vec![SOCKS5_VERSION];
@@ -225,7 +235,9 @@ impl<'a> Socks5Connector<'a> {
 
         // Validate lengths
         if user.is_empty() || pass.is_empty() || user.len() > 255 || pass.len() > 255 {
-            return Err(Error::AuthFailed("Username or password too long".to_string()));
+            return Err(Error::AuthFailed(
+                "Username or password too long".to_string(),
+            ));
         }
 
         // Build auth request: [version][ulen][username][plen][password]
@@ -264,18 +276,16 @@ impl<'a> Socks5Connector<'a> {
 
         // Add address
         match target_addr {
-            TargetAddr::Ip(ip) => {
-                match ip {
-                    IpAddr::V4(v4) => {
-                        request.push(AddressType::Ipv4 as u8);
-                        request.extend_from_slice(&v4.octets());
-                    }
-                    IpAddr::V6(v6) => {
-                        request.push(AddressType::Ipv6 as u8);
-                        request.extend_from_slice(&v6.octets());
-                    }
+            TargetAddr::Ip(ip) => match ip {
+                IpAddr::V4(v4) => {
+                    request.push(AddressType::Ipv4 as u8);
+                    request.extend_from_slice(&v4.octets());
                 }
-            }
+                IpAddr::V6(v6) => {
+                    request.push(AddressType::Ipv6 as u8);
+                    request.extend_from_slice(&v6.octets());
+                }
+            },
             TargetAddr::Domain(domain) => {
                 if domain.len() > 255 {
                     return Err(Error::Protocol("Domain name too long".to_string()));

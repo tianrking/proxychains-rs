@@ -7,7 +7,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::{ChainType, Config, ProxyData, ProxyState};
 use crate::error::{Error, Result};
-use crate::proxy::{connect_to_proxy, tunnel_through_tcp_proxy as tunnel_through_proxy, TargetAddress};
+use crate::proxy::{
+    connect_to_proxy, tunnel_through_tcp_proxy as tunnel_through_proxy, TargetAddress,
+};
 
 use super::health;
 use super::selector::{count_alive, mark_blocked, mark_down, ProxySelector};
@@ -88,13 +90,18 @@ impl ChainManager {
             ChainType::Strict => self.strict_chain(&mut proxy_states, &target, target_port),
             ChainType::Dynamic => self.dynamic_chain(&mut proxy_states, &target, target_port),
             ChainType::Random => self.random_chain(&mut proxy_states, &target, target_port),
-            ChainType::LoadBalance => self.load_balance_chain(&mut proxy_states, &target, target_port),
+            ChainType::LoadBalance => {
+                self.load_balance_chain(&mut proxy_states, &target, target_port)
+            }
             ChainType::Failover => self.failover_chain(&mut proxy_states, &target, target_port),
         }?;
         // Handshake deadlines must not become application stream deadlines.
         stream.set_read_timeout(None)?;
         stream.set_write_timeout(None)?;
-        for proxy in proxy_states.iter().filter(|proxy| proxy.state == ProxyState::Play) {
+        for proxy in proxy_states
+            .iter()
+            .filter(|proxy| proxy.state == ProxyState::Play)
+        {
             health::mark_success(proxy, health::HealthProtocol::Tcp);
         }
         Ok(stream)
@@ -140,10 +147,7 @@ impl ChainManager {
             let next_proxy = &proxies[i];
             let next_target = TargetAddress::from_domain(next_proxy.host.clone());
 
-            info!(
-                "Chaining to proxy {}:{}",
-                next_proxy.host, next_proxy.port
-            );
+            info!("Chaining to proxy {}:{}", next_proxy.host, next_proxy.port);
 
             if let Err(e) = tunnel_through_proxy(
                 &mut stream,
@@ -219,14 +223,15 @@ impl ChainManager {
             };
 
             // Connect to first proxy
-            let mut stream = match connect_to_proxy(&proxies[first_idx], self.config.tcp_connect_timeout) {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!("Failed to connect to proxy {}: {}", first_idx, e);
-                    self.mark_down(&mut proxies[first_idx]);
-                    continue 'again;
-                }
-            };
+            let mut stream =
+                match connect_to_proxy(&proxies[first_idx], self.config.tcp_connect_timeout) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!("Failed to connect to proxy {}: {}", first_idx, e);
+                        self.mark_down(&mut proxies[first_idx]);
+                        continue 'again;
+                    }
+                };
 
             stream.set_read_timeout(Some(self.config.tcp_read_timeout))?;
             stream.set_write_timeout(Some(self.config.tcp_read_timeout))?;
@@ -301,10 +306,7 @@ impl ChainManager {
         }
 
         if alive_count < max_chain {
-            warn!(
-                "Not enough alive proxies ({} < {})",
-                alive_count, max_chain
-            );
+            warn!("Not enough alive proxies ({} < {})", alive_count, max_chain);
             return Err(Error::ChainDown);
         }
 
@@ -322,14 +324,15 @@ impl ChainManager {
 
             // Connect to first selected proxy
             let first_idx = selected_indices[0];
-            let mut stream = match connect_to_proxy(&proxies[first_idx], self.config.tcp_connect_timeout) {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!("Failed to connect to random proxy {}: {}", first_idx, e);
-                    self.mark_down(&mut proxies[first_idx]);
-                    continue 'again;
-                }
-            };
+            let mut stream =
+                match connect_to_proxy(&proxies[first_idx], self.config.tcp_connect_timeout) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!("Failed to connect to random proxy {}: {}", first_idx, e);
+                        self.mark_down(&mut proxies[first_idx]);
+                        continue 'again;
+                    }
+                };
 
             stream.set_read_timeout(Some(self.config.tcp_read_timeout))?;
             stream.set_write_timeout(Some(self.config.tcp_read_timeout))?;
@@ -394,10 +397,7 @@ impl ChainManager {
         };
 
         let proxy = &proxies[selected_idx];
-        debug!(
-            "Load balance: selected proxy {}:{}",
-            proxy.host, proxy.port
-        );
+        debug!("Load balance: selected proxy {}:{}", proxy.host, proxy.port);
 
         // Connect to proxy
         let mut stream = connect_to_proxy(proxy, self.config.tcp_connect_timeout)?;
@@ -520,9 +520,11 @@ mod tests {
 
     fn create_test_config() -> Config {
         let mut config = Config::default();
-        config.proxies = vec![
-            ProxyData::new(Ipv4Addr::new(192, 168, 1, 1), 1080, crate::config::ProxyType::Socks5),
-        ];
+        config.proxies = vec![ProxyData::new(
+            Ipv4Addr::new(192, 168, 1, 1),
+            1080,
+            crate::config::ProxyType::Socks5,
+        )];
         config
     }
 
