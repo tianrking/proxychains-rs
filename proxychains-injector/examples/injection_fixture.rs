@@ -149,10 +149,14 @@ fn run_udp_rio_probe() {
         u32,
         *mut std::ffi::c_void,
     ) -> i32;
-    type Receive = unsafe extern "system" fn(
+    type ReceiveEx = unsafe extern "system" fn(
         usize,
         *const RioBuf,
         u32,
+        *const RioBuf,
+        *const RioBuf,
+        *const RioBuf,
+        *const RioBuf,
         u32,
         *mut std::ffi::c_void,
     ) -> i32;
@@ -177,7 +181,7 @@ fn run_udp_rio_probe() {
     let register: Register = unsafe { std::mem::transmute(table.functions[10]) };
     let deregister: Deregister = unsafe { std::mem::transmute(table.functions[8]) };
     let send_ex: SendEx = unsafe { std::mem::transmute(table.functions[3]) };
-    let receive: Receive = unsafe { std::mem::transmute(table.functions[0]) };
+    let receive_ex: ReceiveEx = unsafe { std::mem::transmute(table.functions[1]) };
     let dequeue: Dequeue = unsafe { std::mem::transmute(table.functions[7]) };
     let cq = unsafe { create_cq(8, std::ptr::null_mut()) };
     assert_ne!(cq, 0, "RIO completion queue creation");
@@ -241,7 +245,22 @@ fn run_udp_rio_probe() {
     let mut completion = RioResult::default();
     assert_eq!(unsafe { dequeue(cq, &mut completion, 1) }, 1);
     payload.fill(0);
-    assert_eq!(unsafe { receive(rq, &descriptor, 1, 0, std::ptr::null_mut()) }, 1);
+    assert_eq!(
+        unsafe {
+            receive_ex(
+                rq,
+                &descriptor,
+                1,
+                std::ptr::null(),
+                &remote_descriptor,
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+            )
+        },
+        1
+    );
     completion = RioResult::default();
     assert_eq!(unsafe { dequeue(cq, &mut completion, 1) }, 1);
     assert_eq!(completion.bytes_transferred, payload.len() as u32);

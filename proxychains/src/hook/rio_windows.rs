@@ -334,18 +334,43 @@ pub unsafe extern "system" fn receive(
     flags: u32,
     context: *mut c_void,
 ) -> i32 {
+    receive_with_address(queue, buffers, count, flags, context, None)
+}
+
+unsafe fn receive_with_address(
+    queue: RequestQueue,
+    buffers: *const RioBuf,
+    count: u32,
+    flags: u32,
+    context: *mut c_void,
+    remote: Option<*const RioBuf>,
+) -> i32 {
     if queue.is_null() {
         return 0;
     }
     let request = &*queue;
     let result = match udp::receive(request.socket, flags as i32) {
         Some(Ok(received)) => match scatter(buffers, count, &received.payload) {
-            Some(bytes) => RioResult {
-                status: 0,
-                bytes_transferred: bytes,
-                socket_context: request.context,
-                request_context: context as usize as u64,
-            },
+            Some(bytes) => {
+                let address_ok = remote.is_none_or(|remote| {
+                    let address = socket2::SockAddr::from(received.source);
+                    scatter(
+                        remote,
+                        1,
+                        std::slice::from_raw_parts(
+                            address.as_ptr().cast::<u8>(),
+                            address.len() as usize,
+                        ),
+                    )
+                    .is_some()
+                });
+                RioResult {
+                    status: if address_ok { 0 } else { 10014 },
+                    bytes_transferred: if address_ok { bytes } else { 0 },
+                    socket_context: request.context,
+                    request_context: context as usize as u64,
+                }
+            }
             None => RioResult {
                 status: 10014,
                 bytes_transferred: 0,
@@ -381,7 +406,14 @@ pub unsafe extern "system" fn receive_ex(
     flags: u32,
     context: *mut c_void,
 ) -> i32 {
-    receive(queue, buffers, count, flags, context)
+    receive_with_address(
+        queue,
+        buffers,
+        count,
+        flags,
+        context,
+        (!_remote.is_null()).then_some(_remote),
+    )
 }
 
 pub unsafe extern "system" fn dequeue(
