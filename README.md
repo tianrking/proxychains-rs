@@ -149,7 +149,9 @@ connection, and optional SOCKS5 UDP ASSOCIATE plus an actual UDP echo. Its
 JSON stages classify actionable failures as `authentication`, `dns`,
 `timeout`, `refused`, `reset`, `proxy_rejected`, or `target` where the
 protocol cannot provide a more specific cause. A successful UDP ASSOCIATE
-alone is not reported as working UDP forwarding.
+alone is not reported as working UDP forwarding. The same classification is
+used for UDP association and echo failures, with `udp_associate` or
+`udp_echo` as the fallback stage.
 
 Set `--log-file` when launching a command to record intercepted TCP and UDP
 connection outcomes as JSONL. The record contains process name, PID, optional

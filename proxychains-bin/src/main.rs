@@ -683,19 +683,21 @@ fn doctor_proxy(
                     match send.and_then(|_| association.recv_from().map(|_| ())) {
                         Ok(()) => node.udp_echo = DoctorStage::ok(echo_started.elapsed()),
                         Err(error) => {
+                            let (failure_type, detail) = classify_doctor_error(&error, "udp_echo");
                             node.udp_echo = DoctorStage::failed(
                                 echo_started.elapsed(),
-                                "udp_echo",
-                                &error.to_string(),
+                                failure_type,
+                                &detail,
                             )
                         }
                     }
                 }
                 Err(error) => {
+                    let (failure_type, detail) = classify_doctor_error(&error, "udp_associate");
                     node.udp_associate = DoctorStage::failed(
                         udp_started.elapsed(),
-                        "udp_associate",
-                        &error.to_string(),
+                        failure_type,
+                        &detail,
                     )
                 }
             }
