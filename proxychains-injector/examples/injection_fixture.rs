@@ -223,6 +223,28 @@ fn run_udp_rio_probe() {
         offset: 0,
         length: payload.len() as u32,
     };
+    let invalid_descriptor = RioBuf {
+        buffer_id: 1,
+        offset: 0,
+        length: payload.len() as u32,
+    };
+    assert_eq!(
+        unsafe {
+            send_ex(
+                rq,
+                &invalid_descriptor,
+                1,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+            )
+        },
+        0,
+        "RIO must reject an unregistered buffer id"
+    );
     let remote = socket2::SockAddr::from(
         "192.0.2.123:443"
             .parse::<std::net::SocketAddr>()
