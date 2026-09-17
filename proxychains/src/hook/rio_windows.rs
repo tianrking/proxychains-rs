@@ -6,10 +6,10 @@
 //! through the existing SOCKS5 UDP implementation.
 
 use super::udp;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use windows::Win32::Foundation::BOOL;
 
 pub type BufferId = *mut RioBuffer;
@@ -54,6 +54,12 @@ pub struct RioRequestQueue {
     receive: CompletionQueue,
     send: CompletionQueue,
     context: u64,
+}
+
+static REQUEST_QUEUES: OnceLock<Mutex<HashMap<usize, Vec<usize>>>> = OnceLock::new();
+
+fn request_queues() -> &'static Mutex<HashMap<usize, Vec<usize>>> {
+    REQUEST_QUEUES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[repr(C)]
@@ -148,12 +154,29 @@ pub unsafe extern "system" fn create_request_queue(
     if receive.is_null() || send.is_null() || socket == 0 {
         return ptr::null_mut();
     }
-    Box::into_raw(Box::new(RioRequestQueue {
+    let queue = Box::into_raw(Box::new(RioRequestQueue {
         socket,
         receive,
         send,
         context: context as usize as u64,
-    }))
+    }));
+    if let Ok(mut queues) = request_queues().lock() {
+        queues.entry(socket).or_default().push(queue as usize);
+    }
+    queue
+}
+
+/// Reclaim request queues when the owning Winsock socket is closed.
+pub unsafe fn forget_socket(socket: usize) {
+    let queues = request_queues()
+        .lock()
+        .ok()
+        .and_then(|mut queues| queues.remove(&socket));
+    if let Some(queues) = queues {
+        for queue in queues {
+            drop(Box::from_raw(queue as RequestQueue));
+        }
+    }
 }
 
 pub unsafe extern "system" fn notify(_queue: CompletionQueue) -> i32 {

@@ -234,6 +234,7 @@ unsafe extern "system" fn close(s: usize) -> i32 {
     let result = CLOSE.get().unwrap()(s);
     if result == 0 {
         udp::forget(s);
+        super::rio_windows::forget_socket(s);
         forget_iocp(s);
     }
     result
