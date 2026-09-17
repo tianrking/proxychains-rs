@@ -149,11 +149,6 @@ pub fn resolve_to_fake_ip(hostname: &str, subnet: u8) -> Result<Ipv4Addr> {
     DNS_CACHES[subnet as usize].get_or_create(hostname)
 }
 
-/// Parse hosts file and lookup hostname
-pub fn lookup_in_hosts(hostname: &str) -> Option<Ipv4Addr> {
-    hosts_lookup(hostname)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -8,10 +8,18 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   msrv:
     name: Minimum Rust 1.88
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88.0
@@ -20,6 +28,7 @@ jobs:
   test-and-build:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -38,8 +47,7 @@ jobs:
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting (advisory)
-        continue-on-error: true
+      - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Run clippy (Windows advisory)
@@ -47,6 +55,8 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets
 
       - name: Run tests
+        env:
+          RUST_BACKTRACE: 1
         run: cargo test --locked --workspace --all-targets
 
       - name: Build native injection fixtures

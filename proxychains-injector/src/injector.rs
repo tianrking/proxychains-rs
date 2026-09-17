@@ -5,6 +5,7 @@
 use std::path::Path;
 
 use thiserror::Error;
+#[cfg(windows)]
 use tracing::{debug, info, warn};
 
 /// Injection errors
@@ -75,6 +76,7 @@ fn enumerate_descendant_pids(root_pid: u32) -> Result<Vec<u32>> {
 
 pub type Result<T> = std::result::Result<T, InjectorError>;
 
+#[cfg(any(windows, test))]
 fn should_retry_tree_fallback(error: &InjectorError) -> bool {
     match error {
         InjectorError::ProcessCreationFailed(_) | InjectorError::WindowsApi(_) => true,

@@ -45,35 +45,43 @@ fn main() {
         )
     ) {
         #[cfg(windows)]
-        if args[1].starts_with("tcp-connectex-cancel") {
-            run_tcp_connectex_cancel(&args[2], args[1].ends_with("-iocp"));
-        } else {
-            run_tcp_connectex(&args[2], args[1] == "tcp-connectex-iocp");
+        {
+            if args[1].starts_with("tcp-connectex-cancel") {
+                run_tcp_connectex_cancel(&args[2], args[1].ends_with("-iocp"));
+            } else {
+                run_tcp_connectex(&args[2], args[1] == "tcp-connectex-iocp");
+            }
+            std::process::exit(23);
         }
         #[cfg(not(windows))]
         std::process::exit(24);
-        std::process::exit(23);
     }
     if args.get(1).map(String::as_str) == Some("dns-exa") {
         #[cfg(windows)]
-        run_dns_exa();
+        {
+            run_dns_exa();
+            std::process::exit(23);
+        }
         #[cfg(not(windows))]
         std::process::exit(24);
-        std::process::exit(23);
     }
     if args.get(1).map(String::as_str) == Some("dns-queryex") {
         #[cfg(windows)]
-        run_dns_queryex();
+        {
+            run_dns_queryex();
+            std::process::exit(23);
+        }
         #[cfg(not(windows))]
         std::process::exit(24);
-        std::process::exit(23);
     }
     if args.get(1).map(String::as_str) == Some("udp-rio") {
         #[cfg(windows)]
-        run_udp_rio_probe();
+        {
+            run_udp_rio_probe();
+            std::process::exit(23);
+        }
         #[cfg(not(windows))]
         std::process::exit(24);
-        std::process::exit(23);
     }
     if args.get(1).map(String::as_str) == Some("sleep") {
         std::thread::sleep(std::time::Duration::from_secs(60));

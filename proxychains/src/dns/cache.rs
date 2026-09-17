@@ -149,20 +149,6 @@ impl Default for DnsCache {
     }
 }
 
-/// Parse hosts file (platform-independent)
-/// Deprecated: Use crate::dns::hosts::parse_hosts_file instead
-#[deprecated(note = "Use crate::dns::parse_hosts_file instead")]
-pub fn parse_etc_hosts() -> HashMap<String, Ipv4Addr> {
-    crate::dns::parse_hosts_file()
-}
-
-/// Check if hostname is in hosts file (platform-independent)
-/// Deprecated: Use crate::dns::hosts::lookup_in_hosts instead
-#[deprecated(note = "Use crate::dns::lookup_in_hosts instead")]
-pub fn in_etc_hosts(hostname: &str) -> Option<Ipv4Addr> {
-    crate::dns::lookup_in_hosts(hostname)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

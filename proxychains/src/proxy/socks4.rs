@@ -16,7 +16,6 @@ const SOCKS4_VERSION: u8 = 0x04;
 #[derive(Debug, Clone, Copy)]
 enum Command {
     Connect = 0x01,
-    Bind = 0x02,
 }
 
 /// SOCKS4 reply codes

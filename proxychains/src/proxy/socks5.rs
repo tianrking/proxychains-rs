@@ -19,8 +19,6 @@ const SOCKS5_VERSION: u8 = 0x05;
 pub(crate) enum AuthMethod {
     /// No authentication required
     NoAuth = 0x00,
-    /// GSSAPI
-    GssApi = 0x01,
     /// Username/Password authentication
     UserPass = 0x02,
     /// No acceptable methods
@@ -32,8 +30,6 @@ pub(crate) enum AuthMethod {
 #[derive(Debug, Clone, Copy)]
 enum Command {
     Connect = 0x01,
-    Bind = 0x02,
-    UdpAssociate = 0x03,
 }
 
 /// SOCKS5 address types

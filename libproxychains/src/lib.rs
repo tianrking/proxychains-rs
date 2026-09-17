@@ -20,6 +20,7 @@ mod macos_interpose;
 mod udp_exports;
 
 /// Initialize the library (common code for all platforms)
+#[allow(dead_code)] // Native integration tests load the cdylib, not this test artifact.
 fn init_library() -> bool {
     // Initialize logging
     let log_level = if std::env::var("PROXYCHAINS_QUIET_MODE").is_ok() {
