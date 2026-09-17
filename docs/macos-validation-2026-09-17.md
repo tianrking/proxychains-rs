@@ -44,9 +44,16 @@ cargo test --locked -p proxychains-injector --test native_preload --test native_
 ```
 
 CI now includes optimized macOS injection tests, an explicit Rust 1.88 check,
-and non-advisory Unix Clippy errors. Existing lint warnings remain; this is not
-a `-D warnings` clean baseline. Formatting and Windows Clippy remain advisory.
-Remote CI has not been run for these local commits.
+required formatting, and non-advisory Unix Clippy errors. Existing lint warnings
+remain; this is not a `-D warnings` clean baseline. Windows Clippy remains
+advisory because it covers platform-specific Windows API surfaces.
+
+The [GitHub Actions run #35180402782](https://github.com/tianrking/proxychains-rs/actions/runs/35180402782)
+completed successfully for this series: Rust 1.88, Ubuntu, macOS and Windows.
+The Windows job executes native DLL injection, TCP routing, UDP/IOCP and
+cancellation fixtures; the macOS job executes debug and optimized injection,
+UDP and HTTP/3 fixtures. This proves those fixture scopes on hosted runners,
+not universal application compatibility.
 
 ## Remaining compatibility and performance work
 
