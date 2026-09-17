@@ -11,6 +11,9 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::{Mutex, OnceLock};
 use windows::Win32::Foundation::BOOL;
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::System::IO::{PostQueuedCompletionStatus, OVERLAPPED};
+use windows::Win32::System::Threading::SetEvent;
 
 pub type BufferId = *mut RioBuffer;
 pub type CompletionQueue = *mut RioCompletionQueue;
@@ -34,6 +37,7 @@ pub struct RioBuf {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct RioNotificationCompletion {
     pub kind: i32,
     pub payload: [usize; 3],
@@ -46,6 +50,7 @@ pub struct RioBuffer {
 
 pub struct RioCompletionQueue {
     results: Mutex<VecDeque<RioResult>>,
+    notification: Option<RioNotificationCompletion>,
     _capacity: u32,
 }
 
@@ -131,6 +136,11 @@ pub unsafe extern "system" fn create_completion_queue(
     }
     Box::into_raw(Box::new(RioCompletionQueue {
         results: Mutex::new(VecDeque::with_capacity(size.min(4096) as usize)),
+        notification: if _notification.is_null() {
+            None
+        } else {
+            Some(*_notification)
+        },
         _capacity: size,
     }))
 }
@@ -179,7 +189,33 @@ pub unsafe fn forget_socket(socket: usize) {
     }
 }
 
-pub unsafe extern "system" fn notify(_queue: CompletionQueue) -> i32 {
+unsafe fn signal(queue: &RioCompletionQueue) {
+    let Some(notification) = queue.notification else {
+        return;
+    };
+    match notification.kind {
+        1 => {
+            let _ = SetEvent(HANDLE(notification.payload[0] as isize));
+        }
+        2 => {
+            let _ = PostQueuedCompletionStatus(
+                HANDLE(notification.payload[0] as isize),
+                0,
+                notification.payload[1],
+                Some(notification.payload[2] as *mut OVERLAPPED),
+            );
+        }
+        _ => {}
+    }
+}
+
+pub unsafe extern "system" fn notify(queue: CompletionQueue) -> i32 {
+    if queue.is_null() {
+        return -1;
+    }
+    if (*queue).results.lock().is_ok_and(|results| !results.is_empty()) {
+        signal(&*queue);
+    }
     0
 }
 

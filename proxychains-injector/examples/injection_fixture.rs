@@ -90,6 +90,8 @@ fn run_udp_rio_probe() {
     use std::os::windows::io::AsRawSocket;
     use windows::core::GUID;
     use windows::Win32::Networking::WinSock::{WSAIoctl, SOCKET};
+    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
     const SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER: u32 = 0xC800_0024;
     let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("RIO probe socket");
@@ -126,6 +128,7 @@ fn run_udp_rio_probe() {
 
     type CreateCq = unsafe extern "system" fn(u32, *mut std::ffi::c_void) -> usize;
     type CloseCq = unsafe extern "system" fn(usize);
+    type Notify = unsafe extern "system" fn(usize) -> i32;
     type CreateRq = unsafe extern "system" fn(
         usize,
         u32,
@@ -168,6 +171,13 @@ fn run_udp_rio_probe() {
         length: u32,
     }
     #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct RioNotification {
+        kind: i32,
+        _padding: u32,
+        payload: [usize; 3],
+    }
+    #[repr(C)]
     #[derive(Default)]
     struct RioResult {
         status: i32,
@@ -177,13 +187,20 @@ fn run_udp_rio_probe() {
     }
     let create_cq: CreateCq = unsafe { std::mem::transmute(table.functions[5]) };
     let close_cq: CloseCq = unsafe { std::mem::transmute(table.functions[4]) };
+    let notify: Notify = unsafe { std::mem::transmute(table.functions[9]) };
     let create_rq: CreateRq = unsafe { std::mem::transmute(table.functions[6]) };
     let register: Register = unsafe { std::mem::transmute(table.functions[10]) };
     let deregister: Deregister = unsafe { std::mem::transmute(table.functions[8]) };
     let send_ex: SendEx = unsafe { std::mem::transmute(table.functions[3]) };
     let receive_ex: ReceiveEx = unsafe { std::mem::transmute(table.functions[1]) };
     let dequeue: Dequeue = unsafe { std::mem::transmute(table.functions[7]) };
-    let cq = unsafe { create_cq(8, std::ptr::null_mut()) };
+    let event = unsafe { CreateEventW(None, true, false, None).expect("RIO completion event") };
+    let mut notification = RioNotification {
+        kind: 1,
+        _padding: 0,
+        payload: [event.0 as usize, 1, 0],
+    };
+    let cq = unsafe { create_cq(8, (&mut notification as *mut RioNotification).cast()) };
     assert_ne!(cq, 0, "RIO completion queue creation");
     let rq = unsafe {
         create_rq(
@@ -242,6 +259,8 @@ fn run_udp_rio_probe() {
         },
         1
     );
+    assert_eq!(unsafe { notify(cq) }, 0);
+    assert_eq!(unsafe { WaitForSingleObject(event, 1000) }, WAIT_OBJECT_0);
     let mut completion = RioResult::default();
     assert_eq!(unsafe { dequeue(cq, &mut completion, 1) }, 1);
     payload.fill(0);
@@ -268,6 +287,7 @@ fn run_udp_rio_probe() {
         deregister(remote_id);
         deregister(buffer);
         close_cq(cq);
+        let _ = CloseHandle(event);
     }
 }
 
