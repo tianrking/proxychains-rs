@@ -458,9 +458,11 @@ impl ProxychainsInjector {
     /// Compatibility fallback for applications that cannot be created under a
     /// debugger (for example browser launchers with debugger-sensitive startup
     /// behavior). The root is still injected before resume; descendants are
-    /// discovered by process-table polling, so a short race window remains.
+    /// discovered by process-table polling, so a short race window remains;
+    /// the fallback scans every 25ms to keep that window bounded.
     #[cfg(windows)]
     fn spawn_inject_tree_polling_wait(&self, process_info: &ProcessInfo) -> Result<i32> {
+        const TREE_SCAN_INTERVAL_MS: u32 = 25;
         use std::collections::HashSet;
         use std::os::windows::ffi::OsStrExt;
         use windows::core::{PCWSTR, PWSTR};
@@ -535,7 +537,7 @@ impl ProxychainsInjector {
                         }
                     }
                 }
-                if WaitForSingleObject(process_handle, 150) == WAIT_OBJECT_0 {
+                if WaitForSingleObject(process_handle, TREE_SCAN_INTERVAL_MS) == WAIT_OBJECT_0 {
                     break;
                 }
             }
