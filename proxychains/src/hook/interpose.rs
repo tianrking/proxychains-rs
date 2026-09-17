@@ -109,18 +109,18 @@ impl Default for OriginalFunctions {
 }
 
 /// Global storage for original function pointers
-static mut ORIGINAL_FUNCS: Option<OriginalFunctions> = None;
+static ORIGINAL_FUNCS: std::sync::OnceLock<OriginalFunctions> = std::sync::OnceLock::new();
 
 /// Initialize original functions
 ///
 /// This should be called once during library initialization
 pub fn init_original_functions() -> Result<()> {
-    unsafe {
-        if ORIGINAL_FUNCS.is_none() {
-            let mut funcs = OriginalFunctions::new();
-            funcs.load_all()?;
-            ORIGINAL_FUNCS = Some(funcs);
-        }
+    if ORIGINAL_FUNCS.get().is_none() {
+        let mut funcs = OriginalFunctions::new();
+        funcs.load_all()?;
+        // Concurrent initializers may resolve the same immutable table. Only
+        // publish a fully initialized table; failed resolution remains retryable.
+        let _ = ORIGINAL_FUNCS.set(funcs);
     }
     Ok(())
 }
@@ -130,7 +130,7 @@ pub fn init_original_functions() -> Result<()> {
 /// # Safety
 /// This function should only be called after initialization
 pub unsafe fn get_original_functions() -> &'static OriginalFunctions {
-    ORIGINAL_FUNCS.as_ref().expect("Original functions not initialized")
+    ORIGINAL_FUNCS.get().expect("Original functions not initialized")
 }
 
 /// Call the original connect function
