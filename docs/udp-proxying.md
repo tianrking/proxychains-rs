@@ -80,8 +80,8 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
   proxy-backed extension table: registered buffers, request/completion queues,
   `RIOSend`/`RIOReceive`, and completion dequeue are routed through the existing
   SOCKS5 UDP data plane. RIO `RIOReceiveEx` source-address output and event
-  notifications are covered by the native fixture; control metadata and IOCP
-  notification behavior remain outside the certified surface. Synchronous and
+  notifications are covered by the native fixture; control metadata remains
+  outside the certified surface. Synchronous and
   asynchronous message extension functions are exposed through
   `SIO_GET_EXTENSION_FUNCTION_POINTER`. IOCP `WSASendTo`/`WSARecvFrom`
   completion is supported for sockets associated with a completion port, with
@@ -103,8 +103,8 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
   HTTP/3 GET and response through the SOCKS5 relay; browser QUIC and MsQuic
   remain uncertified. RIO queue and completion behavior is covered by a native
   Windows fixture, including a successful `RIOSendEx` datagram through a live
-  SOCKS5 relay. RIO receive-address/control metadata and provider-specific
-  notification behavior still need an application-level fixture.
+  SOCKS5 relay. RIO receive-address and control metadata, including
+  provider-specific control structures, still need an application-level fixture.
 
 On Windows, asynchronous `GetAddrInfoExA/W` calls retain the proxy-DNS fake
 name until completion. Callback mode forwards the original callback and
