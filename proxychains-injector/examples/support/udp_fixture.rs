@@ -49,6 +49,16 @@ pub fn run(mode: &str) {
         socket
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
+        #[cfg(target_os = "macos")]
+        let clone = unsafe {
+            use std::os::fd::{AsRawFd, FromRawFd};
+            let fd = libc::dup(socket.as_raw_fd());
+            assert!(fd >= 0);
+            // A failed replacement must leave the destination session intact.
+            assert_eq!(libc::dup2(-1, fd), -1);
+            UdpSocket::from_raw_fd(fd)
+        };
+        #[cfg(not(target_os = "macos"))]
         let clone = socket.try_clone().unwrap();
         socket.send_to(b"dup-original", destination).unwrap();
         clone.send_to(b"dup-clone", destination).unwrap();

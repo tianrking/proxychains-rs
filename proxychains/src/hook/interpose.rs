@@ -40,6 +40,8 @@ pub fn load_symbol<T>(name: &str) -> Result<T> {
             "read" => pointer!(read),
             "write" => pointer!(write),
             "close" => pointer!(close),
+            "dup" => pointer!(dup),
+            "dup2" => pointer!(dup2),
             "getpeername" => pointer!(getpeername),
             "sendmsg" => pointer!(sendmsg),
             "recvmsg" => pointer!(recvmsg),

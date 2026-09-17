@@ -37,7 +37,9 @@ fn native_udp_routing_and_lifecycle() {
         "udp-v6relay",
     ];
     #[cfg(target_os = "linux")]
-    modes.extend(["udp-dup", "udp-recvmmsg-timeout"]);
+    modes.push("udp-recvmmsg-timeout");
+    #[cfg(unix)]
+    modes.push("udp-dup");
     for mode in modes {
         let ipv6 = mode == "udp-v6relay";
         let host = if ipv6 { "::1" } else { "127.0.0.1" };

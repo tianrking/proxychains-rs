@@ -1,10 +1,9 @@
 //! libc datagram wrappers. All fallbacks resolve RTLD_NEXT, never our own exports.
 use super::udp;
 use libc::{c_int, c_void, size_t, sockaddr, socklen_t, ssize_t};
-use std::{
-    io, ptr,
-    time::{Duration, Instant},
-};
+use std::{io, ptr};
+#[cfg(target_os = "linux")]
+use std::time::{Duration, Instant};
 
 macro_rules! original {
     ($name:literal, ($($arg:ty),*) -> $ret:ty) => {{
@@ -171,7 +170,9 @@ pub unsafe fn close(s: c_int) -> c_int {
 }
 
 fn copy_session(oldfd: c_int, newfd: c_int) {
-    udp::duplicate_session(oldfd, newfd);
+    if unsafe { udp::enabled(oldfd) } {
+        udp::duplicate_session(oldfd, newfd);
+    }
 }
 
 pub unsafe fn dup(oldfd: c_int) -> c_int {
@@ -183,11 +184,9 @@ pub unsafe fn dup(oldfd: c_int) -> c_int {
 }
 
 pub unsafe fn dup2(oldfd: c_int, newfd: c_int) -> c_int {
-    if oldfd != newfd {
-        udp::remove_session(newfd);
-    }
     let result = original!("dup2", (c_int, c_int) -> c_int)(oldfd, newfd);
     if result >= 0 && oldfd != newfd {
+        udp::remove_session(newfd);
         copy_session(oldfd, result);
     }
     result
@@ -195,11 +194,9 @@ pub unsafe fn dup2(oldfd: c_int, newfd: c_int) -> c_int {
 
 #[cfg(target_os = "linux")]
 pub unsafe fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int {
-    if oldfd != newfd {
-        udp::remove_session(newfd);
-    }
     let result = original!("dup3", (c_int, c_int, c_int) -> c_int)(oldfd, newfd, flags);
     if result >= 0 && oldfd != newfd {
+        udp::remove_session(newfd);
         copy_session(oldfd, result);
     }
     result
