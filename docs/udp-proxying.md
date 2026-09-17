@@ -79,7 +79,8 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
   the same applies to `WSASendTo`/`WSARecvFrom`. RIO queries now receive a
   proxy-backed extension table: registered buffers, request/completion queues,
   `RIOSend`/`RIOReceive`, and completion dequeue are routed through the existing
-  SOCKS5 UDP data plane. RIO address/control metadata and provider-specific
+  SOCKS5 UDP data plane. RIO `RIOReceiveEx` source-address output and event
+  notifications are covered by the native fixture; control metadata and IOCP
   notification behavior remain outside the certified surface. Synchronous and
   asynchronous message extension functions are exposed through
   `SIO_GET_EXTENSION_FUNCTION_POINTER`. IOCP `WSASendTo`/`WSARecvFrom`
