@@ -44,8 +44,7 @@ pub struct RioNotificationCompletion {
 }
 
 pub struct RioBuffer {
-    base: *mut u8,
-    length: usize,
+    _token: u8,
 }
 
 pub struct RioCompletionQueue {
@@ -62,9 +61,14 @@ pub struct RioRequestQueue {
 }
 
 static REQUEST_QUEUES: OnceLock<Mutex<HashMap<usize, Vec<usize>>>> = OnceLock::new();
+static BUFFERS: OnceLock<Mutex<HashMap<usize, (usize, usize)>>> = OnceLock::new();
 
 fn request_queues() -> &'static Mutex<HashMap<usize, Vec<usize>>> {
     REQUEST_QUEUES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn buffers() -> &'static Mutex<HashMap<usize, (usize, usize)>> {
+    BUFFERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[repr(C)]
@@ -115,14 +119,25 @@ pub unsafe extern "system" fn register_buffer(data: *mut i8, length: u32) -> Buf
     if data.is_null() || length == 0 {
         return usize::MAX as BufferId;
     }
-    Box::into_raw(Box::new(RioBuffer {
-        base: data.cast(),
-        length: length as usize,
-    }))
+    let buffer = Box::into_raw(Box::new(RioBuffer { _token: 0 }));
+    if let Ok(mut registered) = buffers().lock() {
+        registered.insert(buffer as usize, (data as usize, length as usize));
+        buffer
+    } else {
+        drop(Box::from_raw(buffer));
+        usize::MAX as BufferId
+    }
 }
 
 pub unsafe extern "system" fn deregister_buffer(id: BufferId) {
-    if !id.is_null() && id as usize != usize::MAX {
+    if !id.is_null()
+        && id as usize != usize::MAX
+        && buffers()
+            .lock()
+            .ok()
+            .and_then(|mut registered| registered.remove(&(id as usize)))
+            .is_some()
+    {
         drop(Box::from_raw(id));
     }
 }
@@ -231,46 +246,54 @@ pub unsafe extern "system" fn resize_request_queue(
     1
 }
 
-unsafe fn gather(buffers: *const RioBuf, count: u32) -> Option<Vec<u8>> {
-    if buffers.is_null() || count == 0 || count > 1024 {
+unsafe fn gather(descriptors: *const RioBuf, count: u32) -> Option<Vec<u8>> {
+    if descriptors.is_null() || count == 0 || count > 1024 {
         return None;
     }
     let mut output = Vec::new();
-    for item in std::slice::from_raw_parts(buffers, count as usize) {
+    for item in std::slice::from_raw_parts(descriptors, count as usize) {
         if item.buffer_id.is_null() || item.buffer_id as usize == usize::MAX {
             return None;
         }
-        let buffer = &*item.buffer_id;
+        let (base, length) = buffers()
+            .lock()
+            .ok()
+            .and_then(|registered| registered.get(&(item.buffer_id as usize)).copied())?;
         let end = (item.offset as usize).checked_add(item.length as usize)?;
-        if end > buffer.length {
+        if end > length {
             return None;
         }
-        let part =
-            std::slice::from_raw_parts(buffer.base.add(item.offset as usize), item.length as usize);
+        let part = std::slice::from_raw_parts(
+            (base as *const u8).add(item.offset as usize),
+            item.length as usize,
+        );
         output.extend_from_slice(part);
     }
     Some(output)
 }
 
-unsafe fn scatter(buffers: *const RioBuf, count: u32, payload: &[u8]) -> Option<u32> {
-    if buffers.is_null() || count == 0 || count > 1024 {
+unsafe fn scatter(descriptors: *const RioBuf, count: u32, payload: &[u8]) -> Option<u32> {
+    if descriptors.is_null() || count == 0 || count > 1024 {
         return None;
     }
     let mut copied = 0usize;
-    for item in std::slice::from_raw_parts(buffers, count as usize) {
+    for item in std::slice::from_raw_parts(descriptors, count as usize) {
         if item.buffer_id.is_null() || item.buffer_id as usize == usize::MAX {
             return None;
         }
-        let buffer = &*item.buffer_id;
+        let (base, length) = buffers()
+            .lock()
+            .ok()
+            .and_then(|registered| registered.get(&(item.buffer_id as usize)).copied())?;
         let end = (item.offset as usize).checked_add(item.length as usize)?;
-        if end > buffer.length {
+        if end > length {
             return None;
         }
         let amount = (item.length as usize).min(payload.len().saturating_sub(copied));
         if amount != 0 {
             ptr::copy_nonoverlapping(
                 payload.as_ptr().add(copied),
-                buffer.base.add(item.offset as usize),
+                (base as *mut u8).add(item.offset as usize),
                 amount,
             );
             copied += amount;
