@@ -9,7 +9,8 @@ use std::io::Write;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use parking_lot::Mutex;
+use std::sync::mpsc::{sync_channel, SyncSender};
+use std::sync::atomic::{AtomicU64, Ordering};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -34,13 +35,35 @@ pub struct ConnectionEvent<'a> {
     pub error: Option<&'a str>,
 }
 
-static WRITER: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
+struct AsyncWriter {
+    sender: SyncSender<Vec<u8>>,
+    pid: u32,
+}
+static WRITER: OnceLock<Option<AsyncWriter>> = OnceLock::new();
+static DROPPED: AtomicU64 = AtomicU64::new(0);
+const QUEUE_CAPACITY: usize = 256;
+const MAX_EVENT_BYTES: usize = 16 * 1024;
+
+/// Events lost to overload, oversized records or an unavailable writer.
+pub fn dropped_events() -> u64 { DROPPED.load(Ordering::Relaxed) }
+
+fn start_writer<W: Write + Send + 'static>(mut output: W) -> Option<AsyncWriter> {
+    let (sender, receiver) = sync_channel::<Vec<u8>>(QUEUE_CAPACITY);
+    std::thread::Builder::new().name("proxychains-log".into()).spawn(move || {
+        for line in receiver {
+            if output.write_all(&line).is_err() {
+                DROPPED.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }).ok()?;
+    Some(AsyncWriter { sender, pid: std::process::id() })
+}
 
 pub fn init_from_env() {
     let _ = writer();
 }
 
-fn writer() -> Option<&'static Mutex<std::fs::File>> {
+fn writer() -> Option<&'static AsyncWriter> {
     WRITER
         .get_or_init(|| {
             let path = std::env::var_os("PROXYCHAINS_LOG_FILE")?;
@@ -48,7 +71,7 @@ fn writer() -> Option<&'static Mutex<std::fs::File>> {
                 return None;
             }
             match OpenOptions::new().create(true).append(true).open(path) {
-                Ok(file) => Some(Mutex::new(file)),
+                Ok(file) => start_writer(file),
                 Err(error) => {
                     eprintln!("proxychains: cannot open connection log: {error}");
                     None
@@ -60,14 +83,20 @@ fn writer() -> Option<&'static Mutex<std::fs::File>> {
 
 pub fn record(event: ConnectionEvent<'_>) {
     let Some(writer) = writer() else { return };
-    let Some(mut writer) = writer.try_lock() else { return };
+    // A fork does not copy the worker thread. Never touch the inherited queue
+    // in that child; exec creates a fresh logger. Logging stays best-effort.
+    if writer.pid != std::process::id() {
+        DROPPED.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
     let mut line = match serde_json::to_vec(&event) {
         Ok(line) => line,
         Err(_) => return,
     };
     line.push(b'\n');
-    let _ = writer.write_all(&line);
-    let _ = writer.flush();
+    if line.len() > MAX_EVENT_BYTES || writer.sender.try_send(line).is_err() {
+        DROPPED.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 pub fn now_ms() -> u128 {
@@ -96,6 +125,27 @@ pub fn session_id() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slow_sink_cannot_block_producers_and_queue_is_bounded() {
+        struct SlowSink(std::sync::mpsc::Receiver<()>);
+        impl Write for SlowSink {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                let _ = self.0.recv();
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let (release, gate) = sync_channel(0);
+        let writer = start_writer(SlowSink(gate)).unwrap();
+        let mut rejected = 0;
+        for _ in 0..QUEUE_CAPACITY + 2 {
+            if writer.sender.try_send(vec![b'x']).is_err() { rejected += 1; }
+        }
+        assert!(rejected > 0);
+        drop(release);
+        drop(writer);
+    }
 
     #[test]
     fn event_serializes_without_sensitive_fields() {
