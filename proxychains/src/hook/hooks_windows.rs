@@ -44,6 +44,11 @@ use super::interpose_windows::{
 };
 use super::reload::config_reload_interval;
 
+// WSAID_MULTIPLE_RIO from the Windows SDK (mswsock.h).  RIO is a registered
+// I/O API whose function table would bypass the ordinary Winsock hooks below;
+// keep this GUID local so unrelated extension queries can still pass through.
+const WSAID_MULTIPLE_RIO: GUID = GUID::from_u128(0x8509e081_96dd_4005_b165_9e2e_e8c7_9e3f);
+
 type LookupCompletionRoutine = unsafe extern "system" fn(u32, u32, *mut c_void);
 
 struct AsyncDnsWContext {
@@ -845,13 +850,19 @@ pub unsafe extern "system" fn hook_wsa_ioctl_impl(
     }
 
     if super::udp::enabled(sock)
-        && (io_control_code == SIO_GET_EXTENSION_FUNCTION_POINTER
-            || io_control_code
-                == windows::Win32::Networking::WinSock::SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER)
+        && !in_buffer.is_null()
+        && in_buffer_len >= std::mem::size_of::<GUID>() as u32
     {
-        // Do not expose unwrapped message or registered-I/O entry points.
-        WSASetLastError(windows::Win32::Networking::WinSock::WSAEOPNOTSUPP.0);
-        return SOCKET_ERROR;
+        let requested = *(in_buffer as *const GUID);
+        let multiple = io_control_code
+            == windows::Win32::Networking::WinSock::SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER;
+        let single = io_control_code == SIO_GET_EXTENSION_FUNCTION_POINTER;
+        if (single || multiple) && requested == WSAID_MULTIPLE_RIO {
+            // Do not expose an unwrapped registered-I/O table.  Other
+            // extension queries remain available to the application.
+            WSASetLastError(windows::Win32::Networking::WinSock::WSAEOPNOTSUPP.0);
+            return SOCKET_ERROR;
+        }
     }
     if io_control_code != SIO_GET_EXTENSION_FUNCTION_POINTER
         || in_buffer_len < std::mem::size_of::<GUID>() as u32
