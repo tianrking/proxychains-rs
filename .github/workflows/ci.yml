@@ -74,3 +74,16 @@ jobs:
 
       - name: Build release binaries
         run: cargo build --locked --release --workspace
+
+      - name: Build macOS release fixture
+        if: runner.os == 'macOS'
+        run: cargo build --locked --release -p proxychains-injector --examples
+
+      - name: Verify macOS release injection, UDP and HTTP/3
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PROXYCHAINS_TEST_FIXTURE="$PWD/target/release/examples/injection_fixture"
+          export PROXYCHAINS_TEST_DLL="$PWD/target/release/libproxychains.dylib"
+          cargo test --locked -p proxychains-injector --test native_preload --test native_udp -- --ignored

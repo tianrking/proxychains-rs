@@ -11,6 +11,10 @@ impl InternalNetwork {
     pub(crate) fn enter() -> Self { INTERNAL_NETWORK.with(|n| n.set(n.get()+1)); Self }
 }
 impl Drop for InternalNetwork { fn drop(&mut self) { INTERNAL_NETWORK.with(|n| n.set(n.get()-1)); } }
+// libc may call our close/read hooks before dyld has initialized Rust TLS.
+// Keep the TLS access behind the caller's configuration-ready check even under
+// LTO: inlining allowed LLVM to hoist the TLS bootstrap ahead of that check.
+#[inline(never)]
 pub(crate) fn is_internal_network() -> bool { INTERNAL_NETWORK.with(|n| n.get()!=0) }
 
 #[cfg(unix)]
