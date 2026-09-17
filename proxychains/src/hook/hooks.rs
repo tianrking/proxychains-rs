@@ -9,7 +9,7 @@ use std::ffi::{CStr, CString};
 use std::net::IpAddr;
 use std::os::raw::c_char;
 use std::os::unix::io::IntoRawFd;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use libc::{c_int, socklen_t};
@@ -31,7 +31,7 @@ use super::reload::config_reload_interval;
 
 /// Global state for the hook library
 pub struct HookState {
-    pub config: Config,
+    pub config: Arc<Config>,
     pub initialized: bool,
     pub next_reload_check: Instant,
 }
@@ -39,7 +39,7 @@ pub struct HookState {
 impl HookState {
     pub fn new(config: Config) -> Self {
         Self {
-            config,
+            config: Arc::new(config),
             initialized: true,
             next_reload_check: Instant::now() + config_reload_interval(),
         }
@@ -74,23 +74,33 @@ fn custom_alloc_map() -> &'static Mutex<HashMap<usize, CustomAddrinfoAllocation>
 }
 
 struct HookSnapshot {
-    config: Config,
+    config: Arc<Config>,
     dns_resolver: crate::dns::DnsResolver,
-    initialized: bool,
 }
 
-fn maybe_reload_config(state: &mut HookState) {
+fn maybe_reload_config(lock: &Mutex<HookState>) {
+    reload_config_with(lock, || ConfigParser::new().parse());
+}
+
+fn reload_config_with(lock: &Mutex<HookState>, parse: impl FnOnce() -> Result<Config>) {
+    static RELOADING: Mutex<()> = Mutex::new(());
+    let Some(_reload) = RELOADING.try_lock() else { return };
+    let mut state = lock.lock();
     let now = Instant::now();
     if now < state.next_reload_check {
         return;
     }
     state.next_reload_check = now + config_reload_interval();
+    // Parsing may touch slow storage. Other hook callers can keep using the
+    // last known good immutable snapshot while this caller reloads.
+    drop(state);
 
-    match ConfigParser::new().parse() {
+    match parse() {
         Ok(config) => {
+            let mut state = lock.lock();
             let old_count = state.config.proxies.len();
             let new_count = config.proxies.len();
-            state.config = config;
+            state.config = Arc::new(config);
             debug!(
                 "Reloaded proxychains config (proxies: {} -> {})",
                 old_count, new_count
@@ -257,14 +267,13 @@ pub fn is_initialized() -> bool {
 /// Get the hook state
 fn get_hook_state() -> Option<HookSnapshot> {
     let lock = HOOK_STATE.get()?;
-    let mut state = lock.lock();
-    maybe_reload_config(&mut state);
+    maybe_reload_config(lock);
+    let state = lock.lock();
     let config = state.config.clone();
     let dns_resolver = crate::dns::DnsResolver::new(config.proxy_dns, config.remote_dns_subnet);
     Some(HookSnapshot {
         config,
         dns_resolver,
-        initialized: state.initialized,
     })
 }
 
@@ -365,7 +374,7 @@ pub unsafe fn hook_connect(
     // Connect through the selected proxy group. Route-group selection is made
     // before the chain manager is created so each new connection gets an
     // independent, auditable choice of exit group.
-    let mut chain_config = state.config.clone();
+    let mut chain_config = (*state.config).clone();
     if let Some(group) = state
         .config
         .route_proxy_group(RouteProtocol::Tcp, target_domain.as_deref(), final_port)
@@ -668,5 +677,23 @@ mod tests {
         let config = Config::default();
         let state = HookState::new(config);
         assert!(state.initialized);
+    }
+
+    #[test]
+    fn reload_parses_without_holding_state_lock_and_preserves_snapshots() {
+        let state = Mutex::new(HookState::new(Config::default()));
+        let previous = state.lock().config.clone();
+        state.lock().next_reload_check = Instant::now();
+        reload_config_with(&state, || {
+            assert!(state.try_lock().is_some(), "parsing must not block readers");
+            Ok(Config::default())
+        });
+        assert!(!Arc::ptr_eq(&previous, &state.lock().config));
+        assert_eq!(previous.proxies.len(), state.lock().config.proxies.len());
+        reload_config_with(&state, || panic!("reload interval must be respected"));
+        let current = state.lock().config.clone();
+        state.lock().next_reload_check = Instant::now();
+        reload_config_with(&state, || Err(crate::Error::Config("invalid update".into())));
+        assert!(Arc::ptr_eq(&current, &state.lock().config));
     }
 }
