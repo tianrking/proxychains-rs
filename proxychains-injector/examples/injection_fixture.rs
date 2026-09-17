@@ -90,7 +90,8 @@ fn run_udp_rio_probe() {
     use std::os::windows::io::AsRawSocket;
     use windows::core::GUID;
     use windows::Win32::Networking::WinSock::{WSAIoctl, SOCKET};
-    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+    use windows::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus};
     use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
     const SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER: u32 = 0xC800_0024;
@@ -285,6 +286,69 @@ fn run_udp_rio_probe() {
     assert_eq!(unsafe { WaitForSingleObject(event, 1000) }, WAIT_OBJECT_0);
     let mut completion = RioResult::default();
     assert_eq!(unsafe { dequeue(cq, &mut completion, 1) }, 1);
+
+    let iocp = unsafe {
+        CreateIoCompletionPort(HANDLE(-1), HANDLE::default(), 0x44, 1)
+            .expect("RIO notification IOCP")
+    };
+    let mut iocp_notification = RioNotification {
+        kind: 2,
+        _padding: 0,
+        payload: [iocp.0 as usize, 0x44, 0],
+    };
+    let iocp_cq = unsafe {
+        create_cq(
+            8,
+            (&mut iocp_notification as *mut RioNotification).cast(),
+        )
+    };
+    assert_ne!(iocp_cq, 0, "RIO IOCP completion queue creation");
+    let iocp_rq = unsafe {
+        create_rq(
+            socket.as_raw_socket() as usize,
+            8,
+            8,
+            8,
+            8,
+            iocp_cq,
+            iocp_cq,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(iocp_rq, 0, "RIO IOCP request queue creation");
+    assert_eq!(
+        unsafe {
+            send_ex(
+                iocp_rq,
+                &descriptor,
+                1,
+                std::ptr::null(),
+                &remote_descriptor,
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+            )
+        },
+        1
+    );
+    assert_eq!(unsafe { notify(iocp_cq) }, 0);
+    let mut completed_bytes = 0;
+    let mut completion_key = 0;
+    let mut overlapped = std::ptr::null_mut();
+    assert!(unsafe {
+        GetQueuedCompletionStatus(
+            iocp,
+            &mut completed_bytes,
+            &mut completion_key,
+            &mut overlapped,
+            1000,
+        )
+    }
+    .is_ok());
+    assert_eq!(completion_key, 0x44);
+    assert_eq!(unsafe { dequeue(iocp_cq, &mut completion, 1) }, 1);
+
     payload.fill(0);
     assert_eq!(
         unsafe {
@@ -309,7 +373,9 @@ fn run_udp_rio_probe() {
         deregister(remote_id);
         deregister(buffer);
         close_cq(cq);
+        close_cq(iocp_cq);
         let _ = CloseHandle(event);
+        let _ = CloseHandle(iocp);
     }
 }
 
