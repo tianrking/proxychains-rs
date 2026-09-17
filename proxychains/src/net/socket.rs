@@ -127,8 +127,11 @@ pub fn is_broadcast(ip: &Ipv4Addr) -> bool {
 }
 
 /// Get the port from a sockaddr structure (platform-specific)
+///
+/// # Safety
+/// `addr` must point to a valid, aligned sockaddr of the size its family requires.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn get_port_from_sockaddr(addr: *const libc::sockaddr) -> u16 {
+pub unsafe fn get_port_from_sockaddr(addr: *const libc::sockaddr) -> u16 {
     unsafe {
         let sa_family = (*addr).sa_family;
         if sa_family == libc::AF_INET as libc::sa_family_t {
@@ -144,8 +147,11 @@ pub fn get_port_from_sockaddr(addr: *const libc::sockaddr) -> u16 {
 }
 
 /// Get the IP address from a sockaddr structure (platform-specific)
+///
+/// # Safety
+/// `addr` must point to a valid, aligned sockaddr of the size its family requires.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn get_ip_from_sockaddr(addr: *const libc::sockaddr) -> Option<Ipv4Addr> {
+pub unsafe fn get_ip_from_sockaddr(addr: *const libc::sockaddr) -> Option<Ipv4Addr> {
     unsafe {
         let sa_family = (*addr).sa_family;
         if sa_family == libc::AF_INET as libc::sa_family_t {
@@ -163,8 +169,11 @@ pub fn get_ip_from_sockaddr(addr: *const libc::sockaddr) -> Option<Ipv4Addr> {
 }
 
 /// Get IPv4/IPv6 address from sockaddr structure.
+///
+/// # Safety
+/// `addr` must point to a valid, aligned sockaddr of the size its family requires.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn get_ipaddr_from_sockaddr(addr: *const libc::sockaddr) -> Option<IpAddr> {
+pub unsafe fn get_ipaddr_from_sockaddr(addr: *const libc::sockaddr) -> Option<IpAddr> {
     unsafe {
         let sa_family = (*addr).sa_family;
         if sa_family == libc::AF_INET as libc::sa_family_t {
@@ -221,6 +230,6 @@ mod tests {
             sin6_scope_id: 0,
         };
         let ptr = &sockaddr as *const libc::sockaddr_in6 as *const libc::sockaddr;
-        assert_eq!(get_ip_from_sockaddr(ptr), Some(Ipv4Addr::new(5, 6, 7, 8)));
+        assert_eq!(unsafe { get_ip_from_sockaddr(ptr) }, Some(Ipv4Addr::new(5, 6, 7, 8)));
     }
 }
