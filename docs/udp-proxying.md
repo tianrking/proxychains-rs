@@ -101,8 +101,9 @@ Simultaneous close/reuse and ongoing I/O are outside the supported contract.
 - QUIC payloads are opaque UDP. A native Quinn+h3 fixture verifies a real
   HTTP/3 GET and response through the SOCKS5 relay; browser QUIC and MsQuic
   remain uncertified. RIO queue and completion behavior is covered by a native
-  Windows fixture, while successful RIO traffic through a live relay still needs
-  an application-level fixture.
+  Windows fixture, including a successful `RIOSendEx` datagram through a live
+  SOCKS5 relay. RIO receive-address/control metadata and provider-specific
+  notification behavior still need an application-level fixture.
 
 On Windows, asynchronous `GetAddrInfoExA/W` calls retain the proxy-DNS fake
 name until completion. Callback mode forwards the original callback and

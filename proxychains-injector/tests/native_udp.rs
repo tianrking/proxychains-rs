@@ -210,8 +210,39 @@ fn native_udp_routing_and_lifecycle() {
     {
         // RIO exposes a proxy-backed extension table. The fixture exercises
         // registration, queue creation, send completion and cleanup.
-        std::fs::write(&config, "proxy_udp\n[ProxyList]\nsocks5 127.0.0.1 9\n").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        std::fs::write(
+            &config,
+            format!("proxy_udp\n[ProxyList]\nsocks5 127.0.0.1 {port}\n"),
+        )
+        .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut control = accept(&listener);
+            let mut hello = [0; 3];
+            control.read_exact(&mut hello).unwrap();
+            assert_eq!(hello, [5, 1, 0]);
+            control.write_all(&[5, 0]).unwrap();
+            let mut request = [0; 10];
+            control.read_exact(&mut request).unwrap();
+            assert_eq!(request, [5, 3, 0, 1, 0, 0, 0, 0, 0, 0]);
+            let relay = UdpSocket::bind("127.0.0.1:0").unwrap();
+            relay.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reply = vec![5, 0, 0, 1, 127, 0, 0, 1];
+            reply.extend(relay.local_addr().unwrap().port().to_be_bytes());
+            control.write_all(&reply).unwrap();
+            let mut packet = [0; 1024];
+            let (n, client) = relay.recv_from(&mut packet).unwrap();
+            assert_eq!(&packet[..3], &[0, 0, 0]);
+            assert_eq!(&packet[3..8], &[1, 192, 0, 2, 123]);
+            assert_eq!(&packet[8..10], &443u16.to_be_bytes());
+            assert_eq!(&packet[10..n], &[0; 16]);
+            relay.send_to(&packet[..n], client).unwrap();
+            assert_eq!(control.read(&mut [0]).unwrap(), 0);
+        });
         assert_eq!(run(&library, &fixture, &config, "udp-rio"), 23);
+        server.join().unwrap();
     }
 
     // Exercise a real QUIC handshake and bidirectional stream through the

@@ -138,8 +138,17 @@ fn run_udp_rio_probe() {
     ) -> usize;
     type Register = unsafe extern "system" fn(*mut i8, u32) -> usize;
     type Deregister = unsafe extern "system" fn(usize);
-    type Send =
-        unsafe extern "system" fn(usize, *const RioBuf, u32, u32, *mut std::ffi::c_void) -> i32;
+    type SendEx = unsafe extern "system" fn(
+        usize,
+        *const RioBuf,
+        u32,
+        *const RioBuf,
+        *const RioBuf,
+        *const RioBuf,
+        *const RioBuf,
+        u32,
+        *mut std::ffi::c_void,
+    ) -> i32;
     type Dequeue = unsafe extern "system" fn(usize, *mut RioResult, u32) -> u32;
     #[repr(C)]
     struct RioBuf {
@@ -160,7 +169,7 @@ fn run_udp_rio_probe() {
     let create_rq: CreateRq = unsafe { std::mem::transmute(table.functions[6]) };
     let register: Register = unsafe { std::mem::transmute(table.functions[10]) };
     let deregister: Deregister = unsafe { std::mem::transmute(table.functions[8]) };
-    let send: Send = unsafe { std::mem::transmute(table.functions[2]) };
+    let send_ex: SendEx = unsafe { std::mem::transmute(table.functions[3]) };
     let dequeue: Dequeue = unsafe { std::mem::transmute(table.functions[7]) };
     let cq = unsafe { create_cq(8, std::ptr::null_mut()) };
     assert_ne!(cq, 0, "RIO completion queue creation");
@@ -185,13 +194,46 @@ fn run_udp_rio_probe() {
         offset: 0,
         length: payload.len() as u32,
     };
+    let remote = socket2::SockAddr::from(
+        "192.0.2.123:443"
+            .parse::<std::net::SocketAddr>()
+            .expect("RIO target address"),
+    );
+    let remote_bytes = unsafe {
+        std::slice::from_raw_parts(remote.as_ptr().cast::<u8>(), remote.len() as usize)
+    };
+    let remote_id = unsafe {
+        register(
+            remote_bytes.as_ptr().cast_mut().cast(),
+            remote_bytes.len() as u32,
+        )
+    };
+    assert_ne!(remote_id, usize::MAX, "RIO remote buffer registration");
+    let remote_descriptor = RioBuf {
+        buffer_id: remote_id,
+        offset: 0,
+        length: remote_bytes.len() as u32,
+    };
     assert_eq!(
-        unsafe { send(rq, &descriptor, 1, 0, std::ptr::null_mut()) },
+        unsafe {
+            send_ex(
+                rq,
+                &descriptor,
+                1,
+                std::ptr::null(),
+                &remote_descriptor,
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+            )
+        },
         1
     );
     let mut completion = RioResult::default();
     assert_eq!(unsafe { dequeue(cq, &mut completion, 1) }, 1);
     unsafe {
+        deregister(remote_id);
         deregister(buffer);
         close_cq(cq);
     }

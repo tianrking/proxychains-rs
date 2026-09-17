@@ -261,6 +261,17 @@ pub unsafe extern "system" fn send(
     flags: u32,
     context: *mut c_void,
 ) -> i32 {
+    send_with_address(queue, buffers, count, flags, context, None)
+}
+
+unsafe fn send_with_address(
+    queue: RequestQueue,
+    buffers: *const RioBuf,
+    count: u32,
+    flags: u32,
+    context: *mut c_void,
+    address: Option<std::net::SocketAddr>,
+) -> i32 {
     if queue.is_null() {
         return 0;
     }
@@ -269,7 +280,7 @@ pub unsafe extern "system" fn send(
         Some(data) => data,
         None => return 0,
     };
-    let result = match udp::send(request.socket, &data, None, flags as i32) {
+    let result = match udp::send(request.socket, &data, address, flags as i32) {
         Some(Ok(bytes)) => RioResult {
             status: 0,
             bytes_transferred: bytes as u32,
@@ -304,7 +315,16 @@ pub unsafe extern "system" fn send_ex(
     flags: u32,
     context: *mut c_void,
 ) -> i32 {
-    send(queue, buffers, count, flags, context)
+    let address = if _remote.is_null() {
+        None
+    } else {
+        let bytes = match gather(_remote, 1) {
+            Some(bytes) => bytes,
+            None => return 0,
+        };
+        udp::parse_address(bytes.as_ptr().cast(), bytes.len())
+    };
+    send_with_address(queue, buffers, count, flags, context, address)
 }
 
 pub unsafe extern "system" fn receive(
