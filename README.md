@@ -111,11 +111,11 @@ cargo build --locked --release --workspace
 
 After build:
 
-| Platform | CLI | Library |
+| Platform | CLI tools | Library |
 |---|---|---|
-| Linux | `target/release/proxychains4` | `target/release/libproxychains.so` |
-| macOS | `target/release/proxychains4` | `target/release/libproxychains.dylib` |
-| Windows | `target/release/proxychains4.exe` | `target/release/proxychains.dll` |
+| Linux | `proxychains4`, `proxychains-udp`, `proxychains-socks5` | `target/release/libproxychains.so` |
+| macOS | `proxychains4`, `proxychains-udp`, `proxychains-socks5` | `target/release/libproxychains.dylib` |
+| Windows | `proxychains4.exe`, `proxychains-udp.exe`, `proxychains-socks5.exe` | `target/release/proxychains.dll` |
 
 ## Quick Usage
 
