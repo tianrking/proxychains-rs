@@ -107,7 +107,7 @@ packets are rejected. DNS TCP fallback is not provided by this UDP-only command.
 4. Define scoped IP tunneling rather than claim "all protocols". HTTP CONNECT
    and SOCKS4 cannot carry arbitrary UDP/ICMP. Browser/MsQuic HTTP/3 still need
    real application validation, along with MTU and fragmentation coverage.
-5. Run versioned Claude Code, Codex and Antigravity workflows: login, model
+5. Run versioned workflows for target client applications: login, model
    streaming, cancellation, tools, MCP, terminal descendants and updates, while
    independently observing DNS/IPv4/IPv6/UDP egress and proxy failure behavior.
 6. Run native Linux/macOS CI for this branch and produce signed native release

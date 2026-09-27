@@ -1,4 +1,4 @@
-# Local SOCKS5 service for Codex, Claude Code, and other agents
+# Local SOCKS5 service for coding agents and other clients
 
 `proxychains-socks5` exposes a local SOCKS5 CONNECT endpoint and sends every
 accepted connection through the selected proxychains configuration. It is a
@@ -34,7 +34,7 @@ service rejects it at startup because `raw` is not an upstream proxy protocol.
 Domain CONNECT requests are relayed as domains to SOCKS4a, SOCKS5, or HTTP
 CONNECT upstream hops, so the local service does not resolve agent target names.
 
-## Use the service with an agent
+## Use the service with a client
 
 For clients that support SOCKS proxy environment variables, use `socks5h` so
 the client does not resolve target domains itself:
@@ -44,8 +44,7 @@ export ALL_PROXY='socks5h://agent:choose-a-long-local-secret@127.0.0.1:1081'
 export all_proxy="$ALL_PROXY"
 unset NO_PROXY no_proxy
 
-codex
-# or: claude
+your-agent-command
 ```
 
 `ALL_PROXY` support is determined by the agent/runtime. For a process that does
@@ -53,8 +52,7 @@ not honor that variable, launch it through the native hook instead. The hook
 uses the same upstream configuration directly:
 
 ```bash
-proxychains4 -f ./agent-upstream.conf --tree -- codex
-# or: proxychains4 -f ./agent-upstream.conf --tree -- claude
+proxychains4 -f ./agent-upstream.conf --tree -- your-agent-command
 ```
 
 On Linux and macOS, `--tree` propagates preload settings to child processes. On
