@@ -33,7 +33,7 @@ Without `proxy_udp`, the new datagram hooks pass through. Invalid UDP proxy
 configurations fail initialization. HTTP CONNECT, SOCKS4 and multi-hop UDP chains
 are unsupported. Each UDP socket keeps the proxy group chosen for its first
 proxied destination; a later rule cannot switch an established SOCKS5
-association. `proxychains-udp` remains an explicit fixed-target forwarder.
+association. `proxychains4 udp` is an explicit fixed-target forwarder.
 
 ## Supported socket paths
 

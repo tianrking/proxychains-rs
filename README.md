@@ -30,11 +30,11 @@ for verified behavior, commands and unfinished work. This is not system-enforced
 network isolation. `raw` is a no-handshake mode, not an IP tunnel. Arbitrary UDP,
 ICMP, browser/MsQuic HTTP/3 workflows and complete Agent compatibility are not certified.
 
-New interfaces: `proxychains4 --pid PID`, `proxychains4 --attach-name FILE.exe`
-(Windows), `proxychains-udp -f FILE --listen 127.0.0.1:1053 --target 1.1.1.1:53`
-(explicit UDP forwarding through exactly one SOCKS5 node), and
-`proxychains-socks5 -f FILE --listen 127.0.0.1:1081` (a local SOCKS5 CONNECT
-service backed by the configured chain). See [agent local SOCKS5 setup](docs/agent-local-socks5.md).
+Specialized modes use the same `proxychains4` executable:
+`proxychains4 udp -f FILE --listen 127.0.0.1:1053 --target 1.1.1.1:53`
+for explicit UDP forwarding through exactly one SOCKS5 node, and
+`proxychains4 socks5 -f FILE --listen 127.0.0.1:1081` for a local SOCKS5
+CONNECT service backed by the configured chain. See [local SOCKS5 setup](docs/agent-local-socks5.md).
 
 ## Linux Compatibility (Important)
 
@@ -111,11 +111,11 @@ cargo build --locked --release --workspace
 
 After build:
 
-| Platform | CLI tools | Library |
+| Platform | CLI | Library |
 |---|---|---|
-| Linux | `proxychains4`, `proxychains-udp`, `proxychains-socks5` | `target/release/libproxychains.so` |
-| macOS | `proxychains4`, `proxychains-udp`, `proxychains-socks5` | `target/release/libproxychains.dylib` |
-| Windows | `proxychains4.exe`, `proxychains-udp.exe`, `proxychains-socks5.exe` | `target/release/proxychains.dll` |
+| Linux | `target/release/proxychains4` | `target/release/libproxychains.so` |
+| macOS | `target/release/proxychains4` | `target/release/libproxychains.dylib` |
+| Windows | `target/release/proxychains4.exe` | `target/release/proxychains.dll` |
 
 ## Quick Usage
 

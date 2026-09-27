@@ -72,8 +72,6 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cp target/release/proxychains4 dist/
-          cp target/release/proxychains-udp dist/
-          cp target/release/proxychains-socks5 dist/
           cp target/release/libproxychains.so dist/
           cp proxychains.conf dist/
           cp README.md dist/
@@ -89,8 +87,6 @@ jobs:
           rm -rf "${PKG_ROOT}"
           mkdir -p "${PKG_ROOT}/DEBIAN" "${PKG_ROOT}/usr/bin" "${PKG_ROOT}/usr/lib" "${PKG_ROOT}/etc"
           cp target/release/proxychains4 "${PKG_ROOT}/usr/bin/proxychains4"
-          cp target/release/proxychains-udp "${PKG_ROOT}/usr/bin/proxychains-udp"
-          cp target/release/proxychains-socks5 "${PKG_ROOT}/usr/bin/proxychains-socks5"
           cp target/release/libproxychains.so "${PKG_ROOT}/usr/lib/libproxychains.so"
           cp proxychains.conf "${PKG_ROOT}/etc/proxychains.conf"
           printf "Package: proxychains-rs\nVersion: %s\nSection: net\nPriority: optional\nArchitecture: amd64\nMaintainer: tianrking\nDescription: Cross-platform proxychains implementation in Rust\n" "${VERSION}" > "${PKG_ROOT}/DEBIAN/control"
@@ -109,8 +105,6 @@ jobs:
           fi
           mkdir -p dist
           cp target/release/proxychains4 dist/
-          cp target/release/proxychains-udp dist/
-          cp target/release/proxychains-socks5 dist/
           cp target/release/libproxychains.dylib dist/
           cp proxychains.conf dist/
           cp README.md dist/
@@ -133,8 +127,6 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           Copy-Item target\release\proxychains4.exe dist\
-          Copy-Item target\release\proxychains-udp.exe dist\
-          Copy-Item target\release\proxychains-socks5.exe dist\
           Copy-Item target\release\proxychains.dll dist\
           Copy-Item proxychains.conf dist\
           Copy-Item README.md dist\
@@ -186,8 +178,6 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cp target/aarch64-unknown-linux-gnu/release/proxychains4 dist/
-          cp target/aarch64-unknown-linux-gnu/release/proxychains-udp dist/
-          cp target/aarch64-unknown-linux-gnu/release/proxychains-socks5 dist/
           cp target/aarch64-unknown-linux-gnu/release/libproxychains.so dist/
           cp proxychains.conf dist/
           cp README.md dist/
@@ -202,8 +192,6 @@ jobs:
           rm -rf "${PKG_ROOT}"
           mkdir -p "${PKG_ROOT}/DEBIAN" "${PKG_ROOT}/usr/bin" "${PKG_ROOT}/usr/lib" "${PKG_ROOT}/etc"
           cp target/aarch64-unknown-linux-gnu/release/proxychains4 "${PKG_ROOT}/usr/bin/proxychains4"
-          cp target/aarch64-unknown-linux-gnu/release/proxychains-udp "${PKG_ROOT}/usr/bin/proxychains-udp"
-          cp target/aarch64-unknown-linux-gnu/release/proxychains-socks5 "${PKG_ROOT}/usr/bin/proxychains-socks5"
           cp target/aarch64-unknown-linux-gnu/release/libproxychains.so "${PKG_ROOT}/usr/lib/libproxychains.so"
           cp proxychains.conf "${PKG_ROOT}/etc/proxychains.conf"
           printf "Package: proxychains-rs\nVersion: %s\nSection: net\nPriority: optional\nArchitecture: arm64\nMaintainer: tianrking\nDescription: Cross-platform proxychains implementation in Rust\n" "${VERSION}" > "${PKG_ROOT}/DEBIAN/control"
@@ -305,14 +293,18 @@ jobs:
           # Linux/macOS
           ./proxychains4 -f ./proxychains.conf --probe
           ./proxychains4 -f ./proxychains.conf curl https://ifconfig.me
+          ./proxychains4 udp -f ./proxychains.conf --listen 127.0.0.1:1053 --target 1.1.1.1:53
+          ./proxychains4 socks5 -f ./proxychains.conf --listen 127.0.0.1:1081
 
           # Windows
           .\\proxychains4.exe -f .\\proxychains.conf --probe
           .\\proxychains4.exe -f .\\proxychains.conf curl https://ifconfig.me
+          .\\proxychains4.exe udp -f .\\proxychains.conf --listen 127.0.0.1:1053 --target 1.1.1.1:53
+          .\\proxychains4.exe socks5 -f .\\proxychains.conf --listen 127.0.0.1:1081
           \`\`\`
 
           ### Assets
-          - Windows zip (\`proxychains4.exe\`, \`proxychains-udp.exe\`, \`proxychains-socks5.exe\`, \`proxychains.dll\`)
+          - Windows zip (\`proxychains4.exe\`, \`proxychains.dll\`)
           - Linux tar.gz (\`x86_64\` + \`arm64\`)
           - Linux deb (\`amd64\` + \`arm64\`)
           - macOS tar.gz

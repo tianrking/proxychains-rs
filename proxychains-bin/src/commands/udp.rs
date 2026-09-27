@@ -6,6 +6,7 @@ use proxychains::{
     ConfigParser,
 };
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -15,6 +16,7 @@ use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(
+    name = "proxychains4 udp",
     author = "tianrking",
     version,
     about = "Forward a loopback UDP port through one SOCKS5 proxy to a fixed IP endpoint"
@@ -28,8 +30,8 @@ struct Args {
     target: SocketAddr,
 }
 
-fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+pub fn run(args: impl Iterator<Item = OsString>) -> anyhow::Result<()> {
+    let args = Args::parse_from(std::iter::once(OsString::from("proxychains4 udp")).chain(args));
     anyhow::ensure!(
         args.listen.ip().is_loopback(),
         "listen address must be loopback"
@@ -49,7 +51,7 @@ fn main() -> anyhow::Result<()> {
         socket.local_addr()?,
         args.target
     );
-    run(
+    run_forwarder(
         socket,
         config.proxies[0].clone(),
         args.target,
@@ -62,7 +64,7 @@ struct Client {
     seen: Instant,
 }
 
-fn run(
+fn run_forwarder(
     socket: Arc<UdpSocket>,
     proxy: ProxyData,
     target: SocketAddr,
@@ -231,7 +233,7 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let forward = std::thread::spawn(move || {
-            run(local, proxy, "192.0.2.53:53".parse().unwrap(), &worker_stop).unwrap()
+            run_forwarder(local, proxy, "192.0.2.53:53".parse().unwrap(), &worker_stop).unwrap()
         });
         let a = UdpSocket::bind("127.0.0.1:0").unwrap();
         let b = UdpSocket::bind("127.0.0.1:0").unwrap();

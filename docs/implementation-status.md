@@ -36,7 +36,7 @@ and provider-specific notification paths.
 | Process-aware JSONL trace fields | Implemented | Events include process name/PID, session ID, elapsed milliseconds and the selected UDP proxy endpoint when available; logging remains best-effort and only covers captured hooks |
 | Agent compatibility and diagnostic bridge | Pending | Exact installed Agent versions and workflows |
 | System-enforced network isolation | Pending | Platform-specific enforcement and independent observation |
-| Reproducible builds and release | Author/repository corrected, lockfile tracked, native CI gates added, and release profile uses thin LTO, one codegen unit, symbol stripping and abort-on-panic FFI boundaries | Local Windows release build measured 612,864-byte `proxychains-udp.exe`, 624,640-byte DLL and 895,488-byte `proxychains4.exe`; new remote CI and signed release certification remain pending |
+| Reproducible builds and release | Author/repository corrected, lockfile tracked, native CI gates added, and release profile uses thin LTO, one codegen unit, symbol stripping and abort-on-panic FFI boundaries | Release packages use one `proxychains4` CLI with `udp` and `socks5` modes; Windows also requires `proxychains.dll` for injection |
 
 Existing hook mode must not be described as universal or system-enforced fail-closed
 network isolation. Attaching to a running process cannot retroactively proxy its
@@ -81,7 +81,7 @@ remains unsupported.
 Explicit UDP forwarding through a configuration containing exactly one SOCKS5 node:
 
 ```text
-proxychains-udp -f socks5-only.conf --listen 127.0.0.1:1053 --target 1.1.1.1:53
+proxychains4 udp -f socks5-only.conf --listen 127.0.0.1:1053 --target 1.1.1.1:53
 ```
 
 Point an application's UDP destination at the loopback port. This example can

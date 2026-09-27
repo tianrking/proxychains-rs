@@ -1,6 +1,6 @@
 # Local SOCKS5 service for coding agents and other clients
 
-`proxychains-socks5` exposes a local SOCKS5 CONNECT endpoint and sends every
+`proxychains4 socks5` exposes a local SOCKS5 CONNECT endpoint and sends every
 accepted connection through the selected proxychains configuration. It is a
 client-facing adapter, not a direct-connect fallback: if the upstream proxy
 chain fails, the client receives a SOCKS5 failure response.
@@ -23,8 +23,8 @@ socks5 127.0.0.1 1080 upstream-user upstream-password
 Then run the service separately from the agent process:
 
 ```bash
-cargo run --release -p proxychains-bin --bin proxychains-socks5 -- \
-  -f ./agent-upstream.conf \
+cargo run --release -p proxychains-bin --bin proxychains4 -- \
+  socks5 -f ./agent-upstream.conf \
   --listen 127.0.0.1:1081 \
   --username agent --password 'choose-a-long-local-secret'
 ```
@@ -71,5 +71,5 @@ itself under `proxychains4` is unnecessary and can create a proxy loop.
   command-not-supported response; they never become a direct connection.
 
 For UDP-aware applications, use the existing `proxy_udp` hook path or the
-explicit `proxychains-udp` forwarder. The local SOCKS5 listener intentionally
+explicit `proxychains4 udp` forwarder. The local SOCKS5 listener intentionally
 does not pretend to implement SOCKS UDP ASSOCIATE.

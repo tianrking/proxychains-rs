@@ -21,6 +21,11 @@ use time::OffsetDateTime;
 use tracing::{debug, error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
+#[path = "commands/socks5.rs"]
+mod socks5_command;
+#[path = "commands/udp.rs"]
+mod udp_command;
+
 use proxychains::config::{ProxyType, RouteAction, RouteProtocol};
 use proxychains::error::Error as ProxyError;
 use proxychains::proxy::{
@@ -34,7 +39,11 @@ use proxychains::{Config, ConfigParser};
 #[command(name = "proxychains4")]
 #[command(author = "tianrking")]
 #[command(version)]
-#[command(about = "Run commands through a chain of proxies", long_about = None)]
+#[command(
+    about = "Run commands through a chain of proxies",
+    long_about = None,
+    after_help = "Specialized modes: `udp` forwards a local UDP port through SOCKS5; `socks5` starts a local SOCKS5 CONNECT service."
+)]
 struct Args {
     /// Quiet mode - suppress output
     #[arg(short = 'q', long)]
@@ -156,6 +165,27 @@ struct LaunchProfile {
 }
 
 fn main() {
+    let mut argv = env::args_os();
+    let _program = argv.next();
+    match argv
+        .next()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .as_deref()
+    {
+        Some("udp") => {
+            if let Err(error) = udp_command::run(argv) {
+                eprintln!("proxychains4 udp: {error:#}");
+                process::exit(1);
+            }
+            return;
+        }
+        Some("socks5") => {
+            socks5_command::run(argv);
+            return;
+        }
+        _ => {}
+    }
+
     let mut args = Args::parse();
     if let Some(profile) = args.profile.clone() {
         if let Err(error) = apply_profile(&mut args, &profile) {

@@ -25,10 +25,10 @@ Windows overlapped/IOCP UDP 尚不支持，也不代表所有 QUIC/HTTP/3 应用
 `raw` 不是原始 IP 隧道；任意应用 UDP、ICMP、QUIC 工作流和完整 Agent 兼容性尚未认证。
 
 新增 Windows 附加入口：`proxychains4 --pid PID`、
-`proxychains4 --attach-name FILE.exe`。新增显式 UDP 转发入口：
-`proxychains-udp -f FILE --listen 127.0.0.1:1053 --target 1.1.1.1:53`，
+`proxychains4 --attach-name FILE.exe`。新增显式 UDP 转发模式：
+`proxychains4 udp -f FILE --listen 127.0.0.1:1053 --target 1.1.1.1:53`，
 配置必须只有一个 SOCKS5 节点，应用需主动使用本地 UDP 端口。
-另有本机 SOCKS5 CONNECT 服务：`proxychains-socks5 -f FILE --listen 127.0.0.1:1081`，
+另有本机 SOCKS5 CONNECT 服务模式：`proxychains4 socks5 -f FILE --listen 127.0.0.1:1081`，
 接受的连接经所选代理链转发。
 
 ## Linux 支持范围（重要）
@@ -104,11 +104,11 @@ cargo build --locked --release --workspace
 
 构建完成后：
 
-| 平台 | CLI 工具 | 动态库 |
+| 平台 | CLI | 动态库 |
 |---|---|---|
-| Linux | `proxychains4`、`proxychains-udp`、`proxychains-socks5` | `target/release/libproxychains.so` |
-| macOS | `proxychains4`、`proxychains-udp`、`proxychains-socks5` | `target/release/libproxychains.dylib` |
-| Windows | `proxychains4.exe`、`proxychains-udp.exe`、`proxychains-socks5.exe` | `target/release/proxychains.dll` |
+| Linux | `target/release/proxychains4` | `target/release/libproxychains.so` |
+| macOS | `target/release/proxychains4` | `target/release/libproxychains.dylib` |
+| Windows | `target/release/proxychains4.exe` | `target/release/proxychains.dll` |
 
 ## 快速使用
 

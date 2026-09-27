@@ -469,7 +469,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libproxychains"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "ctor",
  "libc",
@@ -654,7 +654,7 @@ dependencies = [
 
 [[package]]
 name = "proxychains"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "base64",
  "hex",
@@ -676,7 +676,7 @@ dependencies = [
 
 [[package]]
 name = "proxychains-bin"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "anyhow",
  "clap",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "proxychains-injector"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "bytes",
  "h3",

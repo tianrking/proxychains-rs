@@ -1,5 +1,6 @@
 //! Loopback SOCKS5 service backed by a configured proxychains route.
 
+use std::ffi::OsString;
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::process;
@@ -10,7 +11,8 @@ use clap::Parser;
 use proxychains::{ConfigParser, LocalSocks5Credentials, LocalSocks5Server};
 
 #[derive(Parser, Debug)]
-#[command(name = "proxychains-socks5")]
+#[command(name = "proxychains4 socks5")]
+#[command(version)]
 #[command(about = "Expose a local SOCKS5 CONNECT listener through a proxychains route")]
 struct Args {
     /// Proxychains configuration for the upstream route
@@ -42,8 +44,8 @@ struct Args {
     max_clients: usize,
 }
 
-fn main() {
-    let args = Args::parse();
+pub fn run(args: impl Iterator<Item = OsString>) {
+    let args = Args::parse_from(std::iter::once(OsString::from("proxychains4 socks5")).chain(args));
     if !args.allow_remote && !args.listen.ip().is_loopback() {
         fail("refusing non-loopback listener without --allow-remote");
     }
@@ -74,7 +76,9 @@ fn main() {
         fail(&format!("cannot bind {}: {error}", args.listen));
     });
     let address = listener.local_addr().unwrap_or(args.listen);
-    eprintln!("proxychains-socks5: listening on {address}; upstream is the configured proxy chain");
+    eprintln!(
+        "proxychains4 socks5: listening on {address}; upstream is the configured proxy chain"
+    );
     let shutdown = Arc::new(AtomicBool::new(false));
     if let Err(error) = server.serve(listener, shutdown) {
         fail(&error.to_string());
@@ -82,6 +86,6 @@ fn main() {
 }
 
 fn fail(message: &str) -> ! {
-    eprintln!("proxychains-socks5: {message}");
+    eprintln!("proxychains4 socks5: {message}");
     process::exit(1);
 }
